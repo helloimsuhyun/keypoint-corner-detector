@@ -1,0 +1,4098 @@
+[
+  {
+    "view_id": 0,
+    "file": "view_00000.npz",
+    "camera_pos": [
+      19.867946952581406,
+      0.0,
+      239.12109375
+    ],
+    "num_points": 9286,
+    "num_free": 7408,
+    "num_surface": 626,
+    "num_unknown": 1252,
+    "num_invalid": 0,
+    "num_hit_rays": 626,
+    "num_roi_rays": 2678
+  },
+  {
+    "view_id": 1,
+    "file": "view_00001.npz",
+    "camera_pos": [
+      -25.324849225580692,
+      23.19963611662388,
+      237.36328125
+    ],
+    "num_points": 9127,
+    "num_free": 7177,
+    "num_surface": 650,
+    "num_unknown": 1300,
+    "num_invalid": 0,
+    "num_hit_rays": 650,
+    "num_roi_rays": 2609
+  },
+  {
+    "view_id": 2,
+    "file": "view_00002.npz",
+    "camera_pos": [
+      3.868750808760524,
+      -44.08242031931877,
+      235.60546875
+    ],
+    "num_points": 9041,
+    "num_free": 7076,
+    "num_surface": 655,
+    "num_unknown": 1310,
+    "num_invalid": 0,
+    "num_hit_rays": 655,
+    "num_roi_rays": 2577
+  },
+  {
+    "view_id": 3,
+    "file": "view_00003.npz",
+    "camera_pos": [
+      31.794660910964012,
+      41.47050529718399,
+      233.84765625
+    ],
+    "num_points": 9016,
+    "num_free": 6985,
+    "num_surface": 677,
+    "num_unknown": 1354,
+    "num_invalid": 0,
+    "num_hit_rays": 677,
+    "num_roi_rays": 2554
+  },
+  {
+    "view_id": 4,
+    "file": "view_00004.npz",
+    "camera_pos": [
+      -58.23146179318428,
+      -10.300325509160757,
+      232.08984375
+    ],
+    "num_points": 9266,
+    "num_free": 7220,
+    "num_surface": 682,
+    "num_unknown": 1364,
+    "num_invalid": 0,
+    "num_hit_rays": 682,
+    "num_roi_rays": 2634
+  },
+  {
+    "view_id": 5,
+    "file": "view_00005.npz",
+    "camera_pos": [
+      55.052148923277855,
+      -35.01967191696167,
+      230.33203125
+    ],
+    "num_points": 9156,
+    "num_free": 7050,
+    "num_surface": 702,
+    "num_unknown": 1404,
+    "num_invalid": 0,
+    "num_hit_rays": 702,
+    "num_roi_rays": 2584
+  },
+  {
+    "view_id": 6,
+    "file": "view_00006.npz",
+    "camera_pos": [
+      -18.377074599266052,
+      68.36180314421654,
+      228.57421875
+    ],
+    "num_points": 9358,
+    "num_free": 7255,
+    "num_surface": 701,
+    "num_unknown": 1402,
+    "num_invalid": 0,
+    "num_hit_rays": 701,
+    "num_roi_rays": 2652
+  },
+  {
+    "view_id": 7,
+    "file": "view_00007.npz",
+    "camera_pos": [
+      -34.97676998376846,
+      -67.34564155340195,
+      226.81640625
+    ],
+    "num_points": 9280,
+    "num_free": 7132,
+    "num_surface": 716,
+    "num_unknown": 1432,
+    "num_invalid": 0,
+    "num_hit_rays": 716,
+    "num_roi_rays": 2616
+  },
+  {
+    "view_id": 8,
+    "file": "view_00008.npz",
+    "camera_pos": [
+      75.73276162147522,
+      27.657482586801052,
+      225.05859375
+    ],
+    "num_points": 9400,
+    "num_free": 7252,
+    "num_surface": 716,
+    "num_unknown": 1432,
+    "num_invalid": 0,
+    "num_hit_rays": 716,
+    "num_roi_rays": 2656
+  },
+  {
+    "view_id": 9,
+    "file": "view_00009.npz",
+    "camera_pos": [
+      -78.62799167633057,
+      32.45649263262749,
+      223.30078125
+    ],
+    "num_points": 9403,
+    "num_free": 7219,
+    "num_surface": 728,
+    "num_unknown": 1456,
+    "num_invalid": 0,
+    "num_hit_rays": 728,
+    "num_roi_rays": 2649
+  },
+  {
+    "view_id": 10,
+    "file": "view_00010.npz",
+    "camera_pos": [
+      37.82692551612854,
+      -80.83394095301628,
+      221.54296875
+    ],
+    "num_points": 9375,
+    "num_free": 7188,
+    "num_surface": 729,
+    "num_unknown": 1458,
+    "num_invalid": 0,
+    "num_hit_rays": 729,
+    "num_roi_rays": 2639
+  },
+  {
+    "view_id": 11,
+    "file": "view_00011.npz",
+    "camera_pos": [
+      27.896145544946194,
+      88.93731012940407,
+      219.78515625
+    ],
+    "num_points": 9517,
+    "num_free": 7324,
+    "num_surface": 731,
+    "num_unknown": 1462,
+    "num_invalid": 0,
+    "num_hit_rays": 731,
+    "num_roi_rays": 2685
+  },
+  {
+    "view_id": 12,
+    "file": "view_00012.npz",
+    "camera_pos": [
+      -83.90718922019005,
+      -48.62593151628971,
+      218.02734375
+    ],
+    "num_points": 9431,
+    "num_free": 7187,
+    "num_surface": 748,
+    "num_unknown": 1496,
+    "num_invalid": 0,
+    "num_hit_rays": 748,
+    "num_roi_rays": 2645
+  },
+  {
+    "view_id": 13,
+    "file": "view_00013.npz",
+    "camera_pos": [
+      98.23035299777985,
+      -21.59566842019558,
+      216.26953125
+    ],
+    "num_points": 9596,
+    "num_free": 7388,
+    "num_surface": 736,
+    "num_unknown": 1472,
+    "num_invalid": 0,
+    "num_hit_rays": 736,
+    "num_roi_rays": 2708
+  },
+  {
+    "view_id": 14,
+    "file": "view_00014.npz",
+    "camera_pos": [
+      -59.82472747564316,
+      85.09451597929001,
+      214.51171875
+    ],
+    "num_points": 9580,
+    "num_free": 7297,
+    "num_surface": 761,
+    "num_unknown": 1522,
+    "num_invalid": 0,
+    "num_hit_rays": 761,
+    "num_roi_rays": 2686
+  },
+  {
+    "view_id": 15,
+    "file": "view_00015.npz",
+    "camera_pos": [
+      -13.792252354323864,
+      -106.43385574221611,
+      212.75390625
+    ],
+    "num_points": 9666,
+    "num_free": 7452,
+    "num_surface": 738,
+    "num_unknown": 1476,
+    "num_invalid": 0,
+    "num_hit_rays": 738,
+    "num_roi_rays": 2730
+  },
+  {
+    "view_id": 16,
+    "file": "view_00016.npz",
+    "camera_pos": [
+      84.49468687176704,
+      71.21221348643303,
+      210.99609375
+    ],
+    "num_points": 9690,
+    "num_free": 7377,
+    "num_surface": 771,
+    "num_unknown": 1542,
+    "num_invalid": 0,
+    "num_hit_rays": 771,
+    "num_roi_rays": 2716
+  },
+  {
+    "view_id": 17,
+    "file": "view_00017.npz",
+    "camera_pos": [
+      -113.46574276685715,
+      4.692164668813348,
+      209.23828125
+    ],
+    "num_points": 9717,
+    "num_free": 7494,
+    "num_surface": 741,
+    "num_unknown": 1482,
+    "num_invalid": 0,
+    "num_hit_rays": 741,
+    "num_roi_rays": 2745
+  },
+  {
+    "view_id": 18,
+    "file": "view_00018.npz",
+    "camera_pos": [
+      82.59085491299629,
+      -82.18893259763718,
+      207.48046875
+    ],
+    "num_points": 9719,
+    "num_free": 7376,
+    "num_surface": 781,
+    "num_unknown": 1562,
+    "num_invalid": 0,
+    "num_hit_rays": 781,
+    "num_roi_rays": 2719
+  },
+  {
+    "view_id": 19,
+    "file": "view_00019.npz",
+    "camera_pos": [
+      -5.5140027310699224,
+      119.24539357423782,
+      205.72265625
+    ],
+    "num_points": 9710,
+    "num_free": 7466,
+    "num_surface": 748,
+    "num_unknown": 1496,
+    "num_invalid": 0,
+    "num_hit_rays": 748,
+    "num_roi_rays": 2738
+  },
+  {
+    "view_id": 20,
+    "file": "view_00020.npz",
+    "camera_pos": [
+      -78.25387716293335,
+      -93.77429857850075,
+      203.96484375
+    ],
+    "num_points": 9790,
+    "num_free": 7453,
+    "num_surface": 779,
+    "num_unknown": 1558,
+    "num_invalid": 0,
+    "num_hit_rays": 779,
+    "num_roi_rays": 2744
+  },
+  {
+    "view_id": 21,
+    "file": "view_00021.npz",
+    "camera_pos": [
+      123.69930893182755,
+      16.643567942082882,
+      202.20703125
+    ],
+    "num_points": 9701,
+    "num_free": 7448,
+    "num_surface": 751,
+    "num_unknown": 1502,
+    "num_invalid": 0,
+    "num_hit_rays": 751,
+    "num_roi_rays": 2733
+  },
+  {
+    "view_id": 22,
+    "file": "view_00022.npz",
+    "camera_pos": [
+      -104.5864574611187,
+      72.76853173971176,
+      200.44921875
+    ],
+    "num_points": 9796,
+    "num_free": 7459,
+    "num_surface": 779,
+    "num_unknown": 1558,
+    "num_invalid": 0,
+    "num_hit_rays": 779,
+    "num_roi_rays": 2746
+  },
+  {
+    "view_id": 23,
+    "file": "view_00023.npz",
+    "camera_pos": [
+      28.517772629857063,
+      -126.76436305046082,
+      198.69140625
+    ],
+    "num_points": 9654,
+    "num_free": 7386,
+    "num_surface": 756,
+    "num_unknown": 1512,
+    "num_invalid": 0,
+    "num_hit_rays": 756,
+    "num_roi_rays": 2714
+  },
+  {
+    "view_id": 24,
+    "file": "view_00024.npz",
+    "camera_pos": [
+      65.81812351942062,
+      114.86140340566635,
+      196.93359375
+    ],
+    "num_points": 9756,
+    "num_free": 7416,
+    "num_surface": 780,
+    "num_unknown": 1560,
+    "num_invalid": 0,
+    "num_hit_rays": 780,
+    "num_roi_rays": 2732
+  },
+  {
+    "view_id": 25,
+    "file": "view_00025.npz",
+    "camera_pos": [
+      -128.38992923498154,
+      -40.95988981425762,
+      195.17578125
+    ],
+    "num_points": 9571,
+    "num_free": 7270,
+    "num_surface": 767,
+    "num_unknown": 1534,
+    "num_invalid": 0,
+    "num_hit_rays": 767,
+    "num_roi_rays": 2679
+  },
+  {
+    "view_id": 26,
+    "file": "view_00026.npz",
+    "camera_pos": [
+      124.44366216659546,
+      -57.49612748622894,
+      193.41796875
+    ],
+    "num_points": 9697,
+    "num_free": 7360,
+    "num_surface": 779,
+    "num_unknown": 1558,
+    "num_invalid": 0,
+    "num_hit_rays": 779,
+    "num_roi_rays": 2713
+  },
+  {
+    "view_id": 27,
+    "file": "view_00027.npz",
+    "camera_pos": [
+      -53.79451811313629,
+      128.5392478108406,
+      191.66015625
+    ],
+    "num_points": 9656,
+    "num_free": 7331,
+    "num_surface": 775,
+    "num_unknown": 1550,
+    "num_invalid": 0,
+    "num_hit_rays": 775,
+    "num_roi_rays": 2702
+  },
+  {
+    "view_id": 28,
+    "file": "view_00028.npz",
+    "camera_pos": [
+      -47.90525212883949,
+      -133.1888034939766,
+      189.90234375
+    ],
+    "num_points": 9606,
+    "num_free": 7293,
+    "num_surface": 771,
+    "num_unknown": 1542,
+    "num_invalid": 0,
+    "num_hit_rays": 771,
+    "num_roi_rays": 2688
+  },
+  {
+    "view_id": 29,
+    "file": "view_00029.npz",
+    "camera_pos": [
+      127.19027101993561,
+      66.84764251112938,
+      188.14453125
+    ],
+    "num_points": 9766,
+    "num_free": 7429,
+    "num_surface": 779,
+    "num_unknown": 1558,
+    "num_invalid": 0,
+    "num_hit_rays": 779,
+    "num_roi_rays": 2736
+  },
+  {
+    "view_id": 30,
+    "file": "view_00030.npz",
+    "camera_pos": [
+      -140.96416532993317,
+      37.157704308629036,
+      186.38671875
+    ],
+    "num_points": 9572,
+    "num_free": 7283,
+    "num_surface": 763,
+    "num_unknown": 1526,
+    "num_invalid": 0,
+    "num_hit_rays": 763,
+    "num_roi_rays": 2682
+  },
+  {
+    "view_id": 31,
+    "file": "view_00031.npz",
+    "camera_pos": [
+      79.9471490085125,
+      -124.33618605136871,
+      184.62890625
+    ],
+    "num_points": 9856,
+    "num_free": 7510,
+    "num_surface": 782,
+    "num_unknown": 1564,
+    "num_invalid": 0,
+    "num_hit_rays": 782,
+    "num_roi_rays": 2764
+  },
+  {
+    "view_id": 32,
+    "file": "view_00032.npz",
+    "camera_pos": [
+      25.374956242740154,
+      147.64961153268814,
+      182.87109375
+    ],
+    "num_points": 9636,
+    "num_free": 7368,
+    "num_surface": 756,
+    "num_unknown": 1512,
+    "num_invalid": 0,
+    "num_hit_rays": 756,
+    "num_roi_rays": 2708
+  },
+  {
+    "view_id": 33,
+    "file": "view_00033.npz",
+    "camera_pos": [
+      -119.98569667339325,
+      -92.92366951704025,
+      181.11328125
+    ],
+    "num_points": 9900,
+    "num_free": 7542,
+    "num_surface": 786,
+    "num_unknown": 1572,
+    "num_invalid": 0,
+    "num_hit_rays": 786,
+    "num_roi_rays": 2776
+  },
+  {
+    "view_id": 34,
+    "file": "view_00034.npz",
+    "camera_pos": [
+      153.13821583986282,
+      -12.687188945710659,
+      179.35546875
+    ],
+    "num_points": 9652,
+    "num_free": 7405,
+    "num_surface": 749,
+    "num_unknown": 1498,
+    "num_invalid": 0,
+    "num_hit_rays": 749,
+    "num_roi_rays": 2718
+  },
+  {
+    "view_id": 35,
+    "file": "view_00035.npz",
+    "camera_pos": [
+      -105.61157763004303,
+      114.1630232334137,
+      177.59765625
+    ],
+    "num_points": 9908,
+    "num_free": 7556,
+    "num_surface": 784,
+    "num_unknown": 1568,
+    "num_invalid": 0,
+    "num_hit_rays": 784,
+    "num_roi_rays": 2780
+  },
+  {
+    "view_id": 36,
+    "file": "view_00036.npz",
+    "camera_pos": [
+      0.7675429747905582,
+      -157.3370799422264,
+      175.83984375
+    ],
+    "num_points": 9660,
+    "num_free": 7428,
+    "num_surface": 744,
+    "num_unknown": 1488,
+    "num_invalid": 0,
+    "num_hit_rays": 744,
+    "num_roi_rays": 2724
+  },
+  {
+    "view_id": 37,
+    "file": "view_00037.npz",
+    "camera_pos": [
+      106.90769478678703,
+      117.85012185573578,
+      174.08203125
+    ],
+    "num_points": 9913,
+    "num_free": 7558,
+    "num_surface": 785,
+    "num_unknown": 1570,
+    "num_invalid": 0,
+    "num_hit_rays": 785,
+    "num_roi_rays": 2781
+  },
+  {
+    "view_id": 38,
+    "file": "view_00038.npz",
+    "camera_pos": [
+      -160.1678431034088,
+      -14.84431866556406,
+      172.32421875
+    ],
+    "num_points": 9608,
+    "num_free": 7364,
+    "num_surface": 748,
+    "num_unknown": 1496,
+    "num_invalid": 0,
+    "num_hit_rays": 748,
+    "num_roi_rays": 2704
+  },
+  {
+    "view_id": 39,
+    "file": "view_00039.npz",
+    "camera_pos": [
+      129.48463261127472,
+      -98.27422052621841,
+      170.56640625
+    ],
+    "num_points": 9871,
+    "num_free": 7534,
+    "num_surface": 779,
+    "num_unknown": 1558,
+    "num_invalid": 0,
+    "num_hit_rays": 779,
+    "num_roi_rays": 2771
+  },
+  {
+    "view_id": 40,
+    "file": "view_00040.npz",
+    "camera_pos": [
+      -29.39252480864525,
+      161.56731247901917,
+      168.80859375
+    ],
+    "num_points": 9503,
+    "num_free": 7250,
+    "num_surface": 751,
+    "num_unknown": 1502,
+    "num_invalid": 0,
+    "num_hit_rays": 751,
+    "num_roi_rays": 2667
+  },
+  {
+    "view_id": 41,
+    "file": "view_00041.npz",
+    "camera_pos": [
+      -88.3315734565258,
+      -140.36770910024643,
+      167.05078125
+    ],
+    "num_points": 9811,
+    "num_free": 7474,
+    "num_surface": 779,
+    "num_unknown": 1558,
+    "num_invalid": 0,
+    "num_hit_rays": 779,
+    "num_roi_rays": 2751
+  },
+  {
+    "view_id": 42,
+    "file": "view_00042.npz",
+    "camera_pos": [
+      161.48786544799805,
+      44.25712935626507,
+      165.29296875
+    ],
+    "num_points": 9395,
+    "num_free": 7115,
+    "num_surface": 760,
+    "num_unknown": 1520,
+    "num_invalid": 0,
+    "num_hit_rays": 760,
+    "num_roi_rays": 2625
+  },
+  {
+    "view_id": 43,
+    "file": "view_00043.npz",
+    "camera_pos": [
+      -150.36042630672455,
+      77.16248631477356,
+      163.53515625
+    ],
+    "num_points": 9705,
+    "num_free": 7392,
+    "num_surface": 771,
+    "num_unknown": 1542,
+    "num_invalid": 0,
+    "num_hit_rays": 771,
+    "num_roi_rays": 2721
+  },
+  {
+    "view_id": 44,
+    "file": "view_00044.npz",
+    "camera_pos": [
+      59.280044585466385,
+      -159.89774465560913,
+      161.77734375
+    ],
+    "num_points": 9527,
+    "num_free": 7229,
+    "num_surface": 766,
+    "num_unknown": 1532,
+    "num_invalid": 0,
+    "num_hit_rays": 766,
+    "num_roi_rays": 2665
+  },
+  {
+    "view_id": 45,
+    "file": "view_00045.npz",
+    "camera_pos": [
+      64.86266702413559,
+      159.33351516723633,
+      160.01953125
+    ],
+    "num_points": 9554,
+    "num_free": 7256,
+    "num_surface": 766,
+    "num_unknown": 1532,
+    "num_invalid": 0,
+    "num_hit_rays": 766,
+    "num_roi_rays": 2674
+  },
+  {
+    "view_id": 46,
+    "file": "view_00046.npz",
+    "camera_pos": [
+      -156.78124576807022,
+      -74.30155500769615,
+      158.26171875
+    ],
+    "num_points": 9638,
+    "num_free": 7331,
+    "num_surface": 769,
+    "num_unknown": 1538,
+    "num_invalid": 0,
+    "num_hit_rays": 769,
+    "num_roi_rays": 2700
+  },
+  {
+    "view_id": 47,
+    "file": "view_00047.npz",
+    "camera_pos": [
+      167.16844886541367,
+      -51.539819687604904,
+      156.50390625
+    ],
+    "num_points": 9388,
+    "num_free": 7123,
+    "num_surface": 755,
+    "num_unknown": 1510,
+    "num_invalid": 0,
+    "num_hit_rays": 755,
+    "num_roi_rays": 2626
+  },
+  {
+    "view_id": 48,
+    "file": "view_00048.npz",
+    "camera_pos": [
+      -89.16178420186043,
+      152.13877111673355,
+      154.74609375
+    ],
+    "num_points": 9699,
+    "num_free": 7395,
+    "num_surface": 768,
+    "num_unknown": 1536,
+    "num_invalid": 0,
+    "num_hit_rays": 768,
+    "num_roi_rays": 2721
+  },
+  {
+    "view_id": 49,
+    "file": "view_00049.npz",
+    "camera_pos": [
+      -37.31263875961304,
+      -173.75846207141876,
+      152.98828125
+    ],
+    "num_points": 9295,
+    "num_free": 7057,
+    "num_surface": 746,
+    "num_unknown": 1492,
+    "num_invalid": 0,
+    "num_hit_rays": 746,
+    "num_roi_rays": 2601
+  },
+  {
+    "view_id": 50,
+    "file": "view_00050.npz",
+    "camera_pos": [
+      145.98673582077026,
+      103.70213985443115,
+      151.23046875
+    ],
+    "num_points": 9748,
+    "num_free": 7456,
+    "num_surface": 764,
+    "num_unknown": 1528,
+    "num_invalid": 0,
+    "num_hit_rays": 764,
+    "num_roi_rays": 2740
+  },
+  {
+    "view_id": 51,
+    "file": "view_00051.npz",
+    "camera_pos": [
+      -179.0094628930092,
+      22.309603728353977,
+      149.47265625
+    ],
+    "num_points": 9334,
+    "num_free": 7123,
+    "num_surface": 737,
+    "num_unknown": 1474,
+    "num_invalid": 0,
+    "num_hit_rays": 737,
+    "num_roi_rays": 2620
+  },
+  {
+    "view_id": 52,
+    "file": "view_00052.npz",
+    "camera_pos": [
+      117.76682585477829,
+      -138.35729956626892,
+      147.71484375
+    ],
+    "num_points": 9732,
+    "num_free": 7455,
+    "num_surface": 759,
+    "num_unknown": 1518,
+    "num_invalid": 0,
+    "num_hit_rays": 759,
+    "num_roi_rays": 2738
+  },
+  {
+    "view_id": 53,
+    "file": "view_00053.npz",
+    "camera_pos": [
+      6.667741108685732,
+      182.8409045934677,
+      145.95703125
+    ],
+    "num_points": 9312,
+    "num_free": 7134,
+    "num_surface": 726,
+    "num_unknown": 1452,
+    "num_invalid": 0,
+    "num_hit_rays": 726,
+    "num_roi_rays": 2620
+  },
+  {
+    "view_id": 54,
+    "file": "view_00054.npz",
+    "camera_pos": [
+      -129.29807156324387,
+      -131.20431751012802,
+      144.19921875
+    ],
+    "num_points": 9734,
+    "num_free": 7454,
+    "num_surface": 760,
+    "num_unknown": 1520,
+    "num_invalid": 0,
+    "num_hit_rays": 760,
+    "num_roi_rays": 2738
+  },
+  {
+    "view_id": 55,
+    "file": "view_00055.npz",
+    "camera_pos": [
+      185.1864829659462,
+      9.468709118664265,
+      142.44140625
+    ],
+    "num_points": 9306,
+    "num_free": 7101,
+    "num_surface": 735,
+    "num_unknown": 1470,
+    "num_invalid": 0,
+    "num_hit_rays": 735,
+    "num_roi_rays": 2612
+  },
+  {
+    "view_id": 56,
+    "file": "view_00056.npz",
+    "camera_pos": [
+      -143.8687026500702,
+      118.8714936375618,
+      140.68359375
+    ],
+    "num_points": 9650,
+    "num_free": 7397,
+    "num_surface": 751,
+    "num_unknown": 1502,
+    "num_invalid": 0,
+    "num_hit_rays": 751,
+    "num_roi_rays": 2716
+  },
+  {
+    "view_id": 57,
+    "file": "view_00057.npz",
+    "camera_pos": [
+      25.949694961309433,
+      -185.99465936422348,
+      138.92578125
+    ],
+    "num_points": 9177,
+    "num_free": 6990,
+    "num_surface": 729,
+    "num_unknown": 1458,
+    "num_invalid": 0,
+    "num_hit_rays": 729,
+    "num_roi_rays": 2573
+  },
+  {
+    "view_id": 58,
+    "file": "view_00058.npz",
+    "camera_pos": [
+      107.15427696704865,
+      155.62116354703903,
+      137.16796875
+    ],
+    "num_points": 9585,
+    "num_free": 7344,
+    "num_surface": 747,
+    "num_unknown": 1494,
+    "num_invalid": 0,
+    "num_hit_rays": 747,
+    "num_roi_rays": 2697
+  },
+  {
+    "view_id": 59,
+    "file": "view_00059.npz",
+    "camera_pos": [
+      -185.22921055555344,
+      -42.62080751359463,
+      135.41015625
+    ],
+    "num_points": 9013,
+    "num_free": 6820,
+    "num_surface": 731,
+    "num_unknown": 1462,
+    "num_invalid": 0,
+    "num_hit_rays": 731,
+    "num_roi_rays": 2517
+  },
+  {
+    "view_id": 60,
+    "file": "view_00060.npz",
+    "camera_pos": [
+      166.33123755455017,
+      -94.23663094639778,
+      133.65234375
+    ],
+    "num_points": 9470,
+    "num_free": 7235,
+    "num_surface": 745,
+    "num_unknown": 1490,
+    "num_invalid": 0,
+    "num_hit_rays": 745,
+    "num_roi_rays": 2660
+  },
+  {
+    "view_id": 61,
+    "file": "view_00061.npz",
+    "camera_pos": [
+      -59.32477042078972,
+      182.86945670843124,
+      131.89453125
+    ],
+    "num_points": 9145,
+    "num_free": 6934,
+    "num_surface": 737,
+    "num_unknown": 1474,
+    "num_invalid": 0,
+    "num_hit_rays": 737,
+    "num_roi_rays": 2557
+  },
+  {
+    "view_id": 62,
+    "file": "view_00062.npz",
+    "camera_pos": [
+      -80.2213042974472,
+      -175.87802410125732,
+      130.13671875
+    ],
+    "num_points": 9320,
+    "num_free": 7103,
+    "num_surface": 739,
+    "num_unknown": 1478,
+    "num_invalid": 0,
+    "num_hit_rays": 739,
+    "num_roi_rays": 2614
+  },
+  {
+    "view_id": 63,
+    "file": "view_00063.npz",
+    "camera_pos": [
+      178.91048938035965,
+      75.90296119451523,
+      128.37890625
+    ],
+    "num_points": 9245,
+    "num_free": 7037,
+    "num_surface": 736,
+    "num_unknown": 1472,
+    "num_invalid": 0,
+    "num_hit_rays": 736,
+    "num_roi_rays": 2591
+  },
+  {
+    "view_id": 64,
+    "file": "view_00064.npz",
+    "camera_pos": [
+      -184.15140509605408,
+      65.22264629602432,
+      126.62109375
+    ],
+    "num_points": 9103,
+    "num_free": 6910,
+    "num_surface": 731,
+    "num_unknown": 1462,
+    "num_invalid": 0,
+    "num_hit_rays": 731,
+    "num_roi_rays": 2547
+  },
+  {
+    "view_id": 65,
+    "file": "view_00065.npz",
+    "camera_pos": [
+      92.19692498445511,
+      -173.3631581068039,
+      124.86328125
+    ],
+    "num_points": 9322,
+    "num_free": 7120,
+    "num_surface": 734,
+    "num_unknown": 1468,
+    "num_invalid": 0,
+    "num_hit_rays": 734,
+    "num_roi_rays": 2618
+  },
+  {
+    "view_id": 66,
+    "file": "view_00066.npz",
+    "camera_pos": [
+      49.365463480353355,
+      191.05302393436432,
+      123.10546875
+    ],
+    "num_points": 8894,
+    "num_free": 6731,
+    "num_surface": 721,
+    "num_unknown": 1442,
+    "num_invalid": 0,
+    "num_hit_rays": 721,
+    "num_roi_rays": 2484
+  },
+  {
+    "view_id": 67,
+    "file": "view_00067.npz",
+    "camera_pos": [
+      -166.25398993492126,
+      -108.04992020130157,
+      121.34765625
+    ],
+    "num_points": 9362,
+    "num_free": 7172,
+    "num_surface": 730,
+    "num_unknown": 1460,
+    "num_invalid": 0,
+    "num_hit_rays": 730,
+    "num_roi_rays": 2634
+  },
+  {
+    "view_id": 68,
+    "file": "view_00068.npz",
+    "camera_pos": [
+      196.49729132652283,
+      -32.78381936252117,
+      119.58984375
+    ],
+    "num_points": 8846,
+    "num_free": 6719,
+    "num_surface": 709,
+    "num_unknown": 1418,
+    "num_invalid": 0,
+    "num_hit_rays": 709,
+    "num_roi_rays": 2476
+  },
+  {
+    "view_id": 69,
+    "file": "view_00069.npz",
+    "camera_pos": [
+      -123.3084037899971,
+      157.62490779161453,
+      117.83203125
+    ],
+    "num_points": 9353,
+    "num_free": 7190,
+    "num_surface": 721,
+    "num_unknown": 1442,
+    "num_invalid": 0,
+    "num_hit_rays": 721,
+    "num_roi_rays": 2637
+  },
+  {
+    "view_id": 70,
+    "file": "view_00070.npz",
+    "camera_pos": [
+      -15.619745291769505,
+      -200.41213631629944,
+      116.07421875
+    ],
+    "num_points": 8861,
+    "num_free": 6743,
+    "num_surface": 706,
+    "num_unknown": 1412,
+    "num_invalid": 0,
+    "num_hit_rays": 706,
+    "num_roi_rays": 2483
+  },
+  {
+    "view_id": 71,
+    "file": "view_00071.npz",
+    "camera_pos": [
+      147.53282815217972,
+      137.82349973917007,
+      114.31640625
+    ],
+    "num_points": 9333,
+    "num_free": 7182,
+    "num_surface": 717,
+    "num_unknown": 1434,
+    "num_invalid": 0,
+    "num_hit_rays": 717,
+    "num_roi_rays": 2633
+  },
+  {
+    "view_id": 72,
+    "file": "view_00072.npz",
+    "camera_pos": [
+      -202.73975729942322,
+      -1.9781119655817747,
+      112.55859375
+    ],
+    "num_points": 8834,
+    "num_free": 6752,
+    "num_surface": 694,
+    "num_unknown": 1388,
+    "num_invalid": 0,
+    "num_hit_rays": 694,
+    "num_roi_rays": 2482
+  },
+  {
+    "view_id": 73,
+    "file": "view_00073.npz",
+    "camera_pos": [
+      151.4524608850479,
+      -136.0491245985031,
+      110.80078125
+    ],
+    "num_points": 9262,
+    "num_free": 7132,
+    "num_surface": 710,
+    "num_unknown": 1420,
+    "num_invalid": 0,
+    "num_hit_rays": 710,
+    "num_roi_rays": 2614
+  },
+  {
+    "view_id": 74,
+    "file": "view_00074.npz",
+    "camera_pos": [
+      -19.855918921530247,
+      203.4371182322502,
+      109.04296875
+    ],
+    "num_points": 8702,
+    "num_free": 6629,
+    "num_surface": 691,
+    "num_unknown": 1382,
+    "num_invalid": 0,
+    "num_hit_rays": 691,
+    "num_roi_rays": 2440
+  },
+  {
+    "view_id": 75,
+    "file": "view_00075.npz",
+    "camera_pos": [
+      -123.25897067785263,
+      -164.05998319387436,
+      107.28515625
+    ],
+    "num_points": 9160,
+    "num_free": 7057,
+    "num_surface": 701,
+    "num_unknown": 1402,
+    "num_invalid": 0,
+    "num_hit_rays": 701,
+    "num_roi_rays": 2586
+  },
+  {
+    "view_id": 76,
+    "file": "view_00076.npz",
+    "camera_pos": [
+      202.4764582514763,
+      37.85611130297184,
+      105.52734375
+    ],
+    "num_points": 8515,
+    "num_free": 6448,
+    "num_surface": 689,
+    "num_unknown": 1378,
+    "num_invalid": 0,
+    "num_hit_rays": 689,
+    "num_roi_rays": 2379
+  },
+  {
+    "view_id": 77,
+    "file": "view_00077.npz",
+    "camera_pos": [
+      -175.51954686641693,
+      109.26050841808319,
+      103.76953125
+    ],
+    "num_points": 9029,
+    "num_free": 6929,
+    "num_surface": 700,
+    "num_unknown": 1400,
+    "num_invalid": 0,
+    "num_hit_rays": 700,
+    "num_roi_rays": 2543
+  },
+  {
+    "view_id": 78,
+    "file": "view_00078.npz",
+    "camera_pos": [
+      55.81889860332012,
+      -199.84546601772308,
+      102.01171875
+    ],
+    "num_points": 8558,
+    "num_free": 6485,
+    "num_surface": 691,
+    "num_unknown": 1382,
+    "num_invalid": 0,
+    "num_hit_rays": 691,
+    "num_roi_rays": 2392
+  },
+  {
+    "view_id": 79,
+    "file": "view_00079.npz",
+    "camera_pos": [
+      94.1639631986618,
+      185.71462333202362,
+      100.25390625
+    ],
+    "num_points": 8900,
+    "num_free": 6791,
+    "num_surface": 703,
+    "num_unknown": 1406,
+    "num_invalid": 0,
+    "num_hit_rays": 703,
+    "num_roi_rays": 2498
+  },
+  {
+    "view_id": 80,
+    "file": "view_00080.npz",
+    "camera_pos": [
+      -195.54752111434937,
+      -73.58376905322075,
+      98.49609375
+    ],
+    "num_points": 8684,
+    "num_free": 6611,
+    "num_surface": 691,
+    "num_unknown": 1382,
+    "num_invalid": 0,
+    "num_hit_rays": 691,
+    "num_roi_rays": 2434
+  },
+  {
+    "view_id": 81,
+    "file": "view_00081.npz",
+    "camera_pos": [
+      194.53976154327393,
+      -78.09056416153908,
+      96.73828125
+    ],
+    "num_points": 8687,
+    "num_free": 6623,
+    "num_surface": 688,
+    "num_unknown": 1376,
+    "num_invalid": 0,
+    "num_hit_rays": 688,
+    "num_roi_rays": 2437
+  },
+  {
+    "view_id": 82,
+    "file": "view_00082.npz",
+    "camera_pos": [
+      -90.99103063344955,
+      189.60157334804535,
+      94.98046875
+    ],
+    "num_points": 8751,
+    "num_free": 6690,
+    "num_surface": 687,
+    "num_unknown": 1374,
+    "num_invalid": 0,
+    "num_hit_rays": 687,
+    "num_roi_rays": 2459
+  },
+  {
+    "view_id": 83,
+    "file": "view_00083.npz",
+    "camera_pos": [
+      -61.171478033065796,
+      -201.90162062644958,
+      93.22265625
+    ],
+    "num_points": 8442,
+    "num_free": 6408,
+    "num_surface": 678,
+    "num_unknown": 1356,
+    "num_invalid": 0,
+    "num_hit_rays": 678,
+    "num_roi_rays": 2362
+  },
+  {
+    "view_id": 84,
+    "file": "view_00084.npz",
+    "camera_pos": [
+      182.0420891046524,
+      107.88328796625137,
+      91.46484375
+    ],
+    "num_points": 8806,
+    "num_free": 6775,
+    "num_surface": 677,
+    "num_unknown": 1354,
+    "num_invalid": 0,
+    "num_hit_rays": 677,
+    "num_roi_rays": 2484
+  },
+  {
+    "view_id": 85,
+    "file": "view_00085.npz",
+    "camera_pos": [
+      -207.7199086546898,
+      43.54652836918831,
+      89.70703125
+    ],
+    "num_points": 8132,
+    "num_free": 6149,
+    "num_surface": 661,
+    "num_unknown": 1322,
+    "num_invalid": 0,
+    "num_hit_rays": 661,
+    "num_roi_rays": 2270
+  },
+  {
+    "view_id": 86,
+    "file": "view_00086.npz",
+    "camera_pos": [
+      124.106964468956,
+      -172.91868925094604,
+      87.94921875
+    ],
+    "num_points": 8779,
+    "num_free": 6784,
+    "num_surface": 665,
+    "num_unknown": 1330,
+    "num_invalid": 0,
+    "num_hit_rays": 665,
+    "num_roi_rays": 2483
+  },
+  {
+    "view_id": 87,
+    "file": "view_00087.npz",
+    "camera_pos": [
+      25.362911447882652,
+      211.92806661128998,
+      86.19140625
+    ],
+    "num_points": 8206,
+    "num_free": 6229,
+    "num_surface": 659,
+    "num_unknown": 1318,
+    "num_invalid": 0,
+    "num_hit_rays": 659,
+    "num_roi_rays": 2296
+  },
+  {
+    "view_id": 88,
+    "file": "view_00088.npz",
+    "camera_pos": [
+      -162.29570657014847,
+      -139.51373398303986,
+      84.43359375
+    ],
+    "num_points": 8743,
+    "num_free": 6766,
+    "num_surface": 659,
+    "num_unknown": 1318,
+    "num_invalid": 0,
+    "num_hit_rays": 659,
+    "num_roi_rays": 2475
+  },
+  {
+    "view_id": 89,
+    "file": "view_00089.npz",
+    "camera_pos": [
+      214.474019408226,
+      -6.773838819935918,
+      82.67578125
+    ],
+    "num_points": 8154,
+    "num_free": 6210,
+    "num_surface": 648,
+    "num_unknown": 1296,
+    "num_invalid": 0,
+    "num_hit_rays": 648,
+    "num_roi_rays": 2286
+  },
+  {
+    "view_id": 90,
+    "file": "view_00090.npz",
+    "camera_pos": [
+      -153.96192222833633,
+      150.25162249803543,
+      80.91796875
+    ],
+    "num_points": 8688,
+    "num_free": 6726,
+    "num_surface": 654,
+    "num_unknown": 1308,
+    "num_invalid": 0,
+    "num_hit_rays": 654,
+    "num_roi_rays": 2460
+  },
+  {
+    "view_id": 91,
+    "file": "view_00091.npz",
+    "camera_pos": [
+      12.06290228292346,
+      -215.32060503959656,
+      79.16015625
+    ],
+    "num_points": 8123,
+    "num_free": 6185,
+    "num_surface": 646,
+    "num_unknown": 1292,
+    "num_invalid": 0,
+    "num_hit_rays": 646,
+    "num_roi_rays": 2277
+  },
+  {
+    "view_id": 92,
+    "file": "view_00092.npz",
+    "camera_pos": [
+      136.87836974859238,
+      167.3178344964981,
+      77.40234375
+    ],
+    "num_points": 8573,
+    "num_free": 6644,
+    "num_surface": 643,
+    "num_unknown": 1286,
+    "num_invalid": 0,
+    "num_hit_rays": 643,
+    "num_roi_rays": 2429
+  },
+  {
+    "view_id": 93,
+    "file": "view_00093.npz",
+    "camera_pos": [
+      -214.44599032402039,
+      -30.98641075193882,
+      75.64453125
+    ],
+    "num_points": 7911,
+    "num_free": 6003,
+    "num_surface": 636,
+    "num_unknown": 1272,
+    "num_invalid": 0,
+    "num_hit_rays": 636,
+    "num_roi_rays": 2213
+  },
+  {
+    "view_id": 94,
+    "file": "view_00094.npz",
+    "camera_pos": [
+      179.45705652236938,
+      -122.28048741817474,
+      73.88671875
+    ],
+    "num_points": 8435,
+    "num_free": 6533,
+    "num_surface": 634,
+    "num_unknown": 1268,
+    "num_invalid": 0,
+    "num_hit_rays": 634,
+    "num_roi_rays": 2389
+  },
+  {
+    "view_id": 95,
+    "file": "view_00095.npz",
+    "camera_pos": [
+      -49.834172800183296,
+      211.84391230344772,
+      72.12890625
+    ],
+    "num_points": 7817,
+    "num_free": 5906,
+    "num_surface": 637,
+    "num_unknown": 1274,
+    "num_invalid": 0,
+    "num_hit_rays": 637,
+    "num_roi_rays": 2181
+  },
+  {
+    "view_id": 96,
+    "file": "view_00096.npz",
+    "camera_pos": [
+      -106.57414197921753,
+      -190.26559442281723,
+      70.37109375
+    ],
+    "num_points": 8294,
+    "num_free": 6374,
+    "num_surface": 640,
+    "num_unknown": 1280,
+    "num_invalid": 0,
+    "num_hit_rays": 640,
+    "num_roi_rays": 2338
+  },
+  {
+    "view_id": 97,
+    "file": "view_00097.npz",
+    "camera_pos": [
+      207.52371847629547,
+      68.443563580513,
+      68.61328125
+    ],
+    "num_points": 7933,
+    "num_free": 6028,
+    "num_surface": 635,
+    "num_unknown": 1270,
+    "num_invalid": 0,
+    "num_hit_rays": 635,
+    "num_roi_rays": 2221
+  },
+  {
+    "view_id": 98,
+    "file": "view_00098.npz",
+    "camera_pos": [
+      -199.64093416929245,
+      89.88609462976456,
+      66.85546875
+    ],
+    "num_points": 8095,
+    "num_free": 6190,
+    "num_surface": 635,
+    "num_unknown": 1270,
+    "num_invalid": 0,
+    "num_hit_rays": 635,
+    "num_roi_rays": 2275
+  },
+  {
+    "view_id": 99,
+    "file": "view_00099.npz",
+    "camera_pos": [
+      86.6533488035202,
+      -201.51035338640213,
+      65.09765625
+    ],
+    "num_points": 8026,
+    "num_free": 6130,
+    "num_surface": 632,
+    "num_unknown": 1264,
+    "num_invalid": 0,
+    "num_hit_rays": 632,
+    "num_roi_rays": 2254
+  },
+  {
+    "view_id": 100,
+    "file": "view_00100.npz",
+    "camera_pos": [
+      72.35254794359207,
+      207.49306082725525,
+      63.33984375
+    ],
+    "num_points": 7852,
+    "num_free": 5974,
+    "num_surface": 626,
+    "num_unknown": 1252,
+    "num_invalid": 0,
+    "num_hit_rays": 626,
+    "num_roi_rays": 2200
+  },
+  {
+    "view_id": 101,
+    "file": "view_00101.npz",
+    "camera_pos": [
+      -193.8441038131714,
+      -104.30522114038467,
+      61.58203125
+    ],
+    "num_points": 8062,
+    "num_free": 6184,
+    "num_surface": 626,
+    "num_unknown": 1252,
+    "num_invalid": 0,
+    "num_hit_rays": 626,
+    "num_roi_rays": 2270
+  },
+  {
+    "view_id": 102,
+    "file": "view_00102.npz",
+    "camera_pos": [
+      213.74527662992477,
+      -54.11789193749428,
+      59.82421875
+    ],
+    "num_points": 7551,
+    "num_free": 5697,
+    "num_surface": 618,
+    "num_unknown": 1236,
+    "num_invalid": 0,
+    "num_hit_rays": 618,
+    "num_roi_rays": 2105
+  },
+  {
+    "view_id": 103,
+    "file": "view_00103.npz",
+    "camera_pos": [
+      -121.24519497156143,
+      184.58030372858047,
+      58.06640625
+    ],
+    "num_points": 8023,
+    "num_free": 6226,
+    "num_surface": 599,
+    "num_unknown": 1198,
+    "num_invalid": 0,
+    "num_hit_rays": 599,
+    "num_roi_rays": 2275
+  },
+  {
+    "view_id": 104,
+    "file": "view_00104.npz",
+    "camera_pos": [
+      -35.33336967229843,
+      -218.33495199680328,
+      56.30859375
+    ],
+    "num_points": 7386,
+    "num_free": 5595,
+    "num_surface": 597,
+    "num_unknown": 1194,
+    "num_invalid": 0,
+    "num_hit_rays": 597,
+    "num_roi_rays": 2064
+  },
+  {
+    "view_id": 105,
+    "file": "view_00105.npz",
+    "camera_pos": [
+      173.7887978553772,
+      137.32511848211288,
+      54.55078125
+    ],
+    "num_points": 7997,
+    "num_free": 6212,
+    "num_surface": 595,
+    "num_unknown": 1190,
+    "num_invalid": 0,
+    "num_hit_rays": 595,
+    "num_roi_rays": 2269
+  },
+  {
+    "view_id": 106,
+    "file": "view_00106.npz",
+    "camera_pos": [
+      -221.21411561965942,
+      16.15571267902851,
+      52.79296875
+    ],
+    "num_points": 7467,
+    "num_free": 5685,
+    "num_surface": 594,
+    "num_unknown": 1188,
+    "num_invalid": 0,
+    "num_hit_rays": 594,
+    "num_roi_rays": 2093
+  },
+  {
+    "view_id": 107,
+    "file": "view_00107.npz",
+    "camera_pos": [
+      152.40398794412613,
+      -161.55336499214172,
+      51.03515625
+    ],
+    "num_points": 7942,
+    "num_free": 6163,
+    "num_surface": 593,
+    "num_unknown": 1186,
+    "num_invalid": 0,
+    "num_hit_rays": 593,
+    "num_roi_rays": 2252
+  },
+  {
+    "view_id": 108,
+    "file": "view_00108.npz",
+    "camera_pos": [
+      -3.2542984234169126,
+      222.3498836159706,
+      49.27734375
+    ],
+    "num_points": 7324,
+    "num_free": 5590,
+    "num_surface": 578,
+    "num_unknown": 1156,
+    "num_invalid": 0,
+    "num_hit_rays": 578,
+    "num_roi_rays": 2056
+  },
+  {
+    "view_id": 109,
+    "file": "view_00109.npz",
+    "camera_pos": [
+      -147.97094017267227,
+      -166.34927541017532,
+      47.51953125
+    ],
+    "num_points": 7813,
+    "num_free": 6088,
+    "num_surface": 575,
+    "num_unknown": 1150,
+    "num_invalid": 0,
+    "num_hit_rays": 575,
+    "num_roi_rays": 2221
+  },
+  {
+    "view_id": 110,
+    "file": "view_00110.npz",
+    "camera_pos": [
+      221.72486186027527,
+      22.733315639197826,
+      45.76171875
+    ],
+    "num_points": 7191,
+    "num_free": 5454,
+    "num_surface": 579,
+    "num_unknown": 1158,
+    "num_invalid": 0,
+    "num_hit_rays": 579,
+    "num_roi_rays": 2011
+  },
+  {
+    "view_id": 111,
+    "file": "view_00111.npz",
+    "camera_pos": [
+      -179.03814911842346,
+      133.15071612596512,
+      44.00390625
+    ],
+    "num_points": 7681,
+    "num_free": 6001,
+    "num_surface": 560,
+    "num_unknown": 1120,
+    "num_invalid": 0,
+    "num_hit_rays": 560,
+    "num_roi_rays": 2187
+  },
+  {
+    "view_id": 112,
+    "file": "view_00112.npz",
+    "camera_pos": [
+      42.116907611489296,
+      -219.33722645044327,
+      42.24609375
+    ],
+    "num_points": 6999,
+    "num_free": 5271,
+    "num_surface": 576,
+    "num_unknown": 1152,
+    "num_invalid": 0,
+    "num_hit_rays": 576,
+    "num_roi_rays": 1949
+  },
+  {
+    "view_id": 113,
+    "file": "view_00113.npz",
+    "camera_pos": [
+      117.21321791410446,
+      190.35862684249878,
+      40.48828125
+    ],
+    "num_points": 7572,
+    "num_free": 5898,
+    "num_surface": 558,
+    "num_unknown": 1116,
+    "num_invalid": 0,
+    "num_hit_rays": 558,
+    "num_roi_rays": 2152
+  },
+  {
+    "view_id": 114,
+    "file": "view_00114.npz",
+    "camera_pos": [
+      -215.20083099603653,
+      -61.24107465147972,
+      38.73046875
+    ],
+    "num_points": 7173,
+    "num_free": 5490,
+    "num_surface": 561,
+    "num_unknown": 1122,
+    "num_invalid": 0,
+    "num_hit_rays": 561,
+    "num_roi_rays": 2017
+  },
+  {
+    "view_id": 115,
+    "file": "view_00115.npz",
+    "camera_pos": [
+      200.2105951309204,
+      -100.2891831099987,
+      36.97265625
+    ],
+    "num_points": 7557,
+    "num_free": 5856,
+    "num_surface": 567,
+    "num_unknown": 1134,
+    "num_invalid": 0,
+    "num_hit_rays": 567,
+    "num_roi_rays": 2141
+  },
+  {
+    "view_id": 116,
+    "file": "view_00116.npz",
+    "camera_pos": [
+      -79.94374260306358,
+      209.34507250785828,
+      35.21484375
+    ],
+    "num_points": 7379,
+    "num_free": 5702,
+    "num_surface": 559,
+    "num_unknown": 1118,
+    "num_invalid": 0,
+    "num_hit_rays": 559,
+    "num_roi_rays": 2087
+  },
+  {
+    "view_id": 117,
+    "file": "view_00117.npz",
+    "camera_pos": [
+      -82.5183279812336,
+      -208.5067480802536,
+      33.45703125
+    ],
+    "num_points": 7408,
+    "num_free": 5737,
+    "num_surface": 557,
+    "num_unknown": 1114,
+    "num_invalid": 0,
+    "num_hit_rays": 557,
+    "num_roi_rays": 2098
+  },
+  {
+    "view_id": 118,
+    "file": "view_00118.npz",
+    "camera_pos": [
+      201.81462317705154,
+      98.06626215577126,
+      31.69921875
+    ],
+    "num_points": 7565,
+    "num_free": 5879,
+    "num_surface": 562,
+    "num_unknown": 1124,
+    "num_invalid": 0,
+    "num_hit_rays": 562,
+    "num_roi_rays": 2147
+  },
+  {
+    "view_id": 119,
+    "file": "view_00119.npz",
+    "camera_pos": [
+      -215.17339199781418,
+      64.04816061258316,
+      29.94140625
+    ],
+    "num_points": 7222,
+    "num_free": 5569,
+    "num_surface": 551,
+    "num_unknown": 1102,
+    "num_invalid": 0,
+    "num_hit_rays": 551,
+    "num_roi_rays": 2040
+  },
+  {
+    "view_id": 120,
+    "file": "view_00120.npz",
+    "camera_pos": [
+      115.45482873916626,
+      -192.66908168792725,
+      28.18359375
+    ],
+    "num_points": 7627,
+    "num_free": 5992,
+    "num_surface": 545,
+    "num_unknown": 1090,
+    "num_invalid": 0,
+    "num_hit_rays": 545,
+    "num_roi_rays": 2179
+  },
+  {
+    "view_id": 121,
+    "file": "view_00121.npz",
+    "camera_pos": [
+      45.0325895100832,
+      220.15112936496735,
+      26.42578125
+    ],
+    "num_points": 7008,
+    "num_free": 5334,
+    "num_surface": 558,
+    "num_unknown": 1116,
+    "num_invalid": 0,
+    "num_hit_rays": 558,
+    "num_roi_rays": 1964
+  },
+  {
+    "view_id": 122,
+    "file": "view_00122.npz",
+    "camera_pos": [
+      -181.98235630989075,
+      -131.96193426847458,
+      24.66796875
+    ],
+    "num_points": 7686,
+    "num_free": 6102,
+    "num_surface": 528,
+    "num_unknown": 1056,
+    "num_invalid": 0,
+    "num_hit_rays": 528,
+    "num_roi_rays": 2210
+  },
+  {
+    "view_id": 123,
+    "file": "view_00123.npz",
+    "camera_pos": [
+      223.39539527893066,
+      -25.63052549958229,
+      22.91015625
+    ],
+    "num_points": 7099,
+    "num_free": 5482,
+    "num_surface": 539,
+    "num_unknown": 1078,
+    "num_invalid": 0,
+    "num_hit_rays": 539,
+    "num_roi_rays": 2007
+  },
+  {
+    "view_id": 124,
+    "file": "view_00124.npz",
+    "camera_pos": [
+      -147.44768142700195,
+      169.8420748114586,
+      21.15234375
+    ],
+    "num_points": 7668,
+    "num_free": 6093,
+    "num_surface": 525,
+    "num_unknown": 1050,
+    "num_invalid": 0,
+    "num_hit_rays": 525,
+    "num_roi_rays": 2206
+  },
+  {
+    "view_id": 125,
+    "file": "view_00125.npz",
+    "camera_pos": [
+      -6.004448840394616,
+      -224.87692683935165,
+      19.39453125
+    ],
+    "num_points": 7196,
+    "num_free": 5591,
+    "num_surface": 535,
+    "num_unknown": 1070,
+    "num_invalid": 0,
+    "num_hit_rays": 535,
+    "num_roi_rays": 2042
+  },
+  {
+    "view_id": 126,
+    "file": "view_00126.npz",
+    "camera_pos": [
+      156.34876638650894,
+      161.78105771541595,
+      17.63671875
+    ],
+    "num_points": 7819,
+    "num_free": 6175,
+    "num_surface": 548,
+    "num_unknown": 1096,
+    "num_invalid": 0,
+    "num_hit_rays": 548,
+    "num_roi_rays": 2241
+  },
+  {
+    "view_id": 127,
+    "file": "view_00127.npz",
+    "camera_pos": [
+      -224.58196431398392,
+      -13.681075628846884,
+      15.87890625
+    ],
+    "num_points": 7165,
+    "num_free": 5557,
+    "num_surface": 536,
+    "num_unknown": 1072,
+    "num_invalid": 0,
+    "num_hit_rays": 536,
+    "num_roi_rays": 2031
+  },
+  {
+    "view_id": 128,
+    "file": "view_00128.npz",
+    "camera_pos": [
+      174.84117597341537,
+      -141.61493629217148,
+      14.12109375
+    ],
+    "num_points": 7792,
+    "num_free": 6184,
+    "num_surface": 536,
+    "num_unknown": 1072,
+    "num_invalid": 0,
+    "num_hit_rays": 536,
+    "num_roi_rays": 2240
+  },
+  {
+    "view_id": 129,
+    "file": "view_00129.npz",
+    "camera_pos": [
+      -33.260900527238846,
+      222.51238524913788,
+      12.36328125
+    ],
+    "num_points": 7116,
+    "num_free": 5460,
+    "num_surface": 552,
+    "num_unknown": 1104,
+    "num_invalid": 0,
+    "num_hit_rays": 552,
+    "num_roi_rays": 2004
+  },
+  {
+    "view_id": 130,
+    "file": "view_00130.npz",
+    "camera_pos": [
+      -125.7640466094017,
+      -186.51834726333618,
+      10.60546875
+    ],
+    "num_points": 7705,
+    "num_free": 6124,
+    "num_surface": 527,
+    "num_unknown": 1054,
+    "num_invalid": 0,
+    "num_hit_rays": 527,
+    "num_roi_rays": 2217
+  },
+  {
+    "view_id": 131,
+    "file": "view_00131.npz",
+    "camera_pos": [
+      218.68575811386108,
+      52.570800483226776,
+      8.84765625
+    ],
+    "num_points": 7165,
+    "num_free": 5539,
+    "num_surface": 542,
+    "num_unknown": 1084,
+    "num_invalid": 0,
+    "num_hit_rays": 542,
+    "num_roi_rays": 2027
+  },
+  {
+    "view_id": 132,
+    "file": "view_00132.npz",
+    "camera_pos": [
+      -196.71505987644196,
+      108.92940983176231,
+      7.08984375
+    ],
+    "num_points": 7594,
+    "num_free": 5941,
+    "num_surface": 551,
+    "num_unknown": 1102,
+    "num_invalid": 0,
+    "num_hit_rays": 551,
+    "num_roi_rays": 2164
+  },
+  {
+    "view_id": 133,
+    "file": "view_00133.npz",
+    "camera_pos": [
+      71.44895866513252,
+      -213.13511431217194,
+      5.33203125
+    ],
+    "num_points": 7282,
+    "num_free": 5647,
+    "num_surface": 545,
+    "num_unknown": 1090,
+    "num_invalid": 0,
+    "num_hit_rays": 545,
+    "num_roi_rays": 2064
+  },
+  {
+    "view_id": 134,
+    "file": "view_00134.npz",
+    "camera_pos": [
+      91.25296175479889,
+      205.34689128398895,
+      3.57421875
+    ],
+    "num_points": 7507,
+    "num_free": 5836,
+    "num_surface": 557,
+    "num_unknown": 1114,
+    "num_invalid": 0,
+    "num_hit_rays": 557,
+    "num_roi_rays": 2131
+  },
+  {
+    "view_id": 135,
+    "file": "view_00135.npz",
+    "camera_pos": [
+      -205.90866655111313,
+      -89.73746001720428,
+      1.81640625
+    ],
+    "num_points": 7500,
+    "num_free": 5826,
+    "num_surface": 558,
+    "num_unknown": 1116,
+    "num_invalid": 0,
+    "num_hit_rays": 558,
+    "num_roi_rays": 2128
+  },
+  {
+    "view_id": 136,
+    "file": "view_00136.npz",
+    "camera_pos": [
+      212.34331279993057,
+      -72.8839673101902,
+      0.05859375
+    ],
+    "num_points": 7319,
+    "num_free": 5669,
+    "num_surface": 550,
+    "num_unknown": 1100,
+    "num_invalid": 0,
+    "num_hit_rays": 550,
+    "num_roi_rays": 2073
+  },
+  {
+    "view_id": 137,
+    "file": "view_00137.npz",
+    "camera_pos": [
+      -107.28369355201721,
+      197.06939309835434,
+      -1.69921875
+    ],
+    "num_points": 7586,
+    "num_free": 5909,
+    "num_surface": 559,
+    "num_unknown": 1118,
+    "num_invalid": 0,
+    "num_hit_rays": 559,
+    "num_roi_rays": 2156
+  },
+  {
+    "view_id": 138,
+    "file": "view_00138.npz",
+    "camera_pos": [
+      -53.97764593362808,
+      -217.64822602272034,
+      -3.45703125
+    ],
+    "num_points": 7117,
+    "num_free": 5446,
+    "num_surface": 557,
+    "num_unknown": 1114,
+    "num_invalid": 0,
+    "num_hit_rays": 557,
+    "num_roi_rays": 2001
+  },
+  {
+    "view_id": 139,
+    "file": "view_00139.npz",
+    "camera_pos": [
+      186.69438064098358,
+      123.94179403781891,
+      -5.21484375
+    ],
+    "num_points": 7644,
+    "num_free": 6015,
+    "num_surface": 543,
+    "num_unknown": 1086,
+    "num_invalid": 0,
+    "num_hit_rays": 543,
+    "num_roi_rays": 2186
+  },
+  {
+    "view_id": 140,
+    "file": "view_00140.npz",
+    "camera_pos": [
+      -221.22057974338531,
+      34.693773463368416,
+      -6.97265625
+    ],
+    "num_points": 7121,
+    "num_free": 5426,
+    "num_surface": 565,
+    "num_unknown": 1130,
+    "num_invalid": 0,
+    "num_hit_rays": 565,
+    "num_roi_rays": 1997
+  },
+  {
+    "view_id": 141,
+    "file": "view_00141.npz",
+    "camera_pos": [
+      139.57390934228897,
+      -174.87420737743378,
+      -8.73046875
+    ],
+    "num_points": 7697,
+    "num_free": 6047,
+    "num_surface": 550,
+    "num_unknown": 1100,
+    "num_invalid": 0,
+    "num_hit_rays": 550,
+    "num_roi_rays": 2199
+  },
+  {
+    "view_id": 142,
+    "file": "view_00142.npz",
+    "camera_pos": [
+      15.195218659937382,
+      223.0346515774727,
+      -10.48828125
+    ],
+    "num_points": 7101,
+    "num_free": 5409,
+    "num_surface": 564,
+    "num_unknown": 1128,
+    "num_invalid": 0,
+    "num_hit_rays": 564,
+    "num_roi_rays": 1991
+  },
+  {
+    "view_id": 143,
+    "file": "view_00143.npz",
+    "camera_pos": [
+      -161.7120310664177,
+      -154.05150800943375,
+      -12.24609375
+    ],
+    "num_points": 7717,
+    "num_free": 6046,
+    "num_surface": 557,
+    "num_unknown": 1114,
+    "num_invalid": 0,
+    "num_hit_rays": 557,
+    "num_roi_rays": 2201
+  },
+  {
+    "view_id": 144,
+    "file": "view_00144.npz",
+    "camera_pos": [
+      223.08030277490616,
+      4.353560088202357,
+      -14.00390625
+    ],
+    "num_points": 7175,
+    "num_free": 5444,
+    "num_surface": 577,
+    "num_unknown": 1154,
+    "num_invalid": 0,
+    "num_hit_rays": 577,
+    "num_roi_rays": 2007
+  },
+  {
+    "view_id": 145,
+    "file": "view_00145.npz",
+    "camera_pos": [
+      -167.2565057873726,
+      147.32270389795303,
+      -15.76171875
+    ],
+    "num_points": 7772,
+    "num_free": 6068,
+    "num_surface": 568,
+    "num_unknown": 1136,
+    "num_invalid": 0,
+    "num_hit_rays": 568,
+    "num_roi_rays": 2212
+  },
+  {
+    "view_id": 146,
+    "file": "view_00146.npz",
+    "camera_pos": [
+      23.788002133369446,
+      -221.36307209730148,
+      -17.51953125
+    ],
+    "num_points": 7196,
+    "num_free": 5456,
+    "num_surface": 580,
+    "num_unknown": 1160,
+    "num_invalid": 0,
+    "num_hit_rays": 580,
+    "num_roi_rays": 2012
+  },
+  {
+    "view_id": 147,
+    "file": "view_00147.npz",
+    "camera_pos": [
+      131.83165937662125,
+      179.08232510089874,
+      -19.27734375
+    ],
+    "num_points": 7796,
+    "num_free": 6065,
+    "num_surface": 577,
+    "num_unknown": 1154,
+    "num_invalid": 0,
+    "num_hit_rays": 577,
+    "num_roi_rays": 2214
+  },
+  {
+    "view_id": 148,
+    "file": "view_00148.npz",
+    "camera_pos": [
+      -217.9041087627411,
+      -42.94495917856693,
+      -21.03515625
+    ],
+    "num_points": 7172,
+    "num_free": 5414,
+    "num_surface": 586,
+    "num_unknown": 1172,
+    "num_invalid": 0,
+    "num_hit_rays": 586,
+    "num_roi_rays": 2000
+  },
+  {
+    "view_id": 149,
+    "file": "view_00149.npz",
+    "camera_pos": [
+      189.434914290905,
+      -115.37375897169113,
+      -22.79296875
+    ],
+    "num_points": 7899,
+    "num_free": 6099,
+    "num_surface": 600,
+    "num_unknown": 1200,
+    "num_invalid": 0,
+    "num_hit_rays": 600,
+    "num_roi_rays": 2233
+  },
+  {
+    "view_id": 150,
+    "file": "view_00150.npz",
+    "camera_pos": [
+      -61.664173007011414,
+      212.7399042248726,
+      -24.55078125
+    ],
+    "num_points": 7524,
+    "num_free": 5724,
+    "num_surface": 600,
+    "num_unknown": 1200,
+    "num_invalid": 0,
+    "num_hit_rays": 600,
+    "num_roi_rays": 2108
+  },
+  {
+    "view_id": 151,
+    "file": "view_00151.npz",
+    "camera_pos": [
+      -98.09209182858467,
+      -198.23355227708817,
+      -26.30859375
+    ],
+    "num_points": 7890,
+    "num_free": 6045,
+    "num_surface": 615,
+    "num_unknown": 1230,
+    "num_invalid": 0,
+    "num_hit_rays": 615,
+    "num_roi_rays": 2220
+  },
+  {
+    "view_id": 152,
+    "file": "view_00152.npz",
+    "camera_pos": [
+      205.9220239520073,
+      79.78976368904114,
+      -28.06640625
+    ],
+    "num_points": 7777,
+    "num_free": 5935,
+    "num_surface": 614,
+    "num_unknown": 1228,
+    "num_invalid": 0,
+    "num_hit_rays": 614,
+    "num_roi_rays": 2183
+  },
+  {
+    "view_id": 153,
+    "file": "view_00153.npz",
+    "camera_pos": [
+      -205.4115727543831,
+      80.13660684227943,
+      -29.82421875
+    ],
+    "num_points": 7834,
+    "num_free": 5974,
+    "num_surface": 620,
+    "num_unknown": 1240,
+    "num_invalid": 0,
+    "num_hit_rays": 620,
+    "num_roi_rays": 2198
+  },
+  {
+    "view_id": 154,
+    "file": "view_00154.npz",
+    "camera_pos": [
+      97.17162474989891,
+      -197.51655757427216,
+      -31.58203125
+    ],
+    "num_points": 8026,
+    "num_free": 6148,
+    "num_surface": 626,
+    "num_unknown": 1252,
+    "num_invalid": 0,
+    "num_hit_rays": 626,
+    "num_roi_rays": 2258
+  },
+  {
+    "view_id": 155,
+    "file": "view_00155.npz",
+    "camera_pos": [
+      61.662738025188446,
+      210.916967689991,
+      -33.33984375
+    ],
+    "num_points": 7737,
+    "num_free": 5865,
+    "num_surface": 624,
+    "num_unknown": 1248,
+    "num_invalid": 0,
+    "num_hit_rays": 624,
+    "num_roi_rays": 2163
+  },
+  {
+    "view_id": 156,
+    "file": "view_00156.npz",
+    "camera_pos": [
+      -187.60351538658142,
+      -113.66681456565857,
+      -35.09765625
+    ],
+    "num_points": 8200,
+    "num_free": 6331,
+    "num_surface": 623,
+    "num_unknown": 1246,
+    "num_invalid": 0,
+    "num_hit_rays": 623,
+    "num_roi_rays": 2318
+  },
+  {
+    "view_id": 157,
+    "file": "view_00157.npz",
+    "camera_pos": [
+      214.71284329891205,
+      -42.82998964190483,
+      -36.85546875
+    ],
+    "num_points": 7637,
+    "num_free": 5762,
+    "num_surface": 625,
+    "num_unknown": 1250,
+    "num_invalid": 0,
+    "num_hit_rays": 625,
+    "num_roi_rays": 2129
+  },
+  {
+    "view_id": 158,
+    "file": "view_00158.npz",
+    "camera_pos": [
+      -129.140867292881,
+      176.27606391906738,
+      -38.61328125
+    ],
+    "num_points": 8327,
+    "num_free": 6461,
+    "num_surface": 622,
+    "num_unknown": 1244,
+    "num_invalid": 0,
+    "num_hit_rays": 622,
+    "num_roi_rays": 2361
+  },
+  {
+    "view_id": 159,
+    "file": "view_00159.npz",
+    "camera_pos": [
+      -23.80043249577284,
+      -216.77772849798203,
+      -40.37109375
+    ],
+    "num_points": 7831,
+    "num_free": 5935,
+    "num_surface": 632,
+    "num_unknown": 1264,
+    "num_invalid": 0,
+    "num_hit_rays": 632,
+    "num_roi_rays": 2189
+  },
+  {
+    "view_id": 160,
+    "file": "view_00160.npz",
+    "camera_pos": [
+      163.63966763019562,
+      143.46897304058075,
+      -42.12890625
+    ],
+    "num_points": 8466,
+    "num_free": 6567,
+    "num_surface": 633,
+    "num_unknown": 1266,
+    "num_invalid": 0,
+    "num_hit_rays": 633,
+    "num_roi_rays": 2400
+  },
+  {
+    "view_id": 161,
+    "file": "view_00161.npz",
+    "camera_pos": [
+      -217.1057626605034,
+      4.737219074741006,
+      -43.88671875
+    ],
+    "num_points": 7949,
+    "num_free": 6056,
+    "num_surface": 631,
+    "num_unknown": 1262,
+    "num_invalid": 0,
+    "num_hit_rays": 631,
+    "num_roi_rays": 2229
+  },
+  {
+    "view_id": 162,
+    "file": "view_00162.npz",
+    "camera_pos": [
+      156.53719156980515,
+      -149.81104284524918,
+      -45.64453125
+    ],
+    "num_points": 8565,
+    "num_free": 6639,
+    "num_surface": 642,
+    "num_unknown": 1284,
+    "num_invalid": 0,
+    "num_hit_rays": 642,
+    "num_roi_rays": 2427
+  },
+  {
+    "view_id": 163,
+    "file": "view_00163.npz",
+    "camera_pos": [
+      -14.196923933923244,
+      215.7067358493805,
+      -47.40234375
+    ],
+    "num_points": 8082,
+    "num_free": 6147,
+    "num_surface": 645,
+    "num_unknown": 1290,
+    "num_invalid": 0,
+    "num_hit_rays": 645,
+    "num_roi_rays": 2264
+  },
+  {
+    "view_id": 164,
+    "file": "view_00164.npz",
+    "camera_pos": [
+      -134.91713851690292,
+      -168.24339777231216,
+      -49.16015625
+    ],
+    "num_points": 8615,
+    "num_free": 6668,
+    "num_surface": 649,
+    "num_unknown": 1298,
+    "num_invalid": 0,
+    "num_hit_rays": 649,
+    "num_roi_rays": 2439
+  },
+  {
+    "view_id": 165,
+    "file": "view_00165.npz",
+    "camera_pos": [
+      212.60591447353363,
+      32.8412052243948,
+      -50.91796875
+    ],
+    "num_points": 8035,
+    "num_free": 6094,
+    "num_surface": 647,
+    "num_unknown": 1294,
+    "num_invalid": 0,
+    "num_hit_rays": 647,
+    "num_roi_rays": 2247
+  },
+  {
+    "view_id": 166,
+    "file": "view_00166.npz",
+    "camera_pos": [
+      -178.49830090999603,
+      119.09384876489639,
+      -52.67578125
+    ],
+    "num_points": 8638,
+    "num_free": 6679,
+    "num_surface": 653,
+    "num_unknown": 1306,
+    "num_invalid": 0,
+    "num_hit_rays": 653,
+    "num_roi_rays": 2444
+  },
+  {
+    "view_id": 167,
+    "file": "view_00167.npz",
+    "camera_pos": [
+      51.0382566601038,
+      -207.84386694431305,
+      -54.43359375
+    ],
+    "num_points": 8125,
+    "num_free": 6148,
+    "num_surface": 659,
+    "num_unknown": 1318,
+    "num_invalid": 0,
+    "num_hit_rays": 659,
+    "num_roi_rays": 2269
+  },
+  {
+    "view_id": 168,
+    "file": "view_00168.npz",
+    "camera_pos": [
+      102.4848259985447,
+      187.22618222236633,
+      -56.19140625
+    ],
+    "num_points": 8635,
+    "num_free": 6622,
+    "num_surface": 671,
+    "num_unknown": 1342,
+    "num_invalid": 0,
+    "num_hit_rays": 671,
+    "num_roi_rays": 2431
+  },
+  {
+    "view_id": 169,
+    "file": "view_00169.npz",
+    "camera_pos": [
+      -201.4759674668312,
+      -68.63559633493423,
+      -57.94921875
+    ],
+    "num_points": 8398,
+    "num_free": 6385,
+    "num_surface": 671,
+    "num_unknown": 1342,
+    "num_invalid": 0,
+    "num_hit_rays": 671,
+    "num_roi_rays": 2352
+  },
+  {
+    "view_id": 170,
+    "file": "view_00170.npz",
+    "camera_pos": [
+      194.36560571193695,
+      -85.24007946252823,
+      -59.70703125
+    ],
+    "num_points": 8590,
+    "num_free": 6568,
+    "num_surface": 674,
+    "num_unknown": 1348,
+    "num_invalid": 0,
+    "num_hit_rays": 674,
+    "num_roi_rays": 2414
+  },
+  {
+    "view_id": 171,
+    "file": "view_00171.npz",
+    "camera_pos": [
+      -85.48701703548431,
+      193.57194006443024,
+      -61.46484375
+    ],
+    "num_points": 8629,
+    "num_free": 6598,
+    "num_surface": 677,
+    "num_unknown": 1354,
+    "num_invalid": 0,
+    "num_hit_rays": 677,
+    "num_roi_rays": 2425
+  },
+  {
+    "view_id": 172,
+    "file": "view_00172.npz",
+    "camera_pos": [
+      -67.51457378268242,
+      -199.86995458602905,
+      -63.22265625
+    ],
+    "num_points": 8510,
+    "num_free": 6473,
+    "num_surface": 679,
+    "num_unknown": 1358,
+    "num_invalid": 0,
+    "num_hit_rays": 679,
+    "num_roi_rays": 2384
+  },
+  {
+    "view_id": 173,
+    "file": "view_00173.npz",
+    "camera_pos": [
+      184.21512097120285,
+      101.45399272441864,
+      -64.98046875
+    ],
+    "num_points": 8826,
+    "num_free": 6765,
+    "num_surface": 687,
+    "num_unknown": 1374,
+    "num_invalid": 0,
+    "num_hit_rays": 687,
+    "num_roi_rays": 2484
+  },
+  {
+    "view_id": 174,
+    "file": "view_00174.npz",
+    "camera_pos": [
+      -203.70786041021347,
+      49.46677386760712,
+      -66.73828125
+    ],
+    "num_points": 8390,
+    "num_free": 6335,
+    "num_surface": 685,
+    "num_unknown": 1370,
+    "num_invalid": 0,
+    "num_hit_rays": 685,
+    "num_roi_rays": 2340
+  },
+  {
+    "view_id": 175,
+    "file": "view_00175.npz",
+    "camera_pos": [
+      116.40689224004745,
+      -173.5016942024231,
+      -68.49609375
+    ],
+    "num_points": 8983,
+    "num_free": 6916,
+    "num_surface": 689,
+    "num_unknown": 1378,
+    "num_invalid": 0,
+    "num_hit_rays": 689,
+    "num_roi_rays": 2535
+  },
+  {
+    "view_id": 176,
+    "file": "view_00176.npz",
+    "camera_pos": [
+      31.257149577140808,
+      205.86345791816711,
+      -70.25390625
+    ],
+    "num_points": 8460,
+    "num_free": 6426,
+    "num_surface": 678,
+    "num_unknown": 1356,
+    "num_invalid": 0,
+    "num_hit_rays": 678,
+    "num_roi_rays": 2368
+  },
+  {
+    "view_id": 177,
+    "file": "view_00177.npz",
+    "camera_pos": [
+      -161.53973937034607,
+      -130.22624999284744,
+      -72.01171875
+    ],
+    "num_points": 9070,
+    "num_free": 6994,
+    "num_surface": 692,
+    "num_unknown": 1384,
+    "num_invalid": 0,
+    "num_hit_rays": 692,
+    "num_roi_rays": 2562
+  },
+  {
+    "view_id": 178,
+    "file": "view_00178.npz",
+    "camera_pos": [
+      206.33650571107864,
+      -13.046669494360685,
+      -73.76953125
+    ],
+    "num_points": 8650,
+    "num_free": 6574,
+    "num_surface": 692,
+    "num_unknown": 1384,
+    "num_invalid": 0,
+    "num_hit_rays": 692,
+    "num_roi_rays": 2422
+  },
+  {
+    "view_id": 179,
+    "file": "view_00179.npz",
+    "camera_pos": [
+      -142.8038254380226,
+      148.44819903373718,
+      -75.52734375
+    ],
+    "num_points": 9179,
+    "num_free": 7079,
+    "num_surface": 700,
+    "num_unknown": 1400,
+    "num_invalid": 0,
+    "num_hit_rays": 700,
+    "num_roi_rays": 2593
+  },
+  {
+    "view_id": 180,
+    "file": "view_00180.npz",
+    "camera_pos": [
+      5.00471955165267,
+      -205.14239966869354,
+      -77.28515625
+    ],
+    "num_points": 8674,
+    "num_free": 6643,
+    "num_surface": 677,
+    "num_unknown": 1354,
+    "num_invalid": 0,
+    "num_hit_rays": 677,
+    "num_roi_rays": 2440
+  },
+  {
+    "view_id": 181,
+    "file": "view_00181.npz",
+    "camera_pos": [
+      134.35577899217606,
+      154.0436491370201,
+      -79.04296875
+    ],
+    "num_points": 9238,
+    "num_free": 7117,
+    "num_surface": 707,
+    "num_unknown": 1414,
+    "num_invalid": 0,
+    "num_hit_rays": 707,
+    "num_roi_rays": 2608
+  },
+  {
+    "view_id": 182,
+    "file": "view_00182.npz",
+    "camera_pos": [
+      -202.31194496154785,
+      -22.73960541933775,
+      -80.80078125
+    ],
+    "num_points": 8736,
+    "num_free": 6630,
+    "num_surface": 702,
+    "num_unknown": 1404,
+    "num_invalid": 0,
+    "num_hit_rays": 702,
+    "num_roi_rays": 2444
+  },
+  {
+    "view_id": 183,
+    "file": "view_00183.npz",
+    "camera_pos": [
+      163.8628676533699,
+      -119.39967423677444,
+      -82.55859375
+    ],
+    "num_points": 9263,
+    "num_free": 7127,
+    "num_surface": 712,
+    "num_unknown": 1424,
+    "num_invalid": 0,
+    "num_hit_rays": 712,
+    "num_roi_rays": 2613
+  },
+  {
+    "view_id": 184,
+    "file": "view_00184.npz",
+    "camera_pos": [
+      -40.00459760427475,
+      197.89108783006668,
+      -84.31640625
+    ],
+    "num_points": 8683,
+    "num_free": 6571,
+    "num_surface": 704,
+    "num_unknown": 1408,
+    "num_invalid": 0,
+    "num_hit_rays": 704,
+    "num_roi_rays": 2425
+  },
+  {
+    "view_id": 185,
+    "file": "view_00185.npz",
+    "camera_pos": [
+      -103.72426137328148,
+      -172.19256162643433,
+      -86.07421875
+    ],
+    "num_points": 9243,
+    "num_free": 7092,
+    "num_surface": 717,
+    "num_unknown": 1434,
+    "num_invalid": 0,
+    "num_hit_rays": 717,
+    "num_roi_rays": 2603
+  },
+  {
+    "view_id": 186,
+    "file": "view_00186.npz",
+    "camera_pos": [
+      191.94048643112183,
+      56.6517747938633,
+      -87.83203125
+    ],
+    "num_points": 8876,
+    "num_free": 6731,
+    "num_surface": 715,
+    "num_unknown": 1430,
+    "num_invalid": 0,
+    "num_hit_rays": 715,
+    "num_roi_rays": 2482
+  },
+  {
+    "view_id": 187,
+    "file": "view_00187.npz",
+    "camera_pos": [
+      -178.97837609052658,
+      87.47974410653114,
+      -89.58984375
+    ],
+    "num_points": 9211,
+    "num_free": 7036,
+    "num_surface": 725,
+    "num_unknown": 1450,
+    "num_invalid": 0,
+    "num_hit_rays": 725,
+    "num_roi_rays": 2587
+  },
+  {
+    "view_id": 188,
+    "file": "view_00188.npz",
+    "camera_pos": [
+      72.5400947034359,
+      -184.53485369682312,
+      -91.34765625
+    ],
+    "num_points": 9100,
+    "num_free": 6925,
+    "num_surface": 725,
+    "num_unknown": 1450,
+    "num_invalid": 0,
+    "num_hit_rays": 725,
+    "num_roi_rays": 2550
+  },
+  {
+    "view_id": 189,
+    "file": "view_00189.npz",
+    "camera_pos": [
+      70.8206981420517,
+      184.18098986148834,
+      -93.10546875
+    ],
+    "num_points": 9118,
+    "num_free": 6934,
+    "num_surface": 728,
+    "num_unknown": 1456,
+    "num_invalid": 0,
+    "num_hit_rays": 728,
+    "num_roi_rays": 2554
+  },
+  {
+    "view_id": 190,
+    "file": "view_00190.npz",
+    "camera_pos": [
+      -175.76227337121964,
+      -87.53675445914268,
+      -94.86328125
+    ],
+    "num_points": 9288,
+    "num_free": 7092,
+    "num_surface": 732,
+    "num_unknown": 1464,
+    "num_invalid": 0,
+    "num_hit_rays": 732,
+    "num_roi_rays": 2608
+  },
+  {
+    "view_id": 191,
+    "file": "view_00191.npz",
+    "camera_pos": [
+      187.77653127908707,
+      -53.904589265584946,
+      -96.62109375
+    ],
+    "num_points": 9007,
+    "num_free": 6823,
+    "num_surface": 728,
+    "num_unknown": 1456,
+    "num_invalid": 0,
+    "num_hit_rays": 728,
+    "num_roi_rays": 2517
+  },
+  {
+    "view_id": 192,
+    "file": "view_00192.npz",
+    "camera_pos": [
+      -101.51840597391129,
+      165.72336852550507,
+      -98.37890625
+    ],
+    "num_points": 9426,
+    "num_free": 7203,
+    "num_surface": 741,
+    "num_unknown": 1482,
+    "num_invalid": 0,
+    "num_hit_rays": 741,
+    "num_roi_rays": 2648
+  },
+  {
+    "view_id": 193,
+    "file": "view_00193.npz",
+    "camera_pos": [
+      -36.89027465879917,
+      -189.75680619478226,
+      -100.13671875
+    ],
+    "num_points": 8986,
+    "num_free": 6820,
+    "num_surface": 722,
+    "num_unknown": 1444,
+    "num_invalid": 0,
+    "num_hit_rays": 722,
+    "num_roi_rays": 2514
+  },
+  {
+    "view_id": 194,
+    "file": "view_00194.npz",
+    "camera_pos": [
+      154.5303225517273,
+      114.37240988016129,
+      -101.89453125
+    ],
+    "num_points": 9544,
+    "num_free": 7324,
+    "num_surface": 740,
+    "num_unknown": 1480,
+    "num_invalid": 0,
+    "num_hit_rays": 740,
+    "num_roi_rays": 2688
+  },
+  {
+    "view_id": 195,
+    "file": "view_00195.npz",
+    "camera_pos": [
+      -190.1293247938156,
+      19.936462305486202,
+      -103.65234375
+    ],
+    "num_points": 9143,
+    "num_free": 6962,
+    "num_surface": 727,
+    "num_unknown": 1454,
+    "num_invalid": 0,
+    "num_hit_rays": 727,
+    "num_roi_rays": 2563
+  },
+  {
+    "view_id": 196,
+    "file": "view_00196.npz",
+    "camera_pos": [
+      125.99786818027496,
+      -142.3057660460472,
+      -105.41015625
+    ],
+    "num_points": 9616,
+    "num_free": 7378,
+    "num_surface": 746,
+    "num_unknown": 1492,
+    "num_invalid": 0,
+    "num_hit_rays": 746,
+    "num_roi_rays": 2708
+  },
+  {
+    "view_id": 197,
+    "file": "view_00197.npz",
+    "camera_pos": [
+      3.2002079067751765,
+      188.91730159521103,
+      -107.16796875
+    ],
+    "num_points": 9179,
+    "num_free": 7043,
+    "num_surface": 712,
+    "num_unknown": 1424,
+    "num_invalid": 0,
+    "num_hit_rays": 712,
+    "num_roi_rays": 2585
+  },
+  {
+    "view_id": 198,
+    "file": "view_00198.npz",
+    "camera_pos": [
+      -129.18169051408768,
+      -136.3066166639328,
+      -108.92578125
+    ],
+    "num_points": 9668,
+    "num_free": 7415,
+    "num_surface": 751,
+    "num_unknown": 1502,
+    "num_invalid": 0,
+    "num_hit_rays": 751,
+    "num_roi_rays": 2722
+  },
+  {
+    "view_id": 199,
+    "file": "view_00199.npz",
+    "camera_pos": [
+      186.15941405296326,
+      13.164616283029318,
+      -110.68359375
+    ],
+    "num_points": 9255,
+    "num_free": 7050,
+    "num_surface": 735,
+    "num_unknown": 1470,
+    "num_invalid": 0,
+    "num_hit_rays": 735,
+    "num_roi_rays": 2595
+  },
+  {
+    "view_id": 200,
+    "file": "view_00200.npz",
+    "camera_pos": [
+      -145.22410333156586,
+      115.29808044433594,
+      -112.44140625
+    ],
+    "num_points": 9691,
+    "num_free": 7426,
+    "num_surface": 755,
+    "num_unknown": 1510,
+    "num_invalid": 0,
+    "num_hit_rays": 755,
+    "num_roi_rays": 2727
+  },
+  {
+    "view_id": 201,
+    "file": "view_00201.npz",
+    "camera_pos": [
+      29.008804634213448,
+      -181.90945386886597,
+      -114.19921875
+    ],
+    "num_points": 9232,
+    "num_free": 7048,
+    "num_surface": 728,
+    "num_unknown": 1456,
+    "num_invalid": 0,
+    "num_hit_rays": 728,
+    "num_roi_rays": 2592
+  },
+  {
+    "view_id": 202,
+    "file": "view_00202.npz",
+    "camera_pos": [
+      100.80169290304184,
+      152.69012600183487,
+      -115.95703125
+    ],
+    "num_points": 9667,
+    "num_free": 7393,
+    "num_surface": 758,
+    "num_unknown": 1516,
+    "num_invalid": 0,
+    "num_hit_rays": 758,
+    "num_roi_rays": 2717
+  },
+  {
+    "view_id": 203,
+    "file": "view_00203.npz",
+    "camera_pos": [
+      -176.23587101697922,
+      -44.18925270438194,
+      -117.71484375
+    ],
+    "num_points": 9188,
+    "num_free": 6953,
+    "num_surface": 745,
+    "num_unknown": 1490,
+    "num_invalid": 0,
+    "num_hit_rays": 745,
+    "num_roi_rays": 2566
+  },
+  {
+    "view_id": 204,
+    "file": "view_00204.npz",
+    "camera_pos": [
+      158.65942239761353,
+      -85.8445756137371,
+      -119.47265625
+    ],
+    "num_points": 9627,
+    "num_free": 7341,
+    "num_surface": 762,
+    "num_unknown": 1524,
+    "num_invalid": 0,
+    "num_hit_rays": 762,
+    "num_roi_rays": 2701
+  },
+  {
+    "view_id": 205,
+    "file": "view_00205.npz",
+    "camera_pos": [
+      -58.570365607738495,
+      169.22107636928558,
+      -121.23046875
+    ],
+    "num_points": 9402,
+    "num_free": 7134,
+    "num_surface": 756,
+    "num_unknown": 1512,
+    "num_invalid": 0,
+    "num_hit_rays": 756,
+    "num_roi_rays": 2630
+  },
+  {
+    "view_id": 206,
+    "file": "view_00206.npz",
+    "camera_pos": [
+      -70.58266550302505,
+      -163.1021797657013,
+      -122.98828125
+    ],
+    "num_points": 9541,
+    "num_free": 7258,
+    "num_surface": 761,
+    "num_unknown": 1522,
+    "num_invalid": 0,
+    "num_hit_rays": 761,
+    "num_roi_rays": 2673
+  },
+  {
+    "view_id": 207,
+    "file": "view_00207.npz",
+    "camera_pos": [
+      160.9607845544815,
+      72.02537208795547,
+      -124.74609375
+    ],
+    "num_points": 9582,
+    "num_free": 7287,
+    "num_surface": 765,
+    "num_unknown": 1530,
+    "num_invalid": 0,
+    "num_hit_rays": 765,
+    "num_roi_rays": 2684
+  },
+  {
+    "view_id": 208,
+    "file": "view_00208.npz",
+    "camera_pos": [
+      -166.00434333086014,
+      55.17427995800972,
+      -126.50390625
+    ],
+    "num_points": 9415,
+    "num_free": 7141,
+    "num_surface": 758,
+    "num_unknown": 1516,
+    "num_invalid": 0,
+    "num_hit_rays": 758,
+    "num_roi_rays": 2633
+  },
+  {
+    "view_id": 209,
+    "file": "view_00209.npz",
+    "camera_pos": [
+      84.4375692307949,
+      -151.5631154179573,
+      -128.26171875
+    ],
+    "num_points": 9710,
+    "num_free": 7403,
+    "num_surface": 769,
+    "num_unknown": 1538,
+    "num_invalid": 0,
+    "num_hit_rays": 769,
+    "num_roi_rays": 2724
+  },
+  {
+    "view_id": 210,
+    "file": "view_00210.npz",
+    "camera_pos": [
+      39.778658375144005,
+      167.36784428358078,
+      -130.01953125
+    ],
+    "num_points": 9355,
+    "num_free": 7099,
+    "num_surface": 752,
+    "num_unknown": 1504,
+    "num_invalid": 0,
+    "num_hit_rays": 752,
+    "num_roi_rays": 2617
+  },
+  {
+    "view_id": 211,
+    "file": "view_00211.npz",
+    "camera_pos": [
+      -141.1475881934166,
+      -95.70145905017853,
+      -131.77734375
+    ],
+    "num_points": 9814,
+    "num_free": 7477,
+    "num_surface": 779,
+    "num_unknown": 1558,
+    "num_invalid": 0,
+    "num_hit_rays": 779,
+    "num_roi_rays": 2752
+  },
+  {
+    "view_id": 212,
+    "file": "view_00212.npz",
+    "camera_pos": [
+      167.21061319112778,
+      -24.554421566426754,
+      -133.53515625
+    ],
+    "num_points": 9500,
+    "num_free": 7256,
+    "num_surface": 748,
+    "num_unknown": 1496,
+    "num_invalid": 0,
+    "num_hit_rays": 748,
+    "num_roi_rays": 2668
+  },
+  {
+    "view_id": 213,
+    "file": "view_00213.npz",
+    "camera_pos": [
+      -105.72383478283882,
+      129.8441156744957,
+      -135.29296875
+    ],
+    "num_points": 9867,
+    "num_free": 7545,
+    "num_surface": 774,
+    "num_unknown": 1548,
+    "num_invalid": 0,
+    "num_hit_rays": 774,
+    "num_roi_rays": 2773
+  },
+  {
+    "view_id": 214,
+    "file": "view_00214.npz",
+    "camera_pos": [
+      -9.658114146441221,
+      -165.5665397644043,
+      -137.05078125
+    ],
+    "num_points": 9587,
+    "num_free": 7325,
+    "num_surface": 754,
+    "num_unknown": 1508,
+    "num_invalid": 0,
+    "num_hit_rays": 754,
+    "num_roi_rays": 2693
+  },
+  {
+    "view_id": 215,
+    "file": "view_00215.npz",
+    "camera_pos": [
+      117.79181063175201,
+      114.42467272281647,
+      -138.80859375
+    ],
+    "num_points": 9914,
+    "num_free": 7571,
+    "num_surface": 781,
+    "num_unknown": 1562,
+    "num_invalid": 0,
+    "num_hit_rays": 781,
+    "num_roi_rays": 2784
+  },
+  {
+    "view_id": 216,
+    "file": "view_00216.npz",
+    "camera_pos": [
+      -162.485271692276,
+      -4.757266491651535,
+      -140.56640625
+    ],
+    "num_points": 9620,
+    "num_free": 7385,
+    "num_surface": 745,
+    "num_unknown": 1490,
+    "num_invalid": 0,
+    "num_hit_rays": 745,
+    "num_roi_rays": 2710
+  },
+  {
+    "view_id": 217,
+    "file": "view_00217.npz",
+    "camera_pos": [
+      121.73798382282257,
+      -105.13778552412987,
+      -142.32421875
+    ],
+    "num_points": 9894,
+    "num_free": 7563,
+    "num_surface": 777,
+    "num_unknown": 1554,
+    "num_invalid": 0,
+    "num_hit_rays": 777,
+    "num_roi_rays": 2780
+  },
+  {
+    "view_id": 218,
+    "file": "view_00218.npz",
+    "camera_pos": [
+      -18.5436699539423,
+      158.0317720770836,
+      -144.08203125
+    ],
+    "num_points": 9602,
+    "num_free": 7349,
+    "num_surface": 751,
+    "num_unknown": 1502,
+    "num_invalid": 0,
+    "num_hit_rays": 751,
+    "num_roi_rays": 2700
+  },
+  {
+    "view_id": 219,
+    "file": "view_00219.npz",
+    "camera_pos": [
+      -92.03589856624603,
+      -127.6124507188797,
+      -145.83984375
+    ],
+    "num_points": 9882,
+    "num_free": 7524,
+    "num_surface": 786,
+    "num_unknown": 1572,
+    "num_invalid": 0,
+    "num_hit_rays": 786,
+    "num_roi_rays": 2770
+  },
+  {
+    "view_id": 220,
+    "file": "view_00220.npz",
+    "camera_pos": [
+      152.2859439253807,
+      31.559330597519875,
+      -147.59765625
+    ],
+    "num_points": 9569,
+    "num_free": 7289,
+    "num_surface": 760,
+    "num_unknown": 1520,
+    "num_invalid": 0,
+    "num_hit_rays": 760,
+    "num_roi_rays": 2683
+  },
+  {
+    "view_id": 221,
+    "file": "view_00221.npz",
+    "camera_pos": [
+      -132.01201111078262,
+      78.64545285701752,
+      -149.35546875
+    ],
+    "num_points": 9832,
+    "num_free": 7486,
+    "num_surface": 782,
+    "num_unknown": 1564,
+    "num_invalid": 0,
+    "num_hit_rays": 782,
+    "num_roi_rays": 2756
+  },
+  {
+    "view_id": 222,
+    "file": "view_00222.npz",
+    "camera_pos": [
+      43.67001727223396,
+      -145.34204006195068,
+      -151.11328125
+    ],
+    "num_points": 9516,
+    "num_free": 7221,
+    "num_surface": 765,
+    "num_unknown": 1530,
+    "num_invalid": 0,
+    "num_hit_rays": 765,
+    "num_roi_rays": 2662
+  },
+  {
+    "view_id": 223,
+    "file": "view_00223.npz",
+    "camera_pos": [
+      65.12990891933441,
+      134.91623997688293,
+      -152.87109375
+    ],
+    "num_points": 9740,
+    "num_free": 7406,
+    "num_surface": 778,
+    "num_unknown": 1556,
+    "num_invalid": 0,
+    "num_hit_rays": 778,
+    "num_roi_rays": 2728
+  },
+  {
+    "view_id": 224,
+    "file": "view_00224.npz",
+    "camera_pos": [
+      -137.3078852891922,
+      -54.750145599246025,
+      -154.62890625
+    ],
+    "num_points": 9641,
+    "num_free": 7316,
+    "num_surface": 775,
+    "num_unknown": 1550,
+    "num_invalid": 0,
+    "num_hit_rays": 775,
+    "num_roi_rays": 2697
+  },
+  {
+    "view_id": 225,
+    "file": "view_00225.npz",
+    "camera_pos": [
+      136.3205373287201,
+      -51.6556341201067,
+      -156.38671875
+    ],
+    "num_points": 9621,
+    "num_free": 7290,
+    "num_surface": 777,
+    "num_unknown": 1554,
+    "num_invalid": 0,
+    "num_hit_rays": 777,
+    "num_roi_rays": 2689
+  },
+  {
+    "view_id": 226,
+    "file": "view_00226.npz",
+    "camera_pos": [
+      -64.6837905049324,
+      128.3042460680008,
+      -158.14453125
+    ],
+    "num_points": 9743,
+    "num_free": 7400,
+    "num_surface": 781,
+    "num_unknown": 1562,
+    "num_invalid": 0,
+    "num_hit_rays": 781,
+    "num_roi_rays": 2727
+  },
+  {
+    "view_id": 227,
+    "file": "view_00227.npz",
+    "camera_pos": [
+      -38.3906789124012,
+      -136.23628914356232,
+      -159.90234375
+    ],
+    "num_points": 9577,
+    "num_free": 7285,
+    "num_surface": 764,
+    "num_unknown": 1528,
+    "num_invalid": 0,
+    "num_hit_rays": 764,
+    "num_roi_rays": 2683
+  },
+  {
+    "view_id": 228,
+    "file": "view_00228.npz",
+    "camera_pos": [
+      118.46390515565872,
+      73.36547076702118,
+      -161.66015625
+    ],
+    "num_points": 9816,
+    "num_free": 7467,
+    "num_surface": 783,
+    "num_unknown": 1566,
+    "num_invalid": 0,
+    "num_hit_rays": 783,
+    "num_roi_rays": 2750
+  },
+  {
+    "view_id": 229,
+    "file": "view_00229.npz",
+    "camera_pos": [
+      -134.69071984291077,
+      25.50372239202261,
+      -163.41796875
+    ],
+    "num_points": 9671,
+    "num_free": 7400,
+    "num_surface": 757,
+    "num_unknown": 1514,
+    "num_invalid": 0,
+    "num_hit_rays": 757,
+    "num_roi_rays": 2719
+  },
+  {
+    "view_id": 230,
+    "file": "view_00230.npz",
+    "camera_pos": [
+      80.7007223367691,
+      -107.93091058731079,
+      -165.17578125
+    ],
+    "num_points": 9838,
+    "num_free": 7492,
+    "num_surface": 782,
+    "num_unknown": 1564,
+    "num_invalid": 0,
+    "num_hit_rays": 782,
+    "num_roi_rays": 2758
+  },
+  {
+    "view_id": 231,
+    "file": "view_00231.npz",
+    "camera_pos": [
+      13.163166213780642,
+      131.72661066055298,
+      -166.93359375
+    ],
+    "num_points": 9719,
+    "num_free": 7475,
+    "num_surface": 748,
+    "num_unknown": 1496,
+    "num_invalid": 0,
+    "num_hit_rays": 748,
+    "num_roi_rays": 2741
+  },
+  {
+    "view_id": 232,
+    "file": "view_00232.npz",
+    "camera_pos": [
+      -96.85969054698944,
+      -86.60639002919197,
+      -168.69140625
+    ],
+    "num_points": 9839,
+    "num_free": 7496,
+    "num_surface": 781,
+    "num_unknown": 1562,
+    "num_invalid": 0,
+    "num_hit_rays": 781,
+    "num_roi_rays": 2759
+  },
+  {
+    "view_id": 233,
+    "file": "view_00233.npz",
+    "camera_pos": [
+      127.40183025598526,
+      -1.5365166356787086,
+      -170.44921875
+    ],
+    "num_points": 9782,
+    "num_free": 7529,
+    "num_surface": 751,
+    "num_unknown": 1502,
+    "num_invalid": 0,
+    "num_hit_rays": 751,
+    "num_roi_rays": 2760
+  },
+  {
+    "view_id": 234,
+    "file": "view_00234.npz",
+    "camera_pos": [
+      -91.01049676537514,
+      85.41438281536102,
+      -172.20703125
+    ],
+    "num_points": 9829,
+    "num_free": 7465,
+    "num_surface": 788,
+    "num_unknown": 1576,
+    "num_invalid": 0,
+    "num_hit_rays": 788,
+    "num_roi_rays": 2751
+  },
+  {
+    "view_id": 235,
+    "file": "view_00235.npz",
+    "camera_pos": [
+      9.209816437214613,
+      -121.78861051797867,
+      -173.96484375
+    ],
+    "num_points": 9707,
+    "num_free": 7490,
+    "num_surface": 739,
+    "num_unknown": 1478,
+    "num_invalid": 0,
+    "num_hit_rays": 739,
+    "num_roi_rays": 2743
+  },
+  {
+    "view_id": 236,
+    "file": "view_00236.npz",
+    "camera_pos": [
+      73.76822456717491,
+      93.85156631469727,
+      -175.72265625
+    ],
+    "num_points": 9758,
+    "num_free": 7424,
+    "num_surface": 778,
+    "num_unknown": 1556,
+    "num_invalid": 0,
+    "num_hit_rays": 778,
+    "num_roi_rays": 2734
+  },
+  {
+    "view_id": 237,
+    "file": "view_00237.npz",
+    "camera_pos": [
+      -114.97251391410828,
+      -18.910063058137894,
+      -177.48046875
+    ],
+    "num_points": 9676,
+    "num_free": 7438,
+    "num_surface": 746,
+    "num_unknown": 1492,
+    "num_invalid": 0,
+    "num_hit_rays": 746,
+    "num_roi_rays": 2728
+  },
+  {
+    "view_id": 238,
+    "file": "view_00238.npz",
+    "camera_pos": [
+      95.07712125778198,
+      -62.10339814424515,
+      -179.23828125
+    ],
+    "num_points": 9663,
+    "num_free": 7350,
+    "num_surface": 771,
+    "num_unknown": 1542,
+    "num_invalid": 0,
+    "num_hit_rays": 771,
+    "num_roi_rays": 2707
+  },
+  {
+    "view_id": 239,
+    "file": "view_00239.npz",
+    "camera_pos": [
+      -27.39761509001255,
+      107.05093145370483,
+      -180.99609375
+    ],
+    "num_points": 9620,
+    "num_free": 7385,
+    "num_surface": 745,
+    "num_unknown": 1490,
+    "num_invalid": 0,
+    "num_hit_rays": 745,
+    "num_roi_rays": 2710
+  },
+  {
+    "view_id": 240,
+    "file": "view_00240.npz",
+    "camera_pos": [
+      -50.611285865306854,
+      -94.64084655046463,
+      -182.75390625
+    ],
+    "num_points": 9536,
+    "num_free": 7256,
+    "num_surface": 760,
+    "num_unknown": 1520,
+    "num_invalid": 0,
+    "num_hit_rays": 760,
+    "num_roi_rays": 2672
+  },
+  {
+    "view_id": 241,
+    "file": "view_00241.npz",
+    "camera_pos": [
+      98.13102409243584,
+      34.501831233501434,
+      -184.51171875
+    ],
+    "num_points": 9540,
+    "num_free": 7308,
+    "num_surface": 744,
+    "num_unknown": 1488,
+    "num_invalid": 0,
+    "num_hit_rays": 744,
+    "num_roi_rays": 2684
+  },
+  {
+    "view_id": 242,
+    "file": "view_00242.npz",
+    "camera_pos": [
+      -92.49762743711472,
+      39.493851363658905,
+      -186.26953125
+    ],
+    "num_points": 9485,
+    "num_free": 7241,
+    "num_surface": 748,
+    "num_unknown": 1496,
+    "num_invalid": 0,
+    "num_hit_rays": 748,
+    "num_roi_rays": 2663
+  },
+  {
+    "view_id": 243,
+    "file": "view_00243.npz",
+    "camera_pos": [
+      40.041836723685265,
+      -88.32637667655945,
+      -188.02734375
+    ],
+    "num_points": 9418,
+    "num_free": 7198,
+    "num_surface": 740,
+    "num_unknown": 1480,
+    "num_invalid": 0,
+    "num_hit_rays": 740,
+    "num_roi_rays": 2646
+  },
+  {
+    "view_id": 244,
+    "file": "view_00244.npz",
+    "camera_pos": [
+      28.96665707230568,
+      88.59442993998528,
+      -189.78515625
+    ],
+    "num_points": 9500,
+    "num_free": 7301,
+    "num_surface": 733,
+    "num_unknown": 1466,
+    "num_invalid": 0,
+    "num_hit_rays": 733,
+    "num_roi_rays": 2678
+  },
+  {
+    "view_id": 245,
+    "file": "view_00245.npz",
+    "camera_pos": [
+      -77.75141894817352,
+      -43.81459504365921,
+      -191.54296875
+    ],
+    "num_points": 9342,
+    "num_free": 7119,
+    "num_surface": 741,
+    "num_unknown": 1482,
+    "num_invalid": 0,
+    "num_hit_rays": 741,
+    "num_roi_rays": 2620
+  },
+  {
+    "view_id": 246,
+    "file": "view_00246.npz",
+    "camera_pos": [
+      82.85306766629219,
+      -19.265336729586124,
+      -193.30078125
+    ],
+    "num_points": 9495,
+    "num_free": 7335,
+    "num_surface": 720,
+    "num_unknown": 1440,
+    "num_invalid": 0,
+    "num_hit_rays": 720,
+    "num_roi_rays": 2685
+  },
+  {
+    "view_id": 247,
+    "file": "view_00247.npz",
+    "camera_pos": [
+      -45.57102620601654,
+      66.51066988706589,
+      -195.05859375
+    ],
+    "num_points": 9252,
+    "num_free": 7065,
+    "num_surface": 729,
+    "num_unknown": 1458,
+    "num_invalid": 0,
+    "num_hit_rays": 729,
+    "num_roi_rays": 2598
+  },
+  {
+    "view_id": 248,
+    "file": "view_00248.npz",
+    "camera_pos": [
+      -10.659128800034523,
+      -75.13450160622597,
+      -196.81640625
+    ],
+    "num_points": 9445,
+    "num_free": 7342,
+    "num_surface": 701,
+    "num_unknown": 1402,
+    "num_invalid": 0,
+    "num_hit_rays": 701,
+    "num_roi_rays": 2681
+  },
+  {
+    "view_id": 249,
+    "file": "view_00249.npz",
+    "camera_pos": [
+      54.67479228973389,
+      44.963542744517326,
+      -198.57421875
+    ],
+    "num_points": 9096,
+    "num_free": 6963,
+    "num_surface": 711,
+    "num_unknown": 1422,
+    "num_invalid": 0,
+    "num_hit_rays": 711,
+    "num_roi_rays": 2558
+  },
+  {
+    "view_id": 250,
+    "file": "view_00250.npz",
+    "camera_pos": [
+      -65.15361294150352,
+      3.48182141315192,
+      -200.33203125
+    ],
+    "num_points": 9381,
+    "num_free": 7302,
+    "num_surface": 693,
+    "num_unknown": 1386,
+    "num_invalid": 0,
+    "num_hit_rays": 693,
+    "num_roi_rays": 2665
+  },
+  {
+    "view_id": 251,
+    "file": "view_00251.npz",
+    "camera_pos": [
+      41.41084961593151,
+      -42.215415090322495,
+      -202.08984375
+    ],
+    "num_points": 8955,
+    "num_free": 6885,
+    "num_surface": 690,
+    "num_unknown": 1380,
+    "num_invalid": 0,
+    "num_hit_rays": 690,
+    "num_roi_rays": 2525
+  },
+  {
+    "view_id": 252,
+    "file": "view_00252.npz",
+    "camera_pos": [
+      -1.7840996151790023,
+      52.225667238235474,
+      -203.84765625
+    ],
+    "num_points": 9215,
+    "num_free": 7187,
+    "num_surface": 676,
+    "num_unknown": 1352,
+    "num_invalid": 0,
+    "num_hit_rays": 676,
+    "num_roi_rays": 2621
+  },
+  {
+    "view_id": 253,
+    "file": "view_00253.npz",
+    "camera_pos": [
+      -28.760240972042084,
+      -33.63146781921387,
+      -205.60546875
+    ],
+    "num_points": 9122,
+    "num_free": 7130,
+    "num_surface": 664,
+    "num_unknown": 1328,
+    "num_invalid": 0,
+    "num_hit_rays": 664,
+    "num_roi_rays": 2598
+  },
+  {
+    "view_id": 254,
+    "file": "view_00254.npz",
+    "camera_pos": [
+      34.09092016518116,
+      4.1689700447022915,
+      -207.36328125
+    ],
+    "num_points": 9178,
+    "num_free": 7228,
+    "num_surface": 650,
+    "num_unknown": 1300,
+    "num_invalid": 0,
+    "num_hit_rays": 650,
+    "num_roi_rays": 2626
+  },
+  {
+    "view_id": 255,
+    "file": "view_00255.npz",
+    "camera_pos": [
+      -16.170743107795715,
+      11.543068382889032,
+      -209.12109375
+    ],
+    "num_points": 9130,
+    "num_free": 7315,
+    "num_surface": 605,
+    "num_unknown": 1210,
+    "num_invalid": 0,
+    "num_hit_rays": 605,
+    "num_roi_rays": 2640
+  }
+]
