@@ -1,0 +1,41 @@
+# Project data and generated artifacts
+/data/
+/realsense_captures/
+/detector_benchmark_results/
+/detector_testset_report_results/
+/registration_results/
+/ext_scale_diagnostics/
+/scale_experiments/
+
+# Local models and caches
+/.models/
+/.cache/
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*.nbc
+*.nbi
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+/.conda/
+.venv/
+venv/
+env/
+
+# IDE and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
