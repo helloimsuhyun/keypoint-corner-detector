@@ -1,0 +1,160 @@
+{
+  "seeds": 20,
+  "conditions": {
+    "base": [
+      3.0,
+      0.12
+    ],
+    "noisy": [
+      3.0,
+      0.5
+    ],
+    "sparse": [
+      6.0,
+      0.12
+    ]
+  },
+  "scenes": [
+    "one_face",
+    "two_faces",
+    "three_faces",
+    "same_object_two_corners",
+    "separated_objects",
+    "unequal_sizes",
+    "gap_5",
+    "gap_10",
+    "gap_20",
+    "touching_objects",
+    "plane_interior",
+    "straight_boundary",
+    "concave_notch",
+    "box_ground",
+    "hidden_small_object",
+    "partial_rgbd"
+  ],
+  "cpu": "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics",
+  "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.35",
+  "numpy_version": "1.21.5",
+  "threadpools": [
+    {
+      "user_api": "blas",
+      "internal_api": "openblas",
+      "num_threads": 1,
+      "prefix": "libopenblas",
+      "filepath": "/usr/lib/x86_64-linux-gnu/openblas-pthread/libopenblasp-r0.3.20.so",
+      "version": "0.3.20",
+      "threading_layer": "pthreads",
+      "architecture": "Zen"
+    },
+    {
+      "user_api": "openmp",
+      "internal_api": "openmp",
+      "num_threads": 16,
+      "prefix": "libgomp",
+      "filepath": "/usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0",
+      "version": null
+    }
+  ],
+  "thread_environment": {
+    "OMP_NUM_THREADS": null,
+    "OPENBLAS_NUM_THREADS": null,
+    "MKL_NUM_THREADS": null
+  },
+  "ced_config": {
+    "voxel_3d_mm": 10.0,
+    "min_neighbors": 6,
+    "show_3d": false,
+    "centroid_radius_mm": 80.0,
+    "bilateral_sigma_spatial_mm": 40.0,
+    "bilateral_sigma_ced": 0.05,
+    "bilateral_radius_mm": 80.0,
+    "pca_radius_factor": 1.5,
+    "pca_radius_mm": 120.0,
+    "pca_ratio_saturation_tau": 0.5,
+    "fusion_threshold_mode": "global_mean",
+    "fusion_score_threshold": 0.1,
+    "nms_radius_mm": 50,
+    "validator": null
+  },
+  "variants": {
+    "A": {
+      "radii_mm": [
+        30.0
+      ],
+      "padding_mm": 0,
+      "directions": 256,
+      "object_clustering": false,
+      "cluster_radius_mm": 4.5,
+      "nms_radius_mm": 5.0,
+      "nms_method": "local_maximum",
+      "min_vote_fraction": 0.04
+    },
+    "B": {
+      "radii_mm": [
+        30.0
+      ],
+      "padding_mm": 10.0,
+      "directions": 256,
+      "object_clustering": false,
+      "cluster_radius_mm": 4.5,
+      "nms_radius_mm": 5.0,
+      "nms_method": "local_maximum",
+      "min_vote_fraction": 0.04
+    },
+    "C": {
+      "radii_mm": [
+        30.0
+      ],
+      "padding_mm": 10.0,
+      "directions": 256,
+      "object_clustering": true,
+      "cluster_radius_mm": 4.5,
+      "nms_radius_mm": 5.0,
+      "nms_method": "local_maximum",
+      "min_vote_fraction": 0.04
+    },
+    "D": {
+      "radii_mm": [
+        12.0,
+        30.0
+      ],
+      "padding_mm": 10.0,
+      "directions": 256,
+      "object_clustering": true,
+      "cluster_radius_mm": 4.5,
+      "nms_radius_mm": 5.0,
+      "nms_method": "local_maximum",
+      "min_vote_fraction": 0.04
+    },
+    "C_oracle": {
+      "radii_mm": [
+        30.0
+      ],
+      "padding_mm": 10.0,
+      "directions": 256,
+      "object_clustering": true,
+      "cluster_radius_mm": 4.5,
+      "nms_radius_mm": 5.0,
+      "nms_method": "local_maximum",
+      "min_vote_fraction": 0.04
+    },
+    "D_oracle": {
+      "radii_mm": [
+        12.0,
+        30.0
+      ],
+      "padding_mm": 10.0,
+      "directions": 256,
+      "object_clustering": true,
+      "cluster_radius_mm": 4.5,
+      "nms_radius_mm": 5.0,
+      "nms_method": "local_maximum",
+      "min_vote_fraction": 0.04
+    }
+  },
+  "matching_tolerance_mm": 5,
+  "timing_excludes": "generation, I/O, visualization, metrics",
+  "query_provenance": "CED NMS indices reused verbatim; GT-near queries are nearest voxel to fixed focus",
+  "repeatability": "1:1 matches to seed 0 / min(candidate counts); seed 0 and empty sets excluded",
+  "aggregation": "No cross-query vote aggregation; scene metrics only deduplicate identical raw point IDs"
+}

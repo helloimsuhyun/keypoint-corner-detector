@@ -1,0 +1,29 @@
+{
+  "scene": "one_face",
+  "noise_mm": 0,
+  "query_index": 52,
+  "query_xyz_mm": [
+    6.0,
+    6.0,
+    0.0
+  ],
+  "config": {
+    "radii_mm": [
+      30.0
+    ],
+    "padding_mm": 10.0,
+    "directions": 256,
+    "object_clustering": true,
+    "cluster_radius_mm": 4.5,
+    "nms_radius_mm": 5.0,
+    "nms_method": "local_maximum",
+    "min_vote_fraction": 0.002,
+    "voting_mode": "soft_partition",
+    "soft_tau_mm": 0.25,
+    "soft_alpha": 4.0,
+    "voting_dtype": "float64"
+  },
+  "query_source": "gt_near (isolated diagnostic preview; not a CED-produced query)",
+  "scope": "One noiseless single-face scene; no general FP filtering claim",
+  "display": "Linear 0..point maximum normalized contribution; zero=gray; selectable Q99 binary mode"
+}

@@ -1,0 +1,5 @@
+scene,sigma_mm,dtype,max_threshold_error_mm
+one_face,0.0,float64,0.0
+one_face,0.0,float32,0.0
+one_face,0.2,float64,0.0
+one_face,0.2,float32,0.0
