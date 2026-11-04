@@ -15,7 +15,9 @@ preprocessing -> organized RGB-D / voxel scene-index adapter
 query_debug -> validator_pipeline + visualization.manager
 dense_heatmap -> edge_suppression + candidate_extraction + validator_pipeline
 validator_pipeline -> cornervins_plane_extraction + plane_edge_graph_pipeline + refiner
-validator_pipeline (validator experiment) -> validator_fine + guided_ransac
+validator_pipeline (validator experiment) -> query-local raw crop/voxel + guided_ransac
+validator_pipeline (guided geometry) -> validator_plane_support + validator_edge_graph + validator_corner_graph
+runner -> total -> dense_heatmap + validator_pipeline.run_validator_candidates
 plane_edge_graph_pipeline -> corner_2d + boundary_support + line_refinement_2d
 visualization.manager -> visualization.plots + visualization.view3d
 ```
@@ -27,8 +29,7 @@ validator screens are opened through `visualization.manager`.
 
 `extremity256` calls the existing dense CED/bilateral/PCA/threshold/NMS composition
 with identical detector settings, then supplies those exact NMS indices to
-`extremity.refine_ced_candidates`. The existing `detector` mode and its validator
-composition are unchanged. This new stage is not a replacement candidate
+`extremity.refine_ced_candidates`. Detector scores/NMS are shared; CLI `detector` now stops at NMS, while explicit library validation remains available. This new stage is not a replacement candidate
 generator. It creates no FPS queries, moves no input query and aggregates no
 votes across queries. Each query can produce zero, one or many hypotheses.
 
@@ -123,103 +124,228 @@ coordinate averages, or query generation. `soft_voting_benchmark.py` reuses
 the existing CED functions and synthetic geometry to compare modes on identical
 inputs; it routes all research plots through `visualization.manager`.
 
-## Coarse-to-fine guided validator (`--mode validator`)
+## Whole-scene total mode (`--mode total`)
 
-`validator_query.prepare_validator_queries` keeps the existing Coarse detector
-composition and numerical settings: CED → bilateral CED → weighted PCA/Fusion →
-radius-local-maximum NMS. Its cached Fusion heatmap remains the overview.
-No query-local work runs before a Coarse query is selected.
+`total.run_total_mode` composes the unchanged dense detector/NMS and the existing
+guided batch entry point. Every NMS scene ID calls `run_validator_pipeline` with
+the same guided settings and an unchanged seed coordinate. Only ACCEPT results
+contribute their existing selected Corner and `corner_edges`; there is at most
+one selected Corner per seed. No scene-wide refit, cross-query merge, additional
+NMS or altered geometric threshold is introduced. Local Edge/Vertex IDs are
+qualified by their Coarse `query_index` in aggregate records.
 
-`validator_pipeline.run_validator_pipeline` dispatches `ValidatorDetectorConfig`
-to `validator_fine.find_fine_queries`, followed by
-`guided_ransac.extract_guided_planes`. The existing fine/detector composition
-still receives `ValidatorConfig` and is unchanged. The former anchored extractor
-and anchored-only configuration/CLI fields are removed.
+Reuse one validated raw/Coarse KD-tree context across detector scoring, NMS and
+all queries. Core and halo are still cropped/voxelized independently for every
+query; no global voxel substitution or RANSAC sampling change is allowed.
+`include_debug=False` skips only the core-only Before/After comparison, marks it
+uncomputed, and makes guided batch records compact instead of retaining each
+query's support clouds and diagnostic graphs. Keep final coordinates, active
+intervals, contributor provenance, status, errors and timings. The last local
+voxel cloud alone stays in the shared cache. Identity-equal scene arrays avoid
+a redundant full equality comparison; shape/finite/index checks remain.
+Total preprocessing skips the organized pixel-to-scene mapping, which this
+guided path does not use. Dense candidate logs are suppressed; summary/progress
+and stage timings remain. These changes remove work without modifying the
+selected-query validator's default debug behavior.
 
-`validator_fine.py` owns Fine-voxel evaluation/support indexing and composition,
-calling the unchanged dense CED/bilateral/PCA/Fusion scorer on a complete support
-halo. Its radius is the Fine search radius plus the larger PCA/bilateral radius
-plus the Fine CED radius. Only scores inside the search ball enter threshold/NMS;
-outer support ensures the same neighborhoods as a full Fine-voxel-cloud evaluation.
-Fine CED, minimum neighbors, PCA radius/saturation, bilateral radius/spatial
-sigma/range sigma, Fusion threshold mode/value and NMS method/radius have their
-own `validator_fine_*` settings. Fine uses none of the Coarse scoring/threshold
-settings. `fine_nms_method` chooses Greedy (default) or the existing local-maximum
-extractor; neither changes the Coarse NMS implementation.
-Fine threshold modes are fixed, global-mean and peak-relative (default).
-Peak-relative uses max(the configured absolute threshold, a configured ratio
-times the maximum finite valid Fusion score inside the Fine evaluation ball).
-The ratio defaults to 0.5; the absolute floor remains 0.10. Eligibility stays
-strictly above the resolved threshold; empty or zero-score support adds no
-candidates. This changes only Fine eligibility, not scores or NMS geometry.
+Manager owns exactly two result windows: (1) Fusion heatmap using the existing
+full-scene valid mask, linear Q99 colour range and detector NMS markers; (2) the
+original gray raw scene with accepted final Corners in red, Boundary contributors
+in green and shared intersection contributors in cyan. Actually used extension
+is yellow dashed and residual links are thin gray. Render contributors only
+over retained active intervals. At a 5 mm validator voxel, Edge bars have radius
+0.75 mm and Corner markers radius 4 mm (twice the original total-view radius).
+Batch meshes by colour instead of one
+draw call per Edge/Corner. View creation is in `view3d`; `query_ui` owns R for
+recapture and Q/Esc for closing both views. There is no Tk query picker, RGB
+auxiliary window, or validator debug window in total mode. `--no-3d-view` keeps
+computation and console output. `--no-validator-geometry` is rejected for total.
+Mode entry points remain; total shares the guided Corner refinement/ranking
+policy described below with the interactive validator.
 
-The nearest Fine NMS voxel point is highlighted by default. In the interactive
-3-D flow, Coarse selection stops after Fine scoring/NMS, and a Fine click starts
-RANSAC. The three panels show Coarse heatmap/NMS, Fine heatmap/NMS, and plane
-fitting in order. No candidates means an explicit unchanged-Coarse fallback
-that still runs RANSAC. Selecting another Fine point reuses Fine scores and
-reruns only RANSAC. Headless and default library calls keep automatic nearest-Fine
-selection and the full pipeline. `validator_query`
-caches stage voxel clouds/KD-trees per frame and the current Coarse query's Fine result.
+## Coarse-query guided validator (`--mode validator`)
 
-`guided_ransac.py` owns the independent Fine-centred RANSAC-voxel ROI and Sequential
-RANSAC. Only the first of three distinct samples has Gaussian distance-biased
-probability; the other two are uniform. Planes are not constrained through the
-query. Rank by inlier count, then RMS, and hard-remove accepted support. Minimum
-support is fixed using the original ROI count for all extraction rounds. There
-are no weights in the support score, normal-angle gates, refits, reassignment or
-plane/edge/corner refinement. Full formulas/defaults are in PIPELINE_METHODS.
+`validator_query.prepare_validator_queries` reuses the unchanged detector
+CED/bilateral/PCA/Fusion/threshold/NMS composition. Only an existing Coarse NMS
+scene ID can be selected. `run_validator_pipeline` dispatches
+`ValidatorDetectorConfig` directly to raw query-radius cropping, local voxelization,
+`guided_ransac.extract_guided_planes`, and geometry composition. The independent
+`ValidatorConfig` / `--mode fine` organized AHC/Hough/refiner path is unchanged.
 
-`settings.py` exposes independent `validator_fine_voxel_mm` and
-`validator_ransac_voxel_mm` (current defaults 5 and 10 mm). Fine `*_x` lengths multiply the
-Fine voxel; RANSAC `*_x` lengths multiply the RANSAC voxel. Defaults preserve
-45/17.5/15 mm Fine search/CED/NMS and 60/5/10 mm RANSAC radius/threshold/sigma.
-Fine PCA radius, bilateral radius and spatial sigma default to 22.5/15/7.5 mm.
-Each has its
-own Fine-voxel multiplier. The normalized-CED range sigma, PCA ratio saturation
-and Fusion threshold/peak-relative ratio are dimensionless; minimum neighbors is an integer.
-Counts, ratios and seed do not scale. Configs passed to numerical functions store
-resolved mm fields. The CLI length flags now end in `-x`.
+There is no guided Fine scoring/NMS/Top-K, query relocation, fallback or second
+click. All `validator_fine_*` settings and `fine_*` result/cache/picker fields are
+removed. The original Coarse coordinate centers every subsequent stage.
+`validator_ransac_radius_x * validator_ransac_voxel_mm` defines the inclusive raw
+core crop; apply the existing downsampler only after this crop. Matching Coarse
+and local voxel sizes never causes Coarse-cloud reuse.
 
-`prepare_validator_voxel_context` builds each stage cloud from the full input
-using the existing voxel downsampler. Equal voxel sizes share a cloud and tree;
-a size equal to the Coarse voxel reuses the supplied scene. No Fine/RANSAC score,
-fit or support count uses the pre-voxel raw cloud. Source samples are used only
-to construct new voxel clouds. `validator_query` caches this context per frame.
+For geometry, crop the disjoint raw shell out to
+core radius + absolute `roi_padding_mm` (default 10 mm) and voxelize it
+independently. The combined native cloud stores core first,
+halo second. Only core voxels enter RANSAC; geometry reads both. Separate grids
+can have nearby samples at their interface and never mix outside raw points
+into core centroids. This intentionally changes sampling from the former
+full-scene stage voxelization, preserving the RANSAC and geometry formulas.
 
-The public `query_index` remains a Coarse scene ID. Fine selection uses
-`fine_query_index`/`candidate_fine_indices` in the Fine voxel cloud; RANSAC support
-uses `roi_ransac_indices`/`inlier_ransac_indices` in the RANSAC voxel cloud. Plane
-masks index the stored RANSAC ROI. A nearest-Coarse adapter provides
-`fine_query_scene_index`, Fine `*_scene_indices`, and the public
-`roi_point_indices`/`inlier_point_indices` in the original supplied scene space.
-Adapters can be many-to-one; positions and counts stay native to each stage.
-There is no implicit interchange of these IDs or change to other mode contracts.
+`prepare_validator_voxel_context` caches raw/Coarse trees per frame and only the
+last query-local voxel cloud. Cache keys include query ID/coordinate, voxel,
+core and support radii. `query_index` remains a Coarse scene ID, native
+`*_ransac_indices` address result `ransac_points_mm`, and `ransac_scene_indices`
+supplies nearest-Coarse adapters. Counts/masks use native points; adapters may be
+many-to-one. `roi_raw_point_indices` records the original raw core crop.
+Local IDs cannot be reused across queries. The query coordinate need not be a
+local voxel centroid. All lengths are mm; validator `*_x` lengths multiply the
+RANSAC voxel, while absolute mm settings, counts, ratios and angles do not.
 
-The existing manager-owned Open3D worker/lifecycle now has three labeled native
-panels: (1) cached Coarse Fusion heatmap and orange NMS markers, (2) the stored
-Fine evaluation-point Fusion heatmap and yellow NMS markers, and (3) gray RANSAC-voxel
-ROI/outliers and RGB planes/inliers/normals after a Fine click. Fine colors use
-the same valid mask, linear valid-score Q99 range and shared color function as
-Coarse. The nearest/selected Fine query is red in panel 2; panel 3 also retains
-the red Fine sphere, orange Coarse marker and RANSAC wire sphere.
+The main view shows (1) unchanged detector Fusion colors/NMS, (2) stored gray
+query-local voxel input with radius/voxel/raw→voxel counts, and (3) fitted planes.
+Validator performs numerical work for only the selected existing Coarse NMS
+query. There is no automatic scene-wide query traversal. Coarse
+selection calls the canonical query pipeline; panel 2 is inspection only.
+Window 5 shows pair intersections. Window 4 shows padded Hull, ROI clipping,
+TLS endpoint provenance and core-only Before / padded After comparison,
+replacing the former individual-plane Boundary window. Window 6 is last and contains
+four panels for the same selected query: original per-plane/shared edges,
+overlap masking, actual extension/vertex-LS diagnostics, and the final selected
+Corner with only its contributing Edges on the original raw cloud.
+There is no window 7. All three auxiliary windows show only that same query.
+All visualization stays manager-owned and reads stored numerical results.
 
-`run_validator_pipeline(stop_after_fine=True)` returns `planes_computed=False`
-when Fine candidates exist. `validator_query` uses this stop only for interactive
-Coarse selection; a Fine click, default library calls and headless calls run the
-full pipeline. A new Coarse selection clears previous fits; Fine reselection
-preserves Coarse/Fine heatmap geometry and their cameras, replacing only the red
-Fine marker and plane result. A computed zero-plane result remains distinct from
-an uncomputed fit. Fine picking occurs only in panel 2 and returns (Coarse scene
-ID, Fine voxel ID), so stale clicks can be ignored. Disk geometry remains the
-plane/ROI-sphere intersection; material/visibility and all numeric settings are
-unchanged. R/Q/Esc work in all three native panels.
+## Guided geometry validation after RANSAC
 
-Run `python3 -m corner_detector --mode validator --source stl --input
-/path/to/model.stl` on one shell line. Click an orange Coarse query in panel 1,
-then a yellow Fine NMS query in panel 2 to fit planes in panel 3. Scroll to zoom
-and drag to rotate. `--no-3d-view` retains automatic nearest-Fine selection for
-RGB/depth Coarse clicks.
+`--mode validator` now continues from the unchanged fitted planes through
+`validator_plane_support.reconstruct_plane_support`,
+`validator_edge_graph.build_validator_edge_graph`, and
+`validator_corner_graph.reconstruct_validator_corners`. The shared pipeline owns
+composition; the existing fine-mode AHC/Hough/refiner path is unchanged.
+
+Support is recollected independently for every fitted model out to
+core radius + padding. The sole padding setting is absolute
+`validator_roi_padding_mm=10.0`, yielding 85 mm support for the 75 mm core.
+The former support-radius floor, voxel padding and contact-margin controls are
+removed. The configured strict residual gate is
+reused, including points removed by sequential RANSAC. Memberships can overlap.
+Disconnected coplanar components are never hulled together: a component with
+original core support nearest the Coarse query is selected. Multiple competing
+components near the query, missing anchored support, or degenerate hulls remain
+UNKNOWN. RANSAC normals, offsets and original inlier arrays are retained.
+
+Each patch owns tangent coordinates, convex hull, selected and recollected
+native RANSAC IDs, connectivity diagnostics and area. Finite plane-pair edges
+use a general least-squares intersection clipped against both hulls. Boundary
+candidates come from consecutive hull segments, with conservative collinear
+coalescing. Edge point-distance/count validation is removed; finite candidates
+clip each original padded Hull segment against the exact plane/core-circle
+before TLS and apply the existing finite-edge minimum length. Both-exterior
+segments crossing the core remain; no ROI-circumference edge is created. Original
+interior Hull Nodes are ACTIVE; crop-created Nodes remain INACTIVE through TLS
+endpoint inheritance and cannot be Corner evidence or extrapolation origins.
+Inactive-ended Lines still provide interior geometry. Groups require a shared
+Node ID and cannot bridge separated chains. Original endpoint metadata, fitted
+coordinates, source Hull Edge IDs and maximum TLS residual remain separate.
+Fitted extrema are re-clipped when needed without promoting inactive states.
+Final vertices also require core membership. `boundary_debug` stores every stage.
+Long unobserved intervals are no longer rejected by edge-support evidence. Duplicate edges need same type/plane IDs,
+compatible direction, line distance and positive interval overlap; no missing
+interval is filled. Plane-pair adjacency is stored explicitly. After deduplication,
+intersection-aligned, nearby overlapping boundary ranges are union-masked in their
+original TLS parameter space. `all_edges` retains original endpoints/directions,
+masks and inactive records; `edges` contains only active sources. Cut endpoints
+are not vertex observations and cannot be extrapolation origins.
+
+Active-edge closest-point candidates use an intersection anchor when present,
+with complete 5 mm anchor-span grouping. A single intersection constrains the
+vertex LS solution to its finite line; multiple intersections use 3-D multi-line
+LS. Boundary–boundary midpoints initialize candidates, while all incident
+Boundary Lines participate in the final 3-D LS fit and every group-merge refit.
+Same-plane pairs still
+require a common ACTIVE endpoint that survives masking on both Lines. Nonadjacent
+pairs and absorbed internal Nodes cannot create same-plane Corners. Every refined
+position is rechecked against one line-distance threshold, active finite extents,
+one absolute-mm endpoint tolerance and the unchanged Coarse query corner gate.
+`corner_min_edge_angle_deg` alone gates candidate angles; `vertex_group_span_mm`
+alone controls candidate grouping. Duplicate parallel-angle and voxel-scaled
+corner endpoint controls were removed, without changing the current effective
+30-degree / 5 mm line / 5 mm extension / 5 mm group / 10 mm query gates. Groups merge only
+with shared edges and complete member-position compatibility. No point-support
+checks are reintroduced. Original planes, TLS lines and hulls stay unchanged.
+
+Only accepted vertices inside the unchanged core and query gate enter final
+selection. Prefer shared-intersection contributors, then lower perpendicular
+Line RMS, lower total endpoint extension, query distance and stable vertex ID.
+Boundary-only vertices are a fallback when no shared-intersection candidate
+passes the gates. Per-vertex `intersection_edge_count`, `line_fit_rms_mm` and
+`total_extension_mm` expose these criteria. Ranking-only RMS/extension values
+are rounded to 1e-8 mm to ignore machine roundoff. This is separate from the
+existing finite-segment distance acceptance checks. Defaults are 5 mm Line
+distance, 5 mm endpoint tolerance, 5 mm group span and 10 mm query gate, narrowed
+from the experimental 30/30/30/50 mm settings. No point-support validation or
+new detector/plane threshold is introduced.
+
+Results expose `validation_status` (ACCEPT/REJECT/INCONCLUSIVE/NOT_COMPUTED),
+`verified`, `corner_position_mm`, `corner_distance_mm`, `selected_vertex_id`,
+`corner_edge_ids`, `corner_edges`, `plane_patches`, graph edges/vertices and
+stage timers. `verified=True` only for ACCEPT. `--no-validator-geometry` produces NOT_COMPUTED; a fitted zero-plane result is
+INCONCLUSIVE. `planes_computed` and the plane fields remain.
+Patch `support_indices` and `support_ransac_indices` are native RANSAC IDs;
+`support_point_indices` supplies the nearest-Coarse scene adapter. Edge support
+arrays/memberships are empty with `point_support_checked=False`; the retained
+quality value 1.0 is neutral. Edge/vertex acceptance uses geometry only and
+never substitutes plane membership for measured edge support. Native plane
+coordinates/counts are never replaced by adapter IDs.
+
+The manager-owned geometry views are split by stored edge type:
+
+- Window 5: all plane support patches/hulls and only `plane_intersection`
+  edges in cyan, following the finite plane-pair overlap construction. It shows
+  no per-plane boundary edges, corner vertices or final-selection highlights.
+  Stored plane-pair line origins/directions also drive yellow infinite-line
+  guides (displayed locally) and translucent per-plane tolerance strips, even
+  when no finite edge survives. These guides are not detected edges.
+- Window 4: A/B/C plus paired D-before/D-after panels, moved from the former
+  window 7. Blue dashed core/orange dashed padding, green original Hull/Nodes,
+  blue clipped segments/active endpoints and orange inactive X marks expose
+  provenance. C shows TLS Line IDs/errors and absorbed Nodes. The pipeline
+  stores a core-only support/Hull/graph comparison with unchanged models/core
+  voxels, never a second RANSAC; its extra work is timed as `roi_debug_before`
+  and never affects the selected Corner. D's two cameras synchronize. S exports
+  A/B/C and paired D PNGs under `outputs/validator_roi/query_<id>_<timestamp>/`.
+- Window 6: four process panels in a 2-by-2 layout for one Coarse query. Panel 6-1 shows original
+  unmasked boundaries in plane RGB colours, shared intersections in cyan and
+  muted hull rims. Panel 6-2 shows retained intervals in gray/cyan and removed
+  boundary intervals as magenta dashes, including fully deactivated sources.
+  A blue translucent cylinder over each finite shared edge shows the stored
+  overlap line-distance radius; its caption also reports angle/minimum-overlap gates.
+  Panel 6-3 shows active geometry, yellow dashes only for extension actually
+  needed by each stored refined vertex (not the full endpoint allowance),
+  white pair candidates and candidate-to-LS shifts, final green accepted/red
+  gated-out vertex markers, and the selected corner's green incident edges.
+  Thin gray residual links remain separate from extension along each edge axis.
+  Wire-halo markers keep short extensions visible. Panels 6-1/2/3 omit ROI
+  spheres and background support clouds. Panel 6-4 contains only the selected
+  Corner/incident active Edges and actual extension over the original unvoxelized
+  gray point cloud. Boundary contributors and the Corner are green; contributing
+  shared intersection Edges are cyan. Captions list each type's IDs/counts and
+  explicitly identify a Boundary-only selected Corner when there is no shared
+  contributor. The display does not add unrelated shared Edges or change Corner
+  selection. Manager passes raw XYZ to the display-only worker once;
+  query changes replace just the final overlays. All four cameras start with
+  local query framing, and no other query is validated or accumulated.
+
+Window 5 uses muted gray Hull rims and no ROI wire spheres. Window 4 deliberately
+shows both ROI spheres for clipping diagnostics. Panels 6-3/6-4 highlight final
+contributors as described above.
+All stages read the same stored results; no score, support or graph is recomputed.
+The original third panel retains only core points, fitted-plane
+disks (alpha 0.60), normal arrows, core sphere and query marker; no hulls,
+recollected halo points, edges or corner markers are added there. Fitted disks
+remain illustrative and separate from the actual hulls in windows 4/5/6.
+All windows share the existing display-only worker and manager lifecycle.
+Each auxiliary window closes independently; main-window close, recapture and
+quit close all of them. Every auxiliary panel retains its camera when redisplaying
+the same Coarse query. Only the Coarse overview picks queries.
+All defaults and optional CLI flags live in the validator section of settings.
+Detailed equations, default rationale and limitations are in PIPELINE_METHODS.
 
 ## Primary fine/detector validator contract
 
@@ -227,8 +353,7 @@ Fine mode opens the frozen, aligned RGB/depth Tk window directly. A click
 in that window selects or reselects the query; there is no preliminary OpenCV
 query picker whose cancellation can terminate the validator before Tk starts.
 
-There is one fine/detector plane-extraction path. Every fine clicked query and every detector NMS
-seed calls `validator_pipeline.run_validator_pipeline`. The function always:
+There is one shared plane-extraction path. Every fine clicked query and every explicitly validated detector NMS seed calls `validator_pipeline.run_validator_pipeline`. CLI detector mode does not automatically validate NMS seeds. The function always:
 
 1. limits the organized RGB-D pixels to the exact inclusive Euclidean query ball;
 2. runs CornerVINS-style organized AHC segmentation on those pixels;
@@ -263,21 +388,16 @@ successful query.
 
 ## Detector-to-validator composition
 
-By default the whole-cloud detector stops creating hypotheses after dense score
-thresholding and deterministic 3-D NMS. Every retained scene index enters the
-same validator pipeline. Batch output preserves each query result for
-diagnostics and aggregates final refined finite edges and corners; it does not
-maintain a second plane extractor.
+The CLI whole-cloud detector stops after dense score thresholding and deterministic 3-D NMS. Both CLI configuration and default `DetectorConfig` use `validator=None`; candidates remain unverified. Dense scores, thresholds, NMS and scene IDs are unchanged. Library callers can explicitly supply `ValidatorConfig` to invoke the same validator pipeline. That optional batch output preserves each query result and aggregates final refined finite edges and corners; it does not maintain a second plane extractor.
 
-`--mode detector --only` stops execution after that same CED/PCA/fusion/NMS
-composition. `DetectorConfig.only` suppresses validator calls, and configuration
+`--mode detector --only` additionally limits display to the NMS panel after that same CED/PCA/fusion/NMS composition. `DetectorConfig.only` suppresses validator calls, and configuration
 resolves `validator=None`. No plane, edge or corner stages run. Visualization
 still goes through `manager.show_dense_heatmaps`, selecting only the existing
 NMS Fusion heatmap panel in `view3d.show_dense_score_heatmaps`. Its linear Q99
 colors, invalid-point gray, original scene-indexed markers and M toggle are
 unchanged. Other score panels and the registered RGB auxiliary window are
 omitted. `--no-3d-view` also suppresses that one window. `--only` is rejected
-for other modes; omitting it preserves the standard detector composition.
+for other modes; omitting it retains all dense diagnostic panels, without automatic validation.
 
 Example: `python3 -m corner_detector --mode detector --only --source stl --input
 /path/to/model.stl` (one shell line).
@@ -301,6 +421,9 @@ footprint varies with depth.
 - `cornervins_plane_extraction.py`: organized AHC, RANSAC/refit, patch merge,
   convex hull, and downstream schema adapter.
 - `validator_pipeline.py`: primary stage composition and batch candidate entry.
+- `validator_plane_support.py`: guided-mode support recollection, connected patches and hulls.
+- `validator_edge_graph.py`: guided-mode finite intersections, observed boundary edges and adjacency.
+- `validator_corner_graph.py`: supported finite-edge vertices, centre gate and validation status.
 - `plane_projection.py`: small shared 3-D visualization geometry helpers.
 - `boundary_support.py`: continuous Gaussian boundary-proximity weights.
 - `corner_2d.py`: continuous 2-D boundary evidence.

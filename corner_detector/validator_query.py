@@ -1,4 +1,4 @@
-"""Coarse/fine query selection and reporting for the guided validator."""
+"""Coarse NMS query selection and reporting for the guided validator."""
 
 from dataclasses import replace
 
@@ -15,7 +15,7 @@ def prepare_validator_queries(points_mm, cfg):
     return run_dense_heatmap_mode(points_mm, replace(cfg, show_3d=False, validator=None))
 
 
-def inspect_validator_query(query_index, frozen, cfg, *, fine_index=None):
+def inspect_validator_query(query_index, frozen, cfg):
     indices = frozen["validator_query_indices"]
     if query_index not in indices:
         raise ValueError("Validator selection must be an existing CED NMS query")
@@ -23,29 +23,25 @@ def inspect_validator_query(query_index, frozen, cfg, *, fine_index=None):
     if context is None:
         context = frozen["validator_voxel_context"] = prepare_validator_voxel_context(
             frozen["points_voxel_mm"], frozen["points_raw_mm"], cfg)
-    cached = frozen.get("validator_fine_result") if fine_index is not None else None
-    if fine_index is not None and cached is None:
-        raise ValueError("Select a coarse query before selecting a Fine NMS query")
     result = run_validator_pipeline(
-        frozen["points_voxel_mm"], query_index, cfg,
-        voxel_context=context, fine_result=cached, fine_index=fine_index,
-        stop_after_fine=fine_index is None and cfg.show_3d,
+        frozen["points_voxel_mm"], query_index, cfg, voxel_context=context,
     )
-    frozen["validator_fine_result"] = result["fine_result"]
-    frozen["corner_position_3d"] = result["query_position_mm"].copy()
+    corner = result["corner_position_mm"]
+    frozen["corner_position_3d"] = None if corner is None else corner.copy()
     prepare_guided_validator_result(frozen, result)
     print("\n[VALIDATOR]")
     print(f"Coarse Query: {result['coarse_query_position_mm'].tolist()}")
-    print(f"Fine Query: {result['query_position_mm'].tolist()}")
-    print(f"Fine Query Shift: {result['fine_query_shift_mm']:.6g} mm")
-    print(f"Fine NMS Candidates: {len(result['fine_result']['candidate_fine_indices'])} | Fallback: {result['fine_fallback']}")
-    print(f"Fine Voxel: {cfg.validator.fine_voxel_mm} mm | RANSAC Voxel: {cfg.validator.ransac_voxel_mm} mm")
-    print(f"Fine CED Radius: {cfg.validator.fine_ced_radius_mm} mm")
-    if not result["planes_computed"]:
-        print("[VALIDATOR] Fine heatmap/NMS ready. Click a Fine NMS candidate to fit planes.")
-        return result
+    print(f"Query-local Voxel: {result['ransac_voxel_mm']} mm | "
+          f"Raw core points: {len(result['roi_raw_point_indices'])} -> "
+          f"{result['core_voxel_count']} core voxels | {result['halo_voxel_count']} halo voxels")
     print(f"Guided Sigma: {cfg.validator.guided_sigma_mm} mm")
     print(f"ROI Radius: {result['radius_mm']} mm\nROI Points: {len(result['roi_ransac_indices'])}")
+    if result.get("geometry_computed"):
+        nodes = [node for patch in result["boundary_debug"] for node in patch["nodes"].values()]
+        print(f"Hull Support Radius: {result['support_radius_mm']:g} mm | "
+              f"Padding: {result['support_radius_mm'] - result['radius_mm']:g} mm | "
+              f"Hull nodes after clipping: {sum(node['corner_enabled'] for node in nodes)} active / "
+              f"{sum(not node['corner_enabled'] for node in nodes)} inactive")
     print(f"\nDetected Planes: {len(result['planes'])}")
     for i, plane in enumerate(result["planes"], 1):
         print(f"\nPlane {i}\n  Normal: {plane['normal'].tolist()}")
@@ -54,6 +50,19 @@ def inspect_validator_query(query_index, frozen, cfg, *, fine_index=None):
         print(f"  Inlier RMS: {plane['inlier_rms_mm']:.6g} mm")
         print(f"  Query-to-Plane Distance: {plane['query_to_plane_distance_mm']:.6g} mm")
     print(f"RANSAC Total Time: {result['ransac_elapsed_s'] * 1000:.3f} ms")
+    print(f"Corner validation: {result['validation_status']} | {result['failure_reason'] or 'geometric finite-edge junction'}")
+    print(f"Finite Edges: {len(result['edges'])} | Vertices: {len(result['vertices'])}")
+    if result["verified"]:
+        print(f"Corner Position (mm): {result['corner_position_mm'].tolist()}")
+        print(f"Corner Distance to Coarse Query (mm): {result['corner_distance_mm']:.6g}")
+        print(f"Supporting Edge IDs: {result['corner_edge_ids']}")
+        for edge in result["corner_edges"]:
+            print(f"  Edge {edge['edge_id']} ({edge['edge_type']}, planes={edge['plane_ids']}): "
+                  f"{edge['start_mm'].tolist()} -> {edge['end_mm'].tolist()} | "
+                  "point support=disabled")
+    print("Stage Time (ms): " + ", ".join(
+        f"{name}={elapsed * 1000:.3f}" for name, elapsed in result["stage_elapsed_s"].items()))
+    print(f"Validator Total Time: {result['elapsed_s'] * 1000:.3f} ms")
     return result
 
 

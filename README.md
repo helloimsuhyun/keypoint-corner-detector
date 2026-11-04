@@ -8,11 +8,18 @@ Kinect/RealSense/STL의 organized depth 입력에서 query 단위 평면과 평�
 ```bash
 cd /home/choisuhyun/keypoint-corner-detector
 
+
 python3 -m corner_detector \
   --source kinect \
   --input /home/choisuhyun/datasets/7scenes/redkitchen/seq-03 \
   --frame-index 740 \
-  --mode fine
+  --mode detector
+
+python3 -m corner_detector \
+  --source kinect \
+  --input /home/choisuhyun/datasets/7scenes/redkitchen/seq-03 \
+  --frame-index 740 \
+  --mode validator
 ```
 
 별도 backend 또는 plane-clustering 활성화 옵션은 필요 없다. 실행 직후 frozen

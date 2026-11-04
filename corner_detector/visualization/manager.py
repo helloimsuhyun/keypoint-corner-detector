@@ -8,8 +8,9 @@ from .view3d import (
     dense_heatmap_vmax,
     open_guided_validator_view,
     update_guided_validator_view,
+    save_guided_validator_roi_views as render_guided_validator_roi_views,
+    open_total_result_views,
     pick_guided_validator_query,
-    pick_validator_fine_query,
     open_cornervins_plane_views,
     open_plane_edge_graph_view,
     open_plane_edge_refiner_view,
@@ -30,8 +31,6 @@ from .view3d import (
 _VIEW_KEYS = (
     "pending_query",
     "pending_validator_query",
-    "pending_validator_fine_query",
-    "validator_fine_result",
     "validator_view_action",
     "plane_cluster_analysis",
     "plane_edge_graph_result",
@@ -44,9 +43,14 @@ _VIEW_KEYS = (
 
 def prepare_guided_validator_view(frozen):
     close_guided_validator_view(frozen)
+    scores = frozen.get("validator_ced_scores")
+    fusion_vmax = (dense_heatmap_vmax(scores)["fusion_score"] if scores is not None else
+                   frozen.get("validator_fusion_vmax", 1.0))
+    colors = (dense_heatmap_colors(scores["fusion_score"], scores["fusion_valid_mask"], vmax=fusion_vmax)
+              if scores is not None else frozen["validator_scene_colors"])
     display = open_guided_validator_view(
         frozen["points_voxel_mm"], frozen["validator_query_indices"],
-        frozen["validator_scene_colors"])
+        colors, fusion_vmax=fusion_vmax, raw_points_mm=frozen.get("points_raw_mm"))
     frozen["guided_validator_display"] = display
     return display
 
@@ -57,15 +61,16 @@ def start_guided_validator_view(frozen):
 
     close_guided_validator_view(frozen)
     scores = frozen["validator_ced_scores"]
+    fusion_vmax = dense_heatmap_vmax(scores)["fusion_score"]
     colors = dense_heatmap_colors(
         scores["fusion_score"], scores["fusion_valid_mask"],
-        vmax=dense_heatmap_vmax(scores)["fusion_score"],
+        vmax=fusion_vmax,
     )
     context = get_context("spawn")
     connection, child = context.Pipe()
     process = context.Process(target=run_guided_validator_view_process, args=(
         child, frozen["points_voxel_mm"],
-        frozen["validator_query_indices"], colors,
+        frozen["validator_query_indices"], colors, fusion_vmax, frozen.get("points_raw_mm"),
     ), daemon=True)
     try:
         process.start()
@@ -92,10 +97,19 @@ def close_guided_validator_view(frozen):
             process.join(timeout=0.5)
         connection.close()
     display = frozen.pop("guided_validator_display", None)
-    if display is not None and not display["closed"]:
-        display["window"].close()
-        display["app"].run_one_tick()
-        display["closed"] = True
+    if display is not None:
+        closing = False
+        for stage in display["geometry_windows"]:
+            if not stage["closed"]:
+                stage["window"].close()
+                stage["closed"] = True
+                closing = True
+        if not display["closed"]:
+            display["window"].close()
+            display["closed"] = True
+            closing = True
+        if closing:
+            display["app"].run_one_tick()
 
 
 def prepare_guided_validator_result(frozen, result):
@@ -109,6 +123,12 @@ def prepare_guided_validator_result(frozen, result):
     display = frozen.get("guided_validator_display")
     if display is not None and not display["closed"]:
         update_guided_validator_view(display, result)
+
+
+def save_guided_validator_roi_views(frozen):
+    display = frozen.get("guided_validator_display")
+    if display is not None and not display["closed"]:
+        return render_guided_validator_roi_views(display)
 
 
 def prepare_plane_edge_graph_view(frozen, result, *, show_3d=True):
@@ -259,8 +279,6 @@ def poll_view_events(frozen):
                 kind, value = worker["connection"].recv()
                 if kind == "query":
                     frozen["pending_validator_query"] = value
-                elif kind == "fine_query":
-                    frozen["pending_validator_fine_query"] = value
                 elif kind == "action":
                     frozen["validator_view_action"] = value
                 elif kind == "error":
@@ -350,9 +368,18 @@ def show_detector_validator_results(points_mm, validation, cfg):
     )
 
 
+def show_total_results(points_mm, raw_points_mm, result, cfg):
+    """Own the two total-mode windows without starting any query/debug UI."""
+    from .query_ui import run_total_view_loop
+    if not cfg.show_3d:
+        return "quit"
+    windows = open_total_result_views(points_mm, raw_points_mm, result,
+                                      validator_voxel_mm=cfg.validator.ransac_voxel_mm)
+    return run_total_view_loop(windows)
+
+
 __all__ = [
     "prepare_guided_validator_view", "start_guided_validator_view", "pick_guided_validator_query",
-    "pick_validator_fine_query",
     "prepare_guided_validator_result",
     "prepare_extremity_view", "extremity_summary_rgb", "export_extremity_views",
     "prepare_extremity_overview",
@@ -364,4 +391,5 @@ __all__ = [
     "prepare_plane_edge_graph_view",
     "show_dense_heatmaps",
     "show_detector_validator_results",
+    "show_total_results",
 ]

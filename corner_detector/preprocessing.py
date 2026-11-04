@@ -189,6 +189,8 @@ def voxel_downsample_3d(points_mm: np.ndarray, voxel_mm: float) -> np.ndarray:
 def prepare_frozen_from_frame(
     frame: PointCloudFrame,
     cfg: ValidatorConfig | DetectorConfig,
+    *,
+    include_organized_context=True,
 ) -> tuple[dict, np.ndarray]:
     """Adapt the shared input model to the existing diagnostic data structure."""
     if frame.depth_m is None or frame.intrinsics is None:
@@ -205,9 +207,8 @@ def prepare_frozen_from_frame(
         "pointcloud_frame": frame,
         "selected_pixel": None,
     }
-    frozen["organized_plane_context"] = build_organized_plane_context(
-        frame, points
-    )
+    if include_organized_context:
+        frozen["organized_plane_context"] = build_organized_plane_context(frame, points)
     return frozen, points
 
 

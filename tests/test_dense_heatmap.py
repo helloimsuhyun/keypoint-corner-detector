@@ -353,9 +353,32 @@ class DetectorOnlyTest(unittest.TestCase):
         self.assertIsNone(cfg.validator)
         default, _ = configure(parse_args(["--source", "realsense", "--mode", "detector"]))
         self.assertFalse(default.only)
-        self.assertIsNotNone(default.validator)
+        self.assertIsNone(default.validator)
+        self.assertIsNone(DetectorConfig().validator)
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             parse_args(["--source", "realsense", "--mode", "fine", "--only"])
+
+    def test_default_detector_preserves_nms_and_skips_validation(self):
+        cfg, _ = configure(parse_args([
+            "--source", "realsense", "--mode", "detector", "--no-3d-view",
+        ]))
+        cfg = replace(cfg, centroid_radius_mm=1.6, pca_radius_mm=4.,
+                      nms_radius_mm=1.5, min_neighbors=1, bilateral_radius_mm=1.6,
+                      fusion_threshold_mode="fixed", fusion_score_threshold=0.)
+        with patch("corner_detector.dense_heatmap.run_validator_candidates") as validate, \
+                patch("corner_detector.dense_heatmap.show_detector_validator_results") as final, \
+                redirect_stdout(StringIO()):
+            result = run_dense_heatmap_mode(corner_points(), cfg)
+            only = run_dense_heatmap_mode(corner_points(), replace(cfg, only=True))
+        validate.assert_not_called()
+        final.assert_not_called()
+        self.assertNotIn("validator_results", result)
+        self.assertGreater(result["candidate_extraction"]["candidate_count"], 0)
+        for key, value in only.items():
+            if isinstance(value, np.ndarray):
+                np.testing.assert_array_equal(result[key], value)
+        np.testing.assert_array_equal(result["candidate_extraction"]["candidate_indices"],
+                                      only["candidate_extraction"]["candidate_indices"])
 
     def test_only_preserves_scores_and_nms_and_never_runs_validator(self):
         points = corner_points()

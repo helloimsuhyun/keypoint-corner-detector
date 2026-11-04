@@ -1,4 +1,4 @@
-"""Runtime composition for fine and detector modes."""
+"""Runtime composition for detector, total and query-local modes."""
 
 from __future__ import annotations
 
@@ -15,9 +15,10 @@ from .constants import BUILD
 from .dense_heatmap import run_dense_heatmap_mode
 from .ball_query import run_ced_extremity_mode
 from .validator_query import prepare_validator_queries
+from .total import run_total_mode
 from .preprocessing import apply_noise_to_frame, prepare_frozen_from_frame
 from .settings import configure, parse_args
-from .visualization.manager import close_query_views
+from .visualization.manager import close_query_views, show_total_results
 from .visualization.query_ui import run_validator_mode, tk
 
 
@@ -29,7 +30,9 @@ def main(argv=None, *, prog=None):
         print(f"[MODE] {args.mode.upper()} | unchanged CED/PCA/NMS queries -> local padded 3-D "
               "extremity hypotheses (unverified)", flush=True)
     elif args.mode == "validator":
-        print("[MODE] VALIDATOR | unchanged CED/PCA/NMS -> coarse query -> fine CED -> guided sequential planes", flush=True)
+        print("[MODE] VALIDATOR | unchanged CED/PCA/NMS -> coarse query -> raw radius crop -> local voxel -> guided sequential planes", flush=True)
+    elif args.mode == "total":
+        print("[MODE] TOTAL | detector NMS -> guided validator for every seed -> final scene corners / contributing edges", flush=True)
     elif args.mode == "detector":
         print(
             "[MODE] DETECTOR | whole-cloud saliency + 3-D corner candidates | "
@@ -53,13 +56,15 @@ def main(argv=None, *, prog=None):
         print("[connectivity] Components do not guarantee object instances; touching objects merge.")
     elif args.mode == "validator":
         print(f"[guided planes] {cfg.validator} | voxel={cfg.voxel_3d_mm:g} mm")
+    elif args.mode == "total":
+        print(f"[total validator] {cfg.validator} | detector voxel={cfg.voxel_3d_mm:g} mm", flush=True)
+        print("[total views] 1 Fusion heatmap / NMS | 2 raw scene + final corners / contributing edges", flush=True)
     elif args.mode == "detector":
         print(
             "VOXEL POINTS -> RADIUS NEIGHBORHOOD -> "
             "CED -> BILATERAL CED -> CED-WEIGHTED PCA -> "
             "OPTIONAL TANH SATURATION -> PRODUCT FUSION -> 3-D NMS"
-            + (" | NMS HEATMAP ONLY" if getattr(cfg, "only", False) else
-               " -> SHARED VALIDATOR -> REFINED EDGES/CORNERS")
+            + (" | NMS HEATMAP ONLY" if getattr(cfg, "only", False) else "")
         )
         print(
             f"[detector] voxel={cfg.voxel_3d_mm:g} mm | "
@@ -195,13 +200,21 @@ def main(argv=None, *, prog=None):
                 min_depth_m=args.min_depth_m,
                 max_depth_m=args.max_depth_m,
             )
-            frozen, points = prepare_frozen_from_frame(frame, cfg)
+            frozen, points = prepare_frozen_from_frame(
+                frame, cfg, **({"include_organized_context": False} if args.mode == "total" else {}))
             print(
                 f"[INPUT] source={frame.source} raw={len(frame.points_mm):,} "
                 f"voxel={len(points):,} voxel-size={cfg.voxel_3d_mm:g} mm",
                 flush=True,
             )
-            if args.mode == "fine":
+            if args.mode == "total":
+                result = run_total_mode(points, cfg, raw_points_mm=frozen["points_raw_mm"])
+                if cfg.show_3d:
+                    action = show_total_results(points, frozen["points_raw_mm"], result, cfg)
+                    if action == "recapture":
+                        del result
+                        continue
+            elif args.mode == "fine":
                 action = run_validator_mode(frame, frozen, cfg)
                 if action == "recapture":
                     close_query_views(frozen)

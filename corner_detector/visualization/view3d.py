@@ -57,18 +57,22 @@ def guided_validator_primitives(result):
     return {"point_colors": colors, "disk_vertices_mm": disks}
 
 
-def open_guided_validator_view(scene_points_mm, query_indices, scene_colors):
-    """Upload Coarse once and keep Fine heatmap separate from plane fitting."""
+def open_guided_validator_view(scene_points_mm, query_indices, scene_colors, *, fusion_vmax=1.0,
+                               raw_points_mm=None):
+    """Upload Coarse once; display query-local voxel input and fitted planes separately."""
+    fusion_vmax = float(fusion_vmax)
+    if not np.isfinite(fusion_vmax) or fusion_vmax < 0:
+        raise ValueError("Fusion display maximum must be finite and nonnegative")
     gui, rendering = o3d.visualization.gui, o3d.visualization.rendering
     app = gui.Application.instance
     app.initialize()
-    window = app.create_window("VALIDATOR | 1. Coarse -> 2. Fine -> 3. Plane fitting", 1800, 650)
-    overview, fine_view, local = gui.SceneWidget(), gui.SceneWidget(), gui.SceneWidget()
-    panels = (overview, fine_view, local)
+    window = app.create_window("VALIDATOR | 1. Coarse -> 2. Query voxel -> 3. Plane fitting", 1800, 650)
+    overview, roi_view, local = gui.SceneWidget(), gui.SceneWidget(), gui.SceneWidget()
+    panels = (overview, roi_view, local)
     labels = [gui.Label(text) for text in (
-        "1. Coarse Fusion heatmap + NMS | click orange query",
-        "2. Fine Fusion heatmap + NMS | select Coarse first",
-        "3. Plane fitting | select Fine NMS first",
+        f"1. Coarse Fusion 0..{fusion_vmax:.4g} (frame Q99) | click orange query",
+        "2. Query radius -> voxel input | select Coarse first",
+        "3. Plane fitting | select Coarse first",
     )]
     for widget, label in zip(panels, labels):
         widget.scene = rendering.Open3DScene(window.renderer)
@@ -81,8 +85,9 @@ def open_guided_validator_view(scene_points_mm, query_indices, scene_colors):
         for index, (widget, label) in enumerate(zip(panels, labels)):
             left = rect.x + index * rect.width // 3
             right = rect.x + (index + 1) * rect.width // 3
-            label.frame = gui.Rect(left, rect.y, right - left, 28)
-            widget.frame = gui.Rect(left, rect.y + 28, right - left, max(1, rect.height - 28))
+            label_height = 52 if index in (1, 2) else 28
+            label.frame = gui.Rect(left, rect.y, right - left, label_height)
+            widget.frame = gui.Rect(left, rect.y + label_height, right - left, max(1, rect.height - label_height))
 
     window.set_on_layout(layout)
     scene_points = np.asarray(scene_points_mm)
@@ -103,11 +108,76 @@ def open_guided_validator_view(scene_points_mm, query_indices, scene_colors):
     bounds = cloud.get_axis_aligned_bounding_box()
     overview.setup_camera(60.0, bounds, bounds.get_center())
     display = {"app": app, "gui": gui, "window": window, "overview": overview,
-               "fine_view": fine_view, "local": local, "labels": labels, "query_xyz": queries.copy(),
-               "query_indices": np.asarray(query_indices).copy(), "closed": False}
+               "roi_view": roi_view, "local": local, "labels": labels, "query_xyz": queries.copy(),
+               "query_indices": np.asarray(query_indices).copy(), "closed": False,
+               "fusion_vmax": fusion_vmax}
+    display["geometry_windows"] = []
+    for number, title, edge_type in (
+        (4, "Padded hull / ROI clipping / TLS / Before-After | S: save PNG", None),
+        (5, "Plane-pair intersection edges", "plane_intersection"),
+        (6, "Edges -> overlap removal -> corner LS -> selected corner on raw cloud", None),
+    ):
+        stage_window = app.create_window(f"VALIDATOR | {number}. {title}",
+                                         1800 if number in (4, 6) else 1000,
+                                         1000 if number in (4, 6) else 800)
+        stage = {"window": stage_window, "number": number, "edge_type": edge_type,
+                 "panels": [], "closed": False}
+        for index in range(5 if number == 4 else 4 if number == 6 else 1):
+            widget = gui.SceneWidget()
+            widget.scene = rendering.Open3DScene(stage_window.renderer)
+            widget.scene.set_background([0.08, 0.08, 0.08, 1.0])
+            raw_count = 0
+            if number == 6 and index == 3 and raw_points_mm is not None:
+                raw_points = np.asarray(raw_points_mm)
+                raw_count = len(raw_points)
+                if raw_count:
+                    raw_cloud = o3d.geometry.PointCloud()
+                    raw_cloud.points = o3d.utility.Vector3dVector(raw_points)
+                    raw_cloud.paint_uniform_color([.38, .38, .38])
+                    raw_material = rendering.MaterialRecord()
+                    raw_material.shader, raw_material.point_size = "defaultUnlit", 1.5
+                    widget.scene.add_geometry("original_raw_cloud", raw_cloud, raw_material)
+            label = gui.Label(f"{number}. NOT_COMPUTED | select Coarse first")
+            stage_window.add_child(label)
+            stage_window.add_child(widget)
+            stage["panels"].append({"widget": widget, "label": label,
+                                    "plane_id": None,
+                                    "graph_step": index + 1 if number == 6 else None,
+                                    "overlay_geometry_names": [], "raw_point_count": raw_count,
+                                    "roi_debug_view": ("A", "B", "C", "D-before", "D-after")[index]
+                                    if number == 4 else None})
+
+        def stage_layout(_, stage=stage):
+            rect = stage["window"].content_rect
+            count = len(stage["panels"])
+            for index, panel in enumerate(stage["panels"]):
+                columns = (3 if index < 3 else 2) if stage["number"] == 4 else count
+                column = (index if index < 3 else index - 3) if stage["number"] == 4 else index
+                top = rect.y + (rect.height // 2 if stage["number"] == 4 and index >= 3 else 0)
+                if stage["number"] == 6:
+                    columns, column = 2, index % 2
+                    top = rect.y + (index // 2) * (rect.height // 2)
+                available_height = rect.height // 2 if stage["number"] in (4, 6) else rect.height
+                left = rect.x + column * rect.width // columns
+                right = rect.x + (column + 1) * rect.width // columns
+                height = 92 if stage["number"] == 4 else 72 if stage["number"] == 6 else 52
+                panel["label"].frame = gui.Rect(left, top, right - left, height)
+                panel["widget"].frame = gui.Rect(left, top + height, right - left, max(1, available_height - height))
+
+        def stage_closed(stage=stage):
+            stage["closed"] = True
+            return True
+
+        stage_window.set_on_layout(stage_layout)
+        stage_window.set_on_close(stage_closed)
+        display["geometry_windows"].append(stage)
 
     def closed():
         display["closed"] = True
+        for stage in display["geometry_windows"]:
+            if not stage["closed"]:
+                stage["window"].close()
+                stage["closed"] = True
         return True
 
     window.set_on_close(closed)
@@ -140,81 +210,600 @@ def pick_guided_validator_query(display, pixel_x, pixel_y):
                                   display["query_indices"], pixel_x, pixel_y)
 
 
-def pick_validator_fine_query(display, pixel_x, pixel_y):
-    fine = display.get("fine_result")
-    if fine is None:
-        return None
-    return _pick_validator_points(display["fine_view"], fine["candidate_points_mm"],
-                                  fine["candidate_fine_indices"], pixel_x, pixel_y)
-
-
-def update_validator_fine_heatmap(display, result):
-    """Read cached Fine Fusion scores; fitting changes only the selected marker."""
+def update_validator_roi_view(display, result):
+    """Show the stored core input after raw-radius cropping and voxelization."""
     rendering = o3d.visualization.rendering
-    fine = result["fine_result"]
-    widget = display["fine_view"]
+    widget = display["roi_view"]
     scene = widget.scene
-    coarse = result["coarse_query_position_mm"]
-    radius = fine["fine_search_radius_mm"]
-    previous = display.get("fine_result")
-    refresh = (previous is None or previous["coarse_query_index"] != fine["coarse_query_index"]
-               or not result.get("planes_computed", True))
-    if refresh:
-        scene.clear_geometry()
-        display["fine_selected_present"] = False
-        scores = fine["scores"]
-        vmax = dense_heatmap_vmax(scores)["fusion_score"]
-        points = scores["query_position_mm"]
-        if len(points):
-            cloud = o3d.geometry.PointCloud()
-            cloud.points = o3d.utility.Vector3dVector(points)
-            cloud.colors = o3d.utility.Vector3dVector(dense_heatmap_colors(
-                scores["fusion_score"], scores["fusion_valid_mask"], vmax=vmax))
-            material = rendering.MaterialRecord()
-            material.shader, material.point_size = "defaultUnlit", 4.0
-            scene.add_geometry("fine_heatmap", cloud, material)
-        if len(fine["candidate_points_mm"]):
-            markers = o3d.geometry.PointCloud()
-            markers.points = o3d.utility.Vector3dVector(fine["candidate_points_mm"])
-            markers.paint_uniform_color([1.0, 1.0, 0.0])
-            material = rendering.MaterialRecord()
-            material.shader, material.point_size = "defaultUnlit", 8.0
-            scene.add_geometry("fine_nms", markers, material)
-        marker = o3d.geometry.TriangleMesh.create_sphere(radius=max(0.4, radius * 0.025))
-        marker.translate(coarse)
-        material = rendering.MaterialRecord()
-        material.shader, material.base_color = "defaultUnlit", [1.0, 0.5, 0.0, 1.0]
-        scene.add_geometry("coarse_query", marker, material)
-        bounds = o3d.geometry.AxisAlignedBoundingBox(coarse - radius, coarse + radius)
-        widget.setup_camera(60.0, bounds, coarse)
-        scene.camera.look_at(coarse, coarse + radius * np.array([1.7, 1.3, 1.5]), [0., 0., 1.])
-        display["labels"][1].text = (f"2. Fine Fusion heatmap (Q99={vmax:.4g}) | "
-                                    f"{len(fine['candidate_fine_indices'])} NMS candidates")
-    display["fine_result"] = fine
-    if display.get("fine_selected_present"):
-        scene.remove_geometry("selected_fine")
-    selected = o3d.geometry.TriangleMesh.create_sphere(radius=max(0.5, radius * 0.04))
-    selected.translate(result["query_position_mm"])
+    scene.clear_geometry()
+    query, radius = result["query_position_mm"], result["radius_mm"]
+    points = result["roi_points_mm"]
     material = rendering.MaterialRecord()
-    material.shader, material.base_color = "defaultUnlit", [1.0, 0.0, 0.0, 1.0]
-    scene.add_geometry("selected_fine", selected, material)
-    display["fine_selected_present"] = True
+    material.shader, material.point_size = "defaultUnlit", 4.0
+    if len(points):
+        cloud = o3d.geometry.PointCloud()
+        cloud.points = o3d.utility.Vector3dVector(points)
+        cloud.paint_uniform_color([.7, .7, .7])
+        scene.add_geometry("voxel_input", cloud, material)
+    vertices, indices = _wire_sphere(query, radius, 64)
+    wire = o3d.geometry.LineSet()
+    wire.points = o3d.utility.Vector3dVector(vertices)
+    wire.lines = o3d.utility.Vector2iVector(indices)
+    wire.paint_uniform_color([.85, .65, 0.])
+    material = rendering.MaterialRecord()
+    material.shader, material.line_width = "unlitLine", 1.0
+    scene.add_geometry("query_radius", wire, material)
+    marker = o3d.geometry.TriangleMesh.create_sphere(radius=max(.5, radius * .035))
+    marker.translate(query)
+    material = rendering.MaterialRecord()
+    material.shader, material.base_color = "defaultUnlit", [1., .5, 0., 1.]
+    scene.add_geometry("coarse_query", marker, material)
+    display["labels"][1].text = (
+        f"2. Query radius {radius:g} mm -> voxel {result['ransac_voxel_mm']:g} mm\n"
+        f"Raw core: {len(result['roi_raw_point_indices'])} -> {len(points)} RANSAC input points")
+    if display.get("roi_query_index") != result["query_index"]:
+        bounds = o3d.geometry.AxisAlignedBoundingBox(query - radius, query + radius)
+        widget.setup_camera(60.0, bounds, query)
+        scene.camera.look_at(query, query + radius * np.array([1.7, 1.3, 1.5]), [0., 0., 1.])
+        display["roi_query_index"] = result["query_index"]
     widget.force_redraw()
+
+
+def _add_validator_corner_geometry(scene, result, *, edge_type=None, plane_id=None):
+    """Display stored support, hulls, finite edges and vertices without fitting anything."""
+    rendering = o3d.visualization.rendering
+
+    def lines(name, points, indices, color, width):
+        wire = o3d.geometry.LineSet()
+        wire.points = o3d.utility.Vector3dVector(points)
+        wire.lines = o3d.utility.Vector2iVector(indices)
+        wire.paint_uniform_color(color)
+        material = rendering.MaterialRecord()
+        material.shader, material.line_width = "unlitLine", width
+        scene.add_geometry(name, wire, material)
+
+    points = result["support_roi_points_mm"]
+    patches = [patch for patch in result["plane_patches"]
+               if plane_id is None or patch["plane_id"] == plane_id]
+    ids = result["support_roi_ransac_indices"]
+    if plane_id is not None:
+        positions = np.searchsorted(ids, patches[0]["support_ransac_indices"]) if patches else np.empty(0, dtype=int)
+        points, ids = points[positions], ids[positions]
+    if len(points):
+        colors = np.full(points.shape, .32)
+        for patch in patches:
+            positions = np.searchsorted(ids, patch["support_ransac_indices"])
+            colors[positions] = .25 + .55 * np.eye(3)[patch["plane_id"] % 3]
+        cloud = o3d.geometry.PointCloud()
+        cloud.points = o3d.utility.Vector3dVector(points)
+        cloud.colors = o3d.utility.Vector3dVector(colors)
+        material = rendering.MaterialRecord()
+        material.shader, material.point_size = "defaultUnlit", 2.5
+        scene.add_geometry("support_context", cloud, material)
+    if edge_type is None:
+        vertices, indices = _wire_sphere(result["query_position_mm"], result["support_radius_mm"], 64)
+        lines("support_radius", vertices, indices, [.4, .4, .4], 1.)
+        vertices, indices = _wire_sphere(result["query_position_mm"], result["radius_mm"], 64)
+        lines("core_radius", vertices, indices, [.85, .65, 0.], 1.)
+        marker = o3d.geometry.TriangleMesh.create_sphere(radius=.8)
+        marker.translate(result["query_position_mm"])
+        material = rendering.MaterialRecord()
+        material.shader, material.base_color = "defaultUnlit", [1., .5, 0., 1.]
+        scene.add_geometry("coarse_query", marker, material)
+    for patch in patches:
+        vertices = patch["hull_vertices_mm"]
+        if not len(vertices):
+            continue
+        color = np.eye(3)[patch["plane_id"] % 3].tolist() if patch["valid"] else [.7, .7, .7]
+        mesh = o3d.geometry.TriangleMesh()
+        mesh.vertices = o3d.utility.Vector3dVector(vertices)
+        mesh.triangles = o3d.utility.Vector3iVector([[0, j, j + 1] for j in range(1, len(vertices) - 1)])
+        mesh.compute_vertex_normals()
+        material = rendering.MaterialRecord()
+        material.shader, material.base_color = "defaultLitTransparency", color + [.18]
+        material.has_alpha = True
+        scene.add_geometry(f"hull_fill_{patch['plane_id']}", mesh, material)
+        lines(f"hull_rim_{patch['plane_id']}", vertices,
+              [[j, (j + 1) % len(vertices)] for j in range(len(vertices))],
+              [.35, .35, .35] if edge_type is not None else color, 1.5)
+    if edge_type == "plane_intersection":
+        by_id = {patch["plane_id"]: patch for patch in patches}
+        radius = result["support_radius_mm"]
+        for pair in result.get("plane_pair_diagnostics", ()):
+            origin = pair.get("intersection_line_origin_mm")
+            if origin is None:
+                continue
+            direction = pair["intersection_line_direction"]
+            start, end = origin - radius * direction, origin + radius * direction
+            name = "intersection_" + "_".join(str(index) for index in pair["plane_ids"])
+            lines(name + "_infinite_line", [start, end], [[0, 1]], [1., .85, .1], 2.)
+            width = pair["strip_half_width_mm"]
+            if width <= 0:
+                continue
+            for index in pair["plane_ids"]:
+                patch = by_id[index]
+                across = np.cross(patch["normal"], direction)
+                across /= np.linalg.norm(across)
+                vertices = np.array([start - width * across, end - width * across,
+                                     end + width * across, start + width * across])
+                # Display-only offset prevents flicker against the coplanar hull fill.
+                vertices += .001 * max(1., radius) * patch["normal"]
+                mesh = o3d.geometry.TriangleMesh()
+                mesh.vertices = o3d.utility.Vector3dVector(vertices)
+                mesh.triangles = o3d.utility.Vector3iVector([[0, 1, 2], [0, 2, 3]])
+                mesh.compute_vertex_normals()
+                color = np.eye(3)[index % 3].tolist()
+                material = rendering.MaterialRecord()
+                material.shader, material.base_color = "defaultLitTransparency", color + [.28]
+                material.has_alpha = True
+                scene.add_geometry(f"{name}_strip_plane_{index}", mesh, material)
+                lines(f"{name}_strip_bounds_plane_{index}", vertices,
+                      [[0, 1], [3, 2]], color, 1.)
+    for edge in result["edge_candidates"]:
+        if edge_type is not None and edge["edge_type"] != edge_type:
+            continue
+        if plane_id is not None and plane_id not in edge["plane_ids"]:
+            continue
+        if not edge["valid"]:
+            lines(f"unknown_edge_{edge['source_edge_id']}", [edge["start_mm"], edge["end_mm"]],
+                  [[0, 1]], [.45, .45, .45], 1.)
+    selected = set(result["corner_edge_ids"]) if edge_type is None else set()
+    for edge in result["edges"]:
+        if edge_type is not None and edge["edge_type"] != edge_type:
+            continue
+        if plane_id is not None and plane_id not in edge["plane_ids"]:
+            continue
+        color = ([.1, 1., .2] if edge["edge_id"] in selected else
+                 [0., .9, 1.] if edge["edge_type"] == "plane_intersection" else [1., .6, .1])
+        segments = ([edge["start_mm"] + time * edge["direction"]
+                     for interval in edge["active_intervals_mm"] for time in interval]
+                    if "active_intervals_mm" in edge else [edge["start_mm"], edge["end_mm"]])
+        lines(f"finite_edge_{edge['edge_id']}", segments,
+              [[i, i + 1] for i in range(0, len(segments), 2)],
+              color, 5. if edge["edge_id"] in selected else 3.)
+    if edge_type is not None:
+        return
+    for vertex in result["vertices"]:
+        chosen = vertex["vertex_id"] == result["selected_vertex_id"]
+        marker = o3d.geometry.TriangleMesh.create_sphere(radius=1.6 if chosen else .8)
+        marker.translate(vertex["position_mm"])
+        material = rendering.MaterialRecord()
+        color = ([.1, 1., .2] if vertex["valid"] else
+                 [1., .8, .1] if vertex["status"] == "UNKNOWN" else [1., .15, .15])
+        material.shader, material.base_color = "defaultUnlit", color + [1.]
+        scene.add_geometry(f"corner_vertex_{vertex['vertex_id']}", marker, material)
+
+
+def _add_validator_graph_step(scene, result, step):
+    """Read one query's original edges, masks and LS results into a process panel."""
+    rendering = o3d.visualization.rendering
+    geometry_names = []
+
+    def lines(name, points, color, width):
+        if not len(points):
+            return
+        wire = o3d.geometry.LineSet()
+        wire.points = o3d.utility.Vector3dVector(points)
+        wire.lines = o3d.utility.Vector2iVector([[i, i + 1] for i in range(0, len(points), 2)])
+        wire.paint_uniform_color(color)
+        material = rendering.MaterialRecord()
+        material.shader, material.line_width = "unlitLine", width
+        scene.add_geometry(name, wire, material)
+        geometry_names.append(name)
+
+    def intervals(name, edge, ranges, color, width, dashed=False):
+        direction = edge["end_mm"] - edge["start_mm"]
+        length = np.linalg.norm(direction)
+        if length <= 1e-10:
+            return
+        direction = direction / length
+        points = []
+        for low, high in ranges:
+            if high - low <= 1e-8:
+                continue
+            dash = min(3., (high - low) / 5.)
+            pieces = [(low, high)] if not dashed else [
+                (start, min(start + dash, high)) for start in np.arange(low, high, 2 * dash)]
+            points.extend(edge["start_mm"] + time * direction for piece in pieces for time in piece)
+        lines(name, points, color, width)
+
+    original = result.get("all_edges", result["edges"])
+    active = result["edges"]
+    overlap = result.get("edge_overlap_settings")
+    if step == 2 and overlap is not None:
+        radius = overlap["distance_mm"]
+        for edge in active:
+            if edge["edge_type"] != "plane_intersection":
+                continue
+            direction = edge["end_mm"] - edge["start_mm"]
+            length = np.linalg.norm(direction)
+            if length <= 1e-10:
+                continue
+            u, v, axis = make_tangent_basis(direction / length)
+            mesh = o3d.geometry.TriangleMesh.create_cylinder(radius=radius, height=float(length), resolution=32)
+            mesh.rotate(np.column_stack((u, v, axis)), center=np.zeros(3))
+            mesh.translate(.5 * (edge["start_mm"] + edge["end_mm"]))
+            mesh.compute_vertex_normals()
+            material = rendering.MaterialRecord()
+            material.shader, material.base_color = "defaultLitTransparency", [.15, .55, 1., .16]
+            material.has_alpha = True
+            scene.add_geometry(f"overlap_distance_range_{edge['edge_id']}", mesh, material)
+            theta = np.linspace(0., 2 * np.pi, 48, endpoint=False)
+            ring_offsets = radius * (np.cos(theta)[:, None] * u + np.sin(theta)[:, None] * v)
+            for endpoint, center in enumerate((edge["start_mm"], edge["end_mm"])):
+                ring = center + ring_offsets
+                lines(f"overlap_range_end_{edge['edge_id']}_{endpoint}",
+                      [point for i in range(len(ring)) for point in (ring[i], ring[(i + 1) % len(ring)])],
+                      [.15, .55, 1.], 1.)
+    if step == 1:
+        for patch in result["plane_patches"]:
+            vertices = patch["hull_vertices_mm"]
+            lines(f"process_hull_{patch['plane_id']}",
+                  [point for i in range(len(vertices))
+                   for point in (vertices[i], vertices[(i + 1) % len(vertices)])], [.25, .25, .25], 1.)
+    selected = set(result["corner_edge_ids"])
+    displayed_edges = result["corner_edges"] if step == 4 else original if step == 1 else active
+    for edge in displayed_edges:
+        shared = edge["edge_type"] == "plane_intersection"
+        color = ([0., .9, 1.] if shared else
+                 np.eye(3)[edge["plane_ids"][0] % 3].tolist() if step == 1 else [.5, .5, .5])
+        if step in (3, 4) and edge["edge_id"] in selected:
+            color = [0., .9, 1.] if step == 4 and shared else [.1, 1., .2]
+        length = float(np.linalg.norm(edge["end_mm"] - edge["start_mm"]))
+        ranges = [(0., length)] if step == 1 else edge.get("active_intervals_mm", [(0., length)])
+        intervals(f"process_edge_{edge['edge_id']}", edge, ranges, color,
+                  5. if step in (3, 4) and edge["edge_id"] in selected else 3.)
+    if step == 2:
+        for edge in original:
+            intervals(f"removed_boundary_{edge['edge_id']}", edge,
+                      edge.get("masked_intervals_mm", ()), [1., .15, 1.], 4., dashed=True)
+    if step not in (3, 4):
+        return geometry_names
+    vertices = [vertex for vertex in result["vertices"]
+                if step != 4 or vertex["vertex_id"] == result["selected_vertex_id"]]
+    by_id = {edge["edge_id"]: edge for edge in active}
+    for vertex in vertices:
+        position = vertex["position_mm"]
+        for edge_id in vertex["edge_ids"]:
+            edge = by_id[edge_id]
+            length = float(np.linalg.norm(edge["end_mm"] - edge["start_mm"]))
+            direction = (edge["end_mm"] - edge["start_mm"]) / length
+            parameter = float((position - edge["start_mm"]) @ direction)
+            extension = ((parameter, 0.) if parameter < -1e-8 else
+                         (length, parameter) if parameter > length + 1e-8 else None)
+            if extension is None:
+                continue
+            name = f"used_extension_v{vertex['vertex_id']}_e{edge_id}"
+            intervals(name, edge, [extension], [1., .8, .1], 2., dashed=True)
+            projected = edge["start_mm"] + parameter * direction
+            if np.linalg.norm(projected - position) > 1e-8:
+                lines(name + "_residual", [projected, position], [.65, .65, .65], 1.)
+    candidates = result.get("vertex_candidates", ()) if step == 3 else ()
+    if candidates:
+        cloud = o3d.geometry.PointCloud()
+        cloud.points = o3d.utility.Vector3dVector([item["position_mm"] for item in candidates])
+        cloud.paint_uniform_color([.85, .85, .85])
+        material = rendering.MaterialRecord()
+        material.shader, material.point_size = "defaultUnlit", 5.
+        scene.add_geometry("pair_vertex_candidates", cloud, material)
+        geometry_names.append("pair_vertex_candidates")
+    for vertex in vertices:
+        chosen = vertex["vertex_id"] == result["selected_vertex_id"]
+        color = [.1, 1., .2] if vertex["valid"] else [1., .2, .2]
+        marker = o3d.geometry.TriangleMesh.create_sphere(radius=.3 if chosen else .25)
+        marker.translate(vertex["position_mm"])
+        material = rendering.MaterialRecord()
+        material.shader, material.base_color = "defaultUnlit", color + [1.]
+        scene.add_geometry(f"estimated_vertex_{vertex['vertex_id']}", marker, material)
+        geometry_names.append(f"estimated_vertex_{vertex['vertex_id']}")
+        # A wire halo keeps short extensions visible beside the corner marker.
+        points, indices = _wire_sphere(vertex["position_mm"], 1.6 if chosen else .8, 32)
+        lines(f"vertex_halo_{vertex['vertex_id']}",
+              [points[index] for pair in indices for index in pair], color, 1.)
+        if step == 3:
+            lines(f"ls_shift_{vertex['vertex_id']}",
+                  [point for member in vertex.get("member_positions_mm", ())
+                   if np.linalg.norm(member - vertex["position_mm"]) > 1e-8
+                   for point in (member, vertex["position_mm"])], [.7, .7, .7], 1.)
+    return geometry_names
+
+
+def _add_validator_roi_debug(widget, result, view, label_handles):
+    """Draw stored clipping and endpoint provenance; no hull or line is recomputed here."""
+    scene, rendering = widget.scene, o3d.visualization.rendering
+    snapshot = result["roi_debug_before"] if view == "D-before" else result
+    patches = {patch["plane_id"]: patch for patch in snapshot["plane_patches"]}
+    debug = snapshot["boundary_debug"]
+
+    def lines(name, points, color, width=2., dashed=False):
+        segments = []
+        for start, end in points:
+            length = np.linalg.norm(end - start)
+            if length <= 1e-10:
+                continue
+            pieces = [(0., length)] if not dashed else [(t, min(t + 2., length)) for t in np.arange(0., length, 4.)]
+            segments.extend(start + t / length * (end - start) for piece in pieces for t in piece)
+        if not segments:
+            return
+        wire = o3d.geometry.LineSet()
+        wire.points = o3d.utility.Vector3dVector(segments)
+        wire.lines = o3d.utility.Vector2iVector([[i, i + 1] for i in range(0, len(segments), 2)])
+        wire.paint_uniform_color(color)
+        material = rendering.MaterialRecord()
+        material.shader, material.line_width = "unlitLine", width
+        scene.add_geometry(name, wire, material)
+
+    def nodes(name, items, patch, active_color):
+        active = [node for node in items if node["corner_enabled"]]
+        if active:
+            mesh = o3d.geometry.TriangleMesh()
+            for node in active:
+                marker = o3d.geometry.TriangleMesh.create_sphere(radius=max(.35, result["ransac_voxel_mm"] * .12), resolution=6)
+                marker.translate(node["position_3d"])
+                mesh += marker
+            material = rendering.MaterialRecord()
+            material.shader, material.base_color = "defaultUnlit", active_color + [1.]
+            scene.add_geometry(name + "_active", mesh, material)
+        cross = []
+        for node in items:
+            if node["corner_enabled"]:
+                continue
+            for direction in (patch["basis_u"] + patch["basis_v"], patch["basis_u"] - patch["basis_v"]):
+                cross.append((node["position_3d"] - direction, node["position_3d"] + direction))
+        lines(name + "_inactive", cross, [1., .5, 0.], 3.)
+
+    if view == "A":
+        for name, radius, color in (("core", result["radius_mm"], [.1, .5, 1.]),
+                                    ("padded", result["support_radius_mm"], [1., .5, 0.])):
+            points, indices = _wire_sphere(result["query_position_mm"], radius, 64)
+            lines("debug_" + name, [(points[a], points[b]) for a, b in indices[::2]], color, 1.)
+        ids = sorted({int(index) for patch in patches.values() for index in patch["support_ransac_indices"]})
+        if ids:
+            cloud = o3d.geometry.PointCloud()
+            cloud.points = o3d.utility.Vector3dVector(result["ransac_points_mm"][ids])
+            cloud.paint_uniform_color([.55, .55, .55])
+            material = rendering.MaterialRecord()
+            material.shader, material.point_size = "defaultUnlit", 2.
+            scene.add_geometry("debug_plane_inliers", cloud, material)
+    for patch_debug in debug:
+        patch = patches[patch_debug["plane_id"]]
+        name = f"roi_p{patch['plane_id']}"
+        if view in ("A", "B") or view.startswith("D-"):
+            lines(name + "_hull", [(edge["start_mm"], edge["end_mm"]) for edge in patch_debug["hull_edges"]],
+                  [.1, .9, .2] if view == "A" else [.45, .45, .45], 2. if view == "A" else 1., dashed=view != "A")
+        if view == "A":
+            nodes(name, patch_debug["original_nodes"], patch, [.1, .9, .2])
+            continue
+        if view in ("B", "C"):
+            lines(name + "_clipped", [(edge["start_mm"], edge["end_mm"]) for edge in patch_debug["clipped_edges"]],
+                  [.1, .5, 1.] if view == "B" else [.5, .5, .5], 3. if view == "B" else 1.)
+        if view == "B":
+            removed = []
+            for edge in patch_debug["hull_edges"]:
+                start, end = edge["start_mm"], edge["end_mm"]
+                interval = edge["clip_interval_mm"]
+                if interval is None:
+                    removed.append((start, end))
+                else:
+                    length = np.linalg.norm(end - start)
+                    direction = (end - start) / length
+                    removed.extend(((start, start + interval[0] * direction),
+                                    (start + interval[1] * direction, end)))
+            lines(name + "_removed", removed, [.8, .35, .35], 2., dashed=True)
+            nodes(name, list(patch_debug["nodes"].values()), patch, [.1, .5, 1.])
+            continue
+        final = [line for line in patch_debug["lines"] if line["kept_in_graph"]]
+        lines(name + "_tls", [(line["start_mm"], line["end_mm"]) for line in final], [.1, .5, 1.], 4.)
+        endpoints = {line[side + "_node_id"]: {**line[side + "_node"], "position_3d": line[side + "_mm"]}
+                     for line in final for side in ("start", "end")}
+        nodes(name, list(endpoints.values()), patch, [.1, .5, 1.])
+        if view == "C":
+            absorbed = {identifier for line in final for identifier in line["support_node_ids"][1:-1]} - endpoints.keys()
+            if absorbed:
+                cloud = o3d.geometry.PointCloud()
+                cloud.points = o3d.utility.Vector3dVector([patch_debug["nodes"][identifier]["position_3d"] for identifier in sorted(absorbed)])
+                cloud.paint_uniform_color([.6, .6, .6])
+                material = rendering.MaterialRecord()
+                material.shader, material.point_size = "defaultUnlit", 4.
+                scene.add_geometry(name + "_absorbed", cloud, material)
+            for line in final:
+                label_handles.append(widget.add_3d_label(
+                    (line["start_mm"] + line["end_mm"]) * .5,
+                    f"{line['id']} | TLS max error {line['tls_max_error_mm']:.3f} mm"))
+    if view.startswith("D-"):
+        for index, candidate in enumerate(snapshot["vertex_candidates"]):
+            marker = o3d.geometry.TriangleMesh.create_sphere(radius=.7, resolution=6)
+            marker.translate(candidate["position_mm"])
+            material = rendering.MaterialRecord()
+            material.shader, material.base_color = "defaultUnlit", [.9, .9, .9, 1.]
+            scene.add_geometry(f"debug_corner_candidate_{index}", marker, material)
+    enabled = [node["corner_enabled"] for patch in debug for node in patch["nodes"].values()]
+    endpoints = {node["id"]: node for patch in debug for line in patch["lines"] if line["kept_in_graph"]
+                 for node in (line["start_node"], line["end_node"])}
+    return (f"Clipped nodes A/I: {sum(enabled)}/{len(enabled) - sum(enabled)} | "
+            f"edges: {sum(len(patch['clipped_edges']) for patch in debug)}\n"
+            f"Final lines: {sum(line['kept_in_graph'] for patch in debug for line in patch['lines'])} | "
+            f"endpoints A/I: {sum(node['corner_enabled'] for node in endpoints.values())}/"
+            f"{sum(not node['corner_enabled'] for node in endpoints.values())} | "
+            f"corner candidates: {len(snapshot['vertex_candidates'])}")
+
+
+def save_guided_validator_roi_views(display):
+    """Capture the five existing scenes into A/B/C and a paired Before/After PNG."""
+    from datetime import datetime
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+    from PIL import Image, ImageDraw
+
+    stage = next((stage for stage in display["geometry_windows"] if stage["number"] == 4 and not stage["closed"]), None)
+    if stage is None or stage.get("query_index") is None:
+        return None
+    directory = Path("outputs/validator_roi") / f"query_{stage['query_index']}_{datetime.now(ZoneInfo('Asia/Seoul')):%Y%m%d_%H%M%S_%f}"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"[validator ROI] Cannot create PNG directory: {exc}", flush=True)
+        return None
+    captures = {}
+    captions = {panel["roi_debug_view"]: panel["label"].text + panel.get("png_line_errors", "") for panel in stage["panels"]}
+
+    def captured(panel, rendered):
+        picture = Image.fromarray(np.asarray(rendered)).convert("RGB")
+        text = captions[panel["roi_debug_view"]]
+        header = 16 * (text.count("\n") + 1) + 12
+        image = Image.new("RGB", (picture.width, picture.height + header), (30, 30, 30))
+        image.paste(picture, (0, header))
+        ImageDraw.Draw(image).multiline_text((6, 5), text, fill="white", spacing=4)
+        captures[panel["roi_debug_view"]] = image
+        if len(captures) != len(stage["panels"]):
+            return
+        try:
+            for view in ("A", "B", "C"):
+                captures[view].save(directory / f"{view}.png")
+            before, after = captures["D-before"], captures["D-after"]
+            comparison = Image.new("RGB", (before.width + after.width, max(before.height, after.height)), (30, 30, 30))
+            comparison.paste(before, (0, 0))
+            comparison.paste(after, (before.width, 0))
+            comparison.save(directory / "D_before_after.png")
+        except OSError as exc:
+            print(f"[validator ROI] PNG save failed: {exc}", flush=True)
+            return
+        print(f"[validator ROI] PNG saved: {directory.resolve()}", flush=True)
+
+    for panel in stage["panels"]:
+        panel["widget"].scene.scene.render_to_image(lambda image, panel=panel: captured(panel, image))
+    return directory
+
+
+def update_validator_geometry_view(display, result):
+    """Read stored results into pair-edge, per-plane boundary and integrated views."""
+    for stage in display["geometry_windows"]:
+        if stage["closed"]:
+            continue
+        number, edge_type = stage["number"], stage["edge_type"]
+        if number == 4 and not result.get("geometry_computed"):
+            stage["query_index"] = None
+        for panel in stage["panels"]:
+            widget, label, plane_id = panel["widget"], panel["label"], panel["plane_id"]
+            scene = widget.scene
+            if number == 6 and panel["graph_step"] == 4:
+                for name in panel["overlay_geometry_names"]:
+                    scene.remove_geometry(name)
+                panel["overlay_geometry_names"] = []
+            else:
+                scene.clear_geometry()
+            if number == 4:
+                for handle in panel.get("labels_3d", ()):
+                    widget.remove_3d_label(handle)
+                panel["labels_3d"] = []
+            if not result.get("planes_computed", True) or not result.get("geometry_computed"):
+                label.text = (f"{number}. NOT_COMPUTED | select a Coarse query"
+                              if not result.get("planes_computed", True) else
+                              f"{number}. NOT_COMPUTED | geometry validation disabled")
+            else:
+                if number == 4:
+                    view = panel["roi_debug_view"]
+                    counts = _add_validator_roi_debug(widget, result, view, panel["labels_3d"])
+                    title, legend = {
+                        "A": ("A. Padded Hull", "Blue dashed: ROI | orange dashed: padding | green: hull/nodes"),
+                        "B": ("B. ROI Clipping", "Blue: retained/active | orange X: clipped | red dashed: removed"),
+                        "C": ("C. TLS Line Clustering", "Blue: final lines/active | orange X: inactive | gray dots: absorbed"),
+                        "D-before": ("D. Before: core-only Hull", "Same planes/core voxel samples | white: corner candidates"),
+                        "D-after": ("D. After: padded Hull -> clipping -> TLS", "Same planes/core voxel samples | orange X: inactive | white: candidates"),
+                    }[view]
+                    label.text = f"{title} | query {result['query_index']}\n{counts}\n{legend}"
+                    panel["png_line_errors"] = ("\n" + "\n".join(
+                        f"{line['id']}: TLS max error {line['tls_max_error_mm']:.3f} mm"
+                        for patch in result["boundary_debug"] for line in patch["lines"] if line["kept_in_graph"])) if view == "C" else ""
+                    if panel.get("query_index") != result["query_index"]:
+                        query, radius = result["query_position_mm"], result["support_radius_mm"]
+                        bounds = o3d.geometry.AxisAlignedBoundingBox(query - radius, query + radius)
+                        widget.setup_camera(60., bounds, query)
+                        scene.camera.look_at(query, query + radius * np.array([1.7, 1.3, 1.5]), [0., 0., 1.])
+                        panel["query_index"] = result["query_index"]
+                    stage["query_index"] = result["query_index"]
+                    widget.force_redraw()
+                    continue
+                edges = [edge for edge in result["edges"]
+                         if (edge_type is None or edge["edge_type"] == edge_type)
+                         and (plane_id is None or plane_id in edge["plane_ids"])]
+                if edge_type == "plane_intersection":
+                    widths = sorted({pair["strip_half_width_mm"]
+                                     for pair in result.get("plane_pair_diagnostics", ())})
+                    strip_label = "/".join(f"{width:g}" for width in widths) if widths else "N/A"
+                    label.text = (f"{number}. Plane-pair intersections | {len(edges)} edges | strip +/-{strip_label} mm\n"
+                                  "Yellow: infinite line (local span) | RGB translucent: strips | cyan: finite edge | gray: hull / unsupported")
+                else:
+                    step = panel["graph_step"]
+                    original = result.get("all_edges", result["edges"])
+                    shared = sum(edge["edge_type"] == "plane_intersection" for edge in original)
+                    masked = sum(bool(edge.get("masked_intervals_mm")) for edge in original)
+                    if step == 1:
+                        label.text = (f"6-1. Original edges | query {result['query_index']}\n"
+                                      f"{len(original) - shared} boundary | {shared} shared edges\n"
+                                      "RGB: plane boundaries | cyan: shared edges")
+                    elif step == 2:
+                        overlap = result.get("edge_overlap_settings")
+                        criteria = (f"Blue radius: {overlap['distance_mm']:g} mm | angle <= {overlap['angle_deg']:g} deg | "
+                                    f"overlap >= {overlap['min_length_mm']:g} mm" if overlap is not None else
+                                    "Overlap distance settings unavailable")
+                        label.text = (f"6-2. Overlap removal | {masked} boundaries masked\n"
+                                      f"{criteria}\n"
+                                      "Magenta dashed: removed | gray: kept | cyan: shared")
+                    elif step == 3:
+                        label.text = (f"6-3. Extension / corner LS | {result['validation_status']}\n"
+                                      f"{len(result.get('vertex_candidates', ()))} candidates -> {len(result['vertices'])} vertices | yellow dashes: used extension\n"
+                                      "White: candidates | green: accepted | red: rejected | gray links: LS / residual")
+                    else:
+                        background = (f"{panel['raw_point_count']} original raw points" if panel["raw_point_count"] else
+                                      "original raw cloud unavailable")
+                        shared_ids = [edge["edge_id"] for edge in result["corner_edges"]
+                                      if edge["edge_type"] == "plane_intersection"]
+                        boundary_ids = [edge["edge_id"] for edge in result["corner_edges"]
+                                        if edge["edge_type"] == "boundary"]
+                        shared_label = (str(shared_ids) if shared_ids else
+                                        "none (boundary-only)" if result["selected_vertex_id"] is not None else
+                                        "none (no selected corner)")
+                        label.text = (f"6-4. Selected corner on original cloud | {result['validation_status']} | query {result['query_index']}\n"
+                                      f"Corner {result['selected_vertex_id']} | boundary {len(boundary_ids)}: {boundary_ids} | shared {len(shared_ids)}: {shared_label} | {background}\n"
+                                      "Gray: raw | green: corner / boundary | cyan: contributing shared edge | yellow dashes: extension")
+                if number == 6:
+                    panel["overlay_geometry_names"] = _add_validator_graph_step(scene, result, panel["graph_step"])
+                else:
+                    _add_validator_corner_geometry(scene, result, edge_type=edge_type, plane_id=plane_id)
+                query, radius = result["query_position_mm"], result["support_radius_mm"]
+                if number == 6:
+                    radius += result.get("vertex_endpoint_tolerance_mm", 0.)
+                if panel.get("query_index") != result["query_index"]:
+                    bounds = o3d.geometry.AxisAlignedBoundingBox(query - radius, query + radius)
+                    widget.setup_camera(60.0, bounds, query)
+                    scene.camera.look_at(query, query + radius * np.array([1.7, 1.3, 1.5]), [0., 0., 1.])
+                    panel["query_index"] = result["query_index"]
+            widget.force_redraw()
+        stage["window"].post_redraw()
 
 
 def update_guided_validator_view(display, result):
     """Replace only small ROI geometry; keep the overview and its camera intact."""
     rendering = o3d.visualization.rendering
-    update_validator_fine_heatmap(display, result)
+    update_validator_roi_view(display, result)
+    update_validator_geometry_view(display, result)
     widget = display["local"]
     scene = widget.scene
     scene.clear_geometry()
     if not result.get("planes_computed", True):
-        display["labels"][2].text = "3. Plane fitting | click a Fine NMS candidate"
+        display["labels"][2].text = "3. Plane fitting | select a Coarse query"
         widget.force_redraw()
         display["window"].post_redraw()
         return
-    display["labels"][2].text = f"3. Plane fitting | {len(result['planes'])} planes"
+    plane_counts = " | ".join(
+        f"P{i} ({color}): {plane.get('inlier_count', '?')}"
+        for i, (plane, color) in enumerate(zip(result["planes"], ("red", "green", "blue")))
+    )
+    display["labels"][2].text = (
+        f"3. Plane fitting | {len(result['planes'])} planes | min inliers: {result.get('min_required', '?')}\n"
+        + (plane_counts or "No accepted planes")
+    )
     data = guided_validator_primitives(result)
     query, radius = result["query_position_mm"], result["radius_mm"]
     points = result["roi_points_mm"]
@@ -238,13 +827,8 @@ def update_guided_validator_view(display, result):
     marker.compute_vertex_normals()
     material = rendering.MaterialRecord()
     material.shader, material.base_color = "defaultUnlit", [1.0, 0.0, 0.0, 1.0]
-    scene.add_geometry("fine_query", marker, material)
-    coarse = result["coarse_query_position_mm"]
-    coarse_marker = o3d.geometry.TriangleMesh.create_sphere(radius=max(0.4, radius * 0.025))
-    coarse_marker.translate(coarse)
-    material = rendering.MaterialRecord()
-    material.shader, material.base_color = "defaultUnlit", [1.0, 0.5, 0.0, 1.0]
-    scene.add_geometry("coarse_query", coarse_marker, material)
+    material.base_color = [1.0, 0.5, 0.0, 1.0]
+    scene.add_geometry("coarse_query", marker, material)
     for i, (plane, disk) in enumerate(zip(result["planes"], data["disk_vertices_mm"])):
         color = np.eye(3)[i].tolist()
         mesh = o3d.geometry.TriangleMesh()
@@ -255,7 +839,8 @@ def update_guided_validator_view(display, result):
         mesh.compute_vertex_normals()
         material = rendering.MaterialRecord()
         material.shader = "defaultLitTransparency"
-        material.base_color, material.has_alpha = color + [0.60], True
+        material.base_color = color + [0.60]
+        material.has_alpha = True
         material.emissive_color = (np.asarray(color) * 0.25).tolist() + [1.0]
         scene.add_geometry(f"plane_{i}", mesh, material)
         outline = o3d.geometry.LineSet()
@@ -278,8 +863,7 @@ def update_guided_validator_view(display, result):
         material = rendering.MaterialRecord()
         material.shader, material.base_color = "defaultUnlit", color + [1.0]
         scene.add_geometry(f"normal_{i}", arrow, material)
-    bounds_points = np.vstack((query - radius, query + radius, coarse))
-    bounds = o3d.geometry.AxisAlignedBoundingBox(bounds_points.min(axis=0), bounds_points.max(axis=0))
+    bounds = o3d.geometry.AxisAlignedBoundingBox(query - radius, query + radius)
     widget.setup_camera(60.0, bounds, query)
     scene.camera.look_at(query, query + radius * np.array([1.7, 1.3, 1.5]), [0.0, 0.0, 1.0])
     widget.force_redraw()
@@ -1547,6 +2131,100 @@ def _segment_cylinder(start, end, radius, color):
     return mesh
 
 
+def open_total_result_views(points_mm, raw_points_mm, result, *, validator_voxel_mm):
+    """Create exactly two views; batch final meshes by colour to reduce draw calls."""
+    points, raw = np.asarray(points_mm), np.asarray(raw_points_mm)
+    scores, validation = result["scores"], result["validation"]
+    upper = dense_heatmap_vmax(scores)["fusion_score"]
+    heatmap = o3d.geometry.PointCloud()
+    heatmap.points = o3d.utility.Vector3dVector(points)
+    heatmap.colors = o3d.utility.Vector3dVector(dense_heatmap_colors(
+        scores["fusion_score"], scores["fusion_valid_mask"], vmax=upper))
+    seeds = o3d.geometry.TriangleMesh()
+    for index in validation["candidate_indices"]:
+        marker = o3d.geometry.TriangleMesh.create_sphere(radius=2., resolution=6)
+        marker.translate(points[index])
+        seeds += marker
+    seeds.paint_uniform_color([1., .05, .03])
+    if len(seeds.vertices):
+        seeds.compute_vertex_normals()
+    background = o3d.geometry.PointCloud()
+    background.points = o3d.utility.Vector3dVector(raw)
+    background.paint_uniform_color([.38, .38, .38])
+    meshes = {name: o3d.geometry.TriangleMesh() for name in ("boundary", "plane_intersection", "extension", "residual")}
+    colours = {"boundary": [.1, 1., .2], "plane_intersection": [0., .9, 1.],
+               "extension": [1., .8, .1], "residual": [.65, .65, .65]}
+    edge_radius = max(.5, .15 * validator_voxel_mm)
+    for edge in validation["final_edges"]:
+        delta = edge["end_mm"] - edge["start_mm"]
+        length = float(np.linalg.norm(delta))
+        if length <= 1e-8:
+            continue
+        direction = delta / length
+        for low, high in edge["active_intervals_mm"]:
+            bar = _segment_cylinder(edge["start_mm"] + low * direction,
+                                    edge["start_mm"] + high * direction,
+                                    edge_radius, colours[edge["edge_type"]])
+            if bar is not None:
+                meshes[edge["edge_type"]] += bar
+        position = edge["corner_position_mm"]
+        parameter = float((position - edge["start_mm"]) @ direction)
+        extension = ((parameter, 0.) if parameter < -1e-8 else
+                     (length, parameter) if parameter > length + 1e-8 else None)
+        if extension is not None:
+            low, high = extension
+            dash = min(3., (high - low) / 5.)
+            for start in np.arange(low, high, 2 * dash):
+                bar = _segment_cylinder(edge["start_mm"] + start * direction,
+                                        edge["start_mm"] + min(start + dash, high) * direction,
+                                        .6 * edge_radius, colours["extension"])
+                if bar is not None:
+                    meshes["extension"] += bar
+            foot = edge["start_mm"] + parameter * direction
+            bar = _segment_cylinder(foot, position, .3 * edge_radius, colours["residual"])
+            if bar is not None:
+                meshes["residual"] += bar
+    corners = o3d.geometry.TriangleMesh()
+    for corner in validation["final_corners"]:
+        marker = o3d.geometry.TriangleMesh.create_sphere(radius=max(2., .8 * validator_voxel_mm), resolution=10)
+        marker.translate(corner["position_mm"])
+        corners += marker
+    corners.paint_uniform_color([1., .05, .03])
+    if len(corners.vertices):
+        corners.compute_vertex_normals()
+    diagnostics = validation["diagnostics"]
+    titles = (
+        f"TOTAL | 1. Detector Fusion heatmap 0..{upper:.4g} (Q99) | NMS={diagnostics['candidate_count']} | R: recapture Q/Esc: quit",
+        f"TOTAL | 2. Final corners={len(validation['final_corners'])} edges={len(validation['final_edges'])} | "
+        "gray=raw red=corner green=boundary cyan=shared yellow=extension | R: recapture Q/Esc: quit",
+    )
+    contents = ((heatmap, [seeds]), (background, [*meshes.values(), corners]))
+    windows = []
+    try:
+        for index, (cloud, overlays) in enumerate(contents):
+            vis = o3d.visualization.VisualizerWithKeyCallback()
+            if not vis.create_window(window_name=titles[index], width=920, height=800, left=15 + index * 940, top=45):
+                raise RuntimeError("Failed to create total-mode result window")
+            windows.append(vis)
+            vis.add_geometry(cloud)
+            for mesh in overlays:
+                if len(mesh.vertices):
+                    vis.add_geometry(mesh, reset_bounding_box=False)
+            option = vis.get_render_option()
+            option.background_color = np.asarray([.08, .08, .08])
+            option.point_size, option.light_on = (4. if index == 0 else 1.5), False
+            control = vis.get_view_control()
+            control.set_lookat(heatmap.get_axis_aligned_bounding_box().get_center())
+            control.set_front(normalize([.75, .55, .65]))
+            control.set_up(normalize([0., -1., 0.]))
+            control.set_zoom(.72)
+        return windows
+    except BaseException:
+        for vis in windows:
+            vis.destroy_window()
+        raise
+
+
 def show_detector_validator_results(points_mm, validation, *, voxel_3d_mm):
     """Show only final validator edges and corners over neutral scene context."""
     points = np.asarray(points_mm, dtype=np.float64)
@@ -1832,6 +2510,7 @@ __all__ = [
     "synchronize_dense_camera_views",
     "dense_heatmap_panels",
     "show_dense_score_heatmaps",
+    "open_total_result_views",
     "open_cornervins_plane_views",
     "plane_edge_refiner_primitives",
     "show_detector_validator_results",

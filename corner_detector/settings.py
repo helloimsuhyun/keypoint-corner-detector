@@ -1,4 +1,4 @@
-"""Single-source CLI defaults and mode-specific resolved detector configs."""
+"""Settings grouped by mode: detector, validator, fine, and ball."""
 
 from __future__ import annotations
 
@@ -15,14 +15,13 @@ from .preprocessing import NoiseConfig, validate_probability
 
 @dataclass(frozen=True)
 class SettingsDefaults:
-    """CLI defaults, grouped by consumer and ordered by pipeline execution."""
+    """CLI defaults: shared -> detector -> validator -> fine -> ball."""
 
     # ------------------------------------------------------------------
     # Shared: input -> sensor geometry -> 3-D preprocessing -> display.
     # ------------------------------------------------------------------
     source: str = "stl"
     mode: str = "fine"
-    only: bool = False
     input: str | None = None
     frame_index: int = 0
     fps: int = 30
@@ -34,8 +33,6 @@ class SettingsDefaults:
     max_depth_m: float = 3.0
 
     voxel_3d_mm: float = 10.0
-    min_neighbors: int = 6
-    centroid_radius_x: float = 8.0
     no_3d_view: bool = False
 
     # Shared synthetic perturbation and reproducibility.
@@ -48,43 +45,73 @@ class SettingsDefaults:
     quantization_mm: float = 0.0
     seed: int = 0
 
-    # Validator: separate Fine/RANSAC voxels; each *_x uses its stage's voxel.
-    validator_fine_voxel_mm: float = 5.0
-    validator_fine_search_radius_x: float = 9.0
-    validator_fine_ced_radius_x: float = 3.5
+    # ------------------------------------------------------------------
+    # Detector: dense CED -> bilateral/PCA fusion -> threshold -> NMS.
+    # ------------------------------------------------------------------
+    only: bool = False
+    # Fine also uses these; validator/ball reuse them for Coarse queries.
+    min_neighbors: int = 40
+    centroid_radius_x: float = 8.0 # 8cm
 
-    validator_fine_min_neighbors: int = 6
-    validator_fine_bilateral_radius_x: float = 3.0
-    validator_fine_bilateral_sigma_spatial_x: float = 1.5
-    validator_fine_bilateral_sigma_ced: float = 0.05
+    bilateral_sigma_spatial_mm: float | None = None
+    bilateral_sigma_ced: float = 0.05
+    bilateral_radius_mm: float | None = None
+    pca_radius_factor: float = 1.5
+    pca_ratio_saturation_tau: float | None = 0.5
+    fusion_threshold_mode: str = "fixed" # "fixed", "global-mean", "peak-relative"
+    fusion_score_threshold: float = 0.10
+    nms_radius_mm: float | None = 30
 
-    validator_fine_pca_radius_x: float = 4.5
-    validator_fine_pca_ratio_saturation_tau: float | None = 0.5
-    validator_fine_fusion_threshold_mode: str = "peak-relative"
-    # Peak-relative: max(absolute floor, ratio * valid Fine ROI peak).
-    validator_fine_fusion_score_threshold: float = 0.10
-    validator_fine_fusion_peak_relative_ratio: float = 0.5
-    validator_fine_nms_method: str = "greedy"
-    validator_fine_nms_radius_x: float = 3.0
-
+    # ------------------------------------------------------------------
+    # Validator / total: Coarse NMS -> query-local voxel -> guided RANSAC.
+    # Each validator *_x length uses the RANSAC voxel; --mode fine is separate.
+    # ------------------------------------------------------------------
+    # 1. Guided sequential RANSAC, plane estimation,
     validator_ransac_voxel_mm: float = 5.0
-    validator_ransac_radius_x: float = 6.0
+    validator_ransac_radius_x: float = 15.0
     validator_max_planes: int = 3
     validator_ransac_iterations: int = 256
-    validator_inlier_threshold_x: float = 0.5
-    validator_guided_sigma_x: float = 1.0
 
-    validator_min_inliers: int = 20
+    validator_inlier_threshold_x: float = 1.0
+    validator_guided_sigma_x: float = 1.5
+
+    validator_min_inliers: int = 35
     validator_min_inlier_ratio: float = 0.08
     validator_random_seed: int = 42
 
+    # 2. Padded plane support -> Convex Hull -> original ROI clipping.
+    validator_geometry_enabled: bool = True
+    validator_roi_padding_mm: float = 10.0  # Hull용 추가 반경: R_pad = R + padding (voxel과 독립)
+    validator_plane_connect_radius_x: float = 4.0  # 평면 support의 3D 거리 연결 반경 / RANSAC voxel
+
+    # 3. Clipped Hull -> TLS boundary lines (기존 병합 기준 유지).
+    validator_boundary_merge_max_error_mm: float = 3.5  # 최대 수직 TLS 피팅 오차
+    validator_edge_min_length_x: float = 1.0  # 최소 유한 edge 길이 / RANSAC voxel
+
+    # 4. Plane-pair intersection -> boundary overlap masking.
+    validator_plane_parallel_angle_deg: float = 20.0  # 이 각도 미만의 평면쌍은 교선 추출 제외
+    validator_intersection_strip_half_width_mm: float = 15.0  # 교선 tolerance strip의 반폭
+    validator_edge_overlap_angle_deg: float = 25.0
+    validator_edge_overlap_distance_mm: float = 15.0
+    validator_edge_overlap_min_length_mm: float = 2.5
+
+    # 5. Vertex / Corner: 같은 평면은 공통 ACTIVE Node가 필요; *_mm는 voxel과 독립적.
+    validator_corner_min_edge_angle_deg: float = 30.0  # 최소 교차각; Boundary 병합/중복 방향 비교에도 사용
+    validator_vertex_line_distance_mm: float = 30.0  # 최근접점 거리 및 LS 후 선분까지의 최대 거리
+    validator_vertex_endpoint_tolerance_mm: float = 15.0  # 원래 선분 끝점의 최대 외삽 길이
+    validator_vertex_group_span_mm: float = 15.0  # Vertex 그룹의 최대 전체 범위
+    validator_corner_gate_radius_mm: float = 10.0  # 추정 코너와 Coarse query 사이 최대 거리
+
+    # ================================================================================================
+    # under this comment, the parameters are used for past mode we not use it now, but we keep it for future use
     # ------------------------------------------------------------------
-    # Validator step 0: query geometry.
+    # Fine (--mode fine): organized planes -> boundary/Hough -> graph/refiner.
     # ------------------------------------------------------------------
+    # Fine step 0: query geometry.
     query_radius_x: float = 10.0
     voxel_2d_mm: float = 10.0
     # ------------------------------------------------------------------
-    # Validator step 1: query-core organized plane extraction.
+    # Fine step 1: query-core organized plane extraction.
     # Values marked as ROI/Kinect adaptations are not paper constants.
     # ------------------------------------------------------------------
     # Step 1: AHC planar-region segmentation (block side is in image pixels).
@@ -113,7 +140,7 @@ class SettingsDefaults:
     cornervins_show_plane_patches: bool = True
     cornervins_show_convex_hulls: bool = True
 
-    # Validator step 2: padded projection and continuous 2-D boundary evidence.
+    # Fine step 2: padded projection and continuous 2-D boundary evidence.
     plane_edge_graph_enabled: bool = True
     plane_edge_debug_2d: bool = True
     plane_edge_export_json: str | None = None
@@ -126,7 +153,7 @@ class SettingsDefaults:
     boundary_sigma_x: float = 2.0
     plane_edge_alpha_x: float = 0.0  # compatibility fallback; padded boundary does not use it
 
-    # Validator step 3: weighted Hough accumulator and seed NMS.
+    # Fine step 3: weighted Hough accumulator and seed NMS.
     plane_edge_hough_bin_x: float = 0.15
     plane_edge_hough_angle_deg: float = 0.5
     plane_edge_hough_min_mean_weight: float = 0.60
@@ -138,7 +165,7 @@ class SettingsDefaults:
     plane_edge_hough_nms_rho_x: float = 3.0
     plane_edge_max_peaks: int = 7
 
-    # Validator step 4: continuous line refinement and finite-segment NMS.
+    # Fine step 4: continuous line refinement and finite-segment NMS.
     plane_edge_line_refinement_enabled: bool = True
     plane_edge_line_refinement_max_iterations: int = 60
     plane_edge_line_final_nms_angle_deg: float = 5.0
@@ -149,7 +176,7 @@ class SettingsDefaults:
     plane_edge_min_points: int = 3
     plane_edge_segment_gap_x: float = 2.5
 
-    # Validator step 5: direct PCA/TLS 3-D line reconstruction and merging.
+    # Fine step 5: direct PCA/TLS 3-D line reconstruction and merging.
     plane_edge_plane_inlier_x: float = 1.5
     plane_edge_min_length_x: float = 3.0
     plane_edge_direction_tolerance_deg: float = 15.0
@@ -159,7 +186,7 @@ class SettingsDefaults:
     plane_edge_merge_gap_x: float = 5.0
     plane_edge_merge_angle_deg: float = 30.0
 
-    # Validator step 6: graph-local plane/edge refinement and corners.
+    # Fine step 6: graph-local plane/edge refinement and corners.
     plane_edge_refiner_enabled: bool = True
     plane_edge_refine_loss: str = "huber"
     plane_edge_refine_huber_delta_x: float = 1.0
@@ -169,18 +196,6 @@ class SettingsDefaults:
     plane_edge_refine_corner_intersection_x: float = 0.5
     plane_edge_refine_corner_endpoint_gap_x: float = 1.2
     plane_edge_refine_corner_merge_x: float = 1.0
-
-    # ------------------------------------------------------------------
-    # Detector: dense CED -> bilateral/PCA fusion -> threshold -> NMS.
-    # ------------------------------------------------------------------
-    bilateral_sigma_spatial_mm: float | None = None
-    bilateral_sigma_ced: float = 0.05
-    bilateral_radius_mm: float | None = None
-    pca_radius_factor: float = 1.5
-    pca_ratio_saturation_tau: float | None = 0.5
-    fusion_threshold_mode: str = "global-mean"
-    fusion_score_threshold: float = 0.10
-    nms_radius_mm: float | None = 50
 
     # ------------------------------------------------------------------
     # Ball/extremity256: local vertex hypotheses after CED/PCA/NMS.
@@ -208,11 +223,198 @@ class SettingsDefaults:
     ball_soft_alpha: float = 4.0
     ball_voting_dtype: str = "float64"
 
+
 DEFAULTS = SettingsDefaults()
 
 
+# ----------------------------------------------------------------------
+# Detector: dense CED -> bilateral/PCA -> Fusion -> NMS.
+# ----------------------------------------------------------------------
+
+def _resolve_detector_values(args):
+    """Resolve settings consumed only by the whole-cloud detector."""
+    v3 = float(args.voxel_3d_mm)
+    ced_radius_mm = args.centroid_radius_x * v3
+    return {
+        "voxel_3d_mm": v3,
+        "min_neighbors": args.min_neighbors,
+        "show_3d": not args.no_3d_view,
+        "only": args.only,
+        "centroid_radius_mm": ced_radius_mm,
+        "bilateral_sigma_spatial_mm": (
+            0.5 * ced_radius_mm
+            if args.bilateral_sigma_spatial_mm is None
+            else args.bilateral_sigma_spatial_mm
+        ),
+        "bilateral_sigma_ced": args.bilateral_sigma_ced,
+        "bilateral_radius_mm": (
+            ced_radius_mm
+            if args.bilateral_radius_mm is None
+            else args.bilateral_radius_mm
+        ),
+        "pca_radius_factor": args.pca_radius_factor,
+        "pca_radius_mm": ced_radius_mm * args.pca_radius_factor,
+        "pca_ratio_saturation_tau": args.pca_ratio_saturation_tau,
+        "fusion_threshold_mode": args.fusion_threshold_mode.replace("-", "_"),
+        "fusion_score_threshold": args.fusion_score_threshold,
+        "nms_radius_mm": (
+            0.5 * ced_radius_mm
+            if args.nms_radius_mm is None
+            else args.nms_radius_mm
+        ),
+    }
+
+
+
+_DEFAULT_DETECTOR = _resolve_detector_values(DEFAULTS)
+
+
+@dataclass
+class DetectorConfig:
+    """Resolved dense detector settings with optional explicit validation."""
+
+    voxel_3d_mm: float = _DEFAULT_DETECTOR["voxel_3d_mm"]
+    min_neighbors: int = _DEFAULT_DETECTOR["min_neighbors"]
+    show_3d: bool = _DEFAULT_DETECTOR["show_3d"]
+    only: bool = DEFAULTS.only
+    centroid_radius_mm: float = _DEFAULT_DETECTOR["centroid_radius_mm"]
+    bilateral_sigma_spatial_mm: float = _DEFAULT_DETECTOR["bilateral_sigma_spatial_mm"]
+    bilateral_sigma_ced: float = _DEFAULT_DETECTOR["bilateral_sigma_ced"]
+    bilateral_radius_mm: float = _DEFAULT_DETECTOR["bilateral_radius_mm"]
+    pca_radius_factor: float = _DEFAULT_DETECTOR["pca_radius_factor"]
+    pca_radius_mm: float = _DEFAULT_DETECTOR["pca_radius_mm"]
+    pca_ratio_saturation_tau: float | None = _DEFAULT_DETECTOR[
+        "pca_ratio_saturation_tau"
+    ]
+    fusion_threshold_mode: str = _DEFAULT_DETECTOR["fusion_threshold_mode"]
+    fusion_score_threshold: float = _DEFAULT_DETECTOR["fusion_score_threshold"]
+    nms_radius_mm: float = _DEFAULT_DETECTOR["nms_radius_mm"]
+    validator: ValidatorConfig | None = None
+
+
+
+# ----------------------------------------------------------------------
+# Validator: Coarse queries -> query-local voxel -> guided sequential RANSAC.
+# ----------------------------------------------------------------------
+
+def _resolve_guided_validator_values(args):
+    ransac_voxel = args.validator_ransac_voxel_mm
+    return {
+        "ransac_voxel_mm": ransac_voxel,
+        "ransac_radius_mm": args.validator_ransac_radius_x * ransac_voxel,
+        "inlier_threshold_mm": args.validator_inlier_threshold_x * ransac_voxel,
+        "guided_sigma_mm": args.validator_guided_sigma_x * ransac_voxel,
+        "max_planes": args.validator_max_planes,
+        "ransac_iterations": args.validator_ransac_iterations,
+        "min_inliers": args.validator_min_inliers,
+        "min_inlier_ratio": args.validator_min_inlier_ratio,
+        "random_seed": args.validator_random_seed,
+        "geometry_enabled": args.validator_geometry_enabled,
+        **{name: getattr(args, "validator_" + name) for name in (
+            "edge_overlap_angle_deg", "edge_overlap_distance_mm", "edge_overlap_min_length_mm",
+            "vertex_line_distance_mm",
+            "vertex_endpoint_tolerance_mm", "vertex_group_span_mm")},
+        "roi_padding_mm": args.validator_roi_padding_mm,
+        "plane_connect_radius_mm": args.validator_plane_connect_radius_x * ransac_voxel,
+        "plane_parallel_angle_deg": args.validator_plane_parallel_angle_deg,
+        "intersection_strip_half_width_mm": args.validator_intersection_strip_half_width_mm,
+        "boundary_merge_max_error_mm": args.validator_boundary_merge_max_error_mm,
+        "edge_min_length_mm": args.validator_edge_min_length_x * ransac_voxel,
+        "corner_min_edge_angle_deg": args.validator_corner_min_edge_angle_deg,
+        "corner_gate_radius_mm": args.validator_corner_gate_radius_mm,
+    }
+
+
+
+_DEFAULT_GUIDED_VALIDATOR = _resolve_guided_validator_values(DEFAULTS)
+
+
+@dataclass(frozen=True)
+class GuidedValidatorConfig:
+    """Resolved stage-specific voxel sizes and mm lengths; CLI/defaults use *_x."""
+    ransac_voxel_mm: float = _DEFAULT_GUIDED_VALIDATOR["ransac_voxel_mm"]
+    ransac_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["ransac_radius_mm"]
+    max_planes: int = DEFAULTS.validator_max_planes
+    ransac_iterations: int = DEFAULTS.validator_ransac_iterations
+    inlier_threshold_mm: float = _DEFAULT_GUIDED_VALIDATOR["inlier_threshold_mm"]
+    guided_sigma_mm: float = _DEFAULT_GUIDED_VALIDATOR["guided_sigma_mm"]
+    min_inliers: int = DEFAULTS.validator_min_inliers
+    min_inlier_ratio: float = DEFAULTS.validator_min_inlier_ratio
+    random_seed: int = DEFAULTS.validator_random_seed
+    geometry_enabled: bool = _DEFAULT_GUIDED_VALIDATOR["geometry_enabled"]
+    edge_overlap_angle_deg: float = DEFAULTS.validator_edge_overlap_angle_deg
+    edge_overlap_distance_mm: float = DEFAULTS.validator_edge_overlap_distance_mm
+    edge_overlap_min_length_mm: float = DEFAULTS.validator_edge_overlap_min_length_mm
+    vertex_line_distance_mm: float = DEFAULTS.validator_vertex_line_distance_mm
+    vertex_endpoint_tolerance_mm: float = DEFAULTS.validator_vertex_endpoint_tolerance_mm
+    vertex_group_span_mm: float = DEFAULTS.validator_vertex_group_span_mm
+    roi_padding_mm: float = _DEFAULT_GUIDED_VALIDATOR["roi_padding_mm"]
+    plane_connect_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["plane_connect_radius_mm"]
+    plane_parallel_angle_deg: float = _DEFAULT_GUIDED_VALIDATOR["plane_parallel_angle_deg"]
+    intersection_strip_half_width_mm: float = _DEFAULT_GUIDED_VALIDATOR["intersection_strip_half_width_mm"]
+    boundary_merge_max_error_mm: float = _DEFAULT_GUIDED_VALIDATOR["boundary_merge_max_error_mm"]
+    edge_min_length_mm: float = _DEFAULT_GUIDED_VALIDATOR["edge_min_length_mm"]
+    corner_min_edge_angle_deg: float = _DEFAULT_GUIDED_VALIDATOR["corner_min_edge_angle_deg"]
+    corner_gate_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["corner_gate_radius_mm"]
+
+    @property
+    def padded_support_radius_mm(self):
+        return self.ransac_radius_mm + self.roi_padding_mm
+
+    def validate(self):
+        numeric = [value for value in vars(self).values() if isinstance(value, (int, float, np.number))]
+        if not np.isfinite(numeric).all():
+            raise ValueError("Guided validator settings must be finite")
+        for name in ("max_planes", "ransac_iterations", "min_inliers", "random_seed"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+                raise ValueError(f"{name} must be an integer")
+        if min(self.ransac_voxel_mm, self.ransac_radius_mm,
+               self.inlier_threshold_mm, self.guided_sigma_mm) <= 0:
+            raise ValueError("Validator radii, threshold and guided sigma must be positive")
+        if not 0 <= self.max_planes <= 3 or self.ransac_iterations < 1:
+            raise ValueError("Require 0..3 planes and at least one RANSAC iteration")
+        if self.min_inliers < 3 or self.random_seed < 0:
+            raise ValueError("Require at least 3 inliers and a nonnegative seed")
+        if not 0 <= self.min_inlier_ratio <= 1:
+            raise ValueError("min_inlier_ratio must be in [0, 1]")
+        if self.intersection_strip_half_width_mm < 0:
+            raise ValueError("Intersection strip half width must be nonnegative (mm)")
+        if self.boundary_merge_max_error_mm < 0:
+            raise ValueError("Boundary merge maximum error must be nonnegative (mm)")
+        if not isinstance(self.geometry_enabled, (bool, np.bool_)):
+            raise ValueError("geometry_enabled must be boolean")
+        if self.roi_padding_mm < 0:
+            raise ValueError("ROI padding must be nonnegative (mm)")
+        if not 0 <= self.edge_overlap_angle_deg < 90:
+            raise ValueError("Edge overlap angle must be in [0, 90)")
+        if min(self.edge_overlap_distance_mm, self.edge_overlap_min_length_mm,
+               self.vertex_line_distance_mm, self.vertex_endpoint_tolerance_mm,
+               self.vertex_group_span_mm) <= 0:
+            raise ValueError("Edge overlap and vertex distances must be positive (mm)")
+        if min(self.plane_connect_radius_mm,
+               self.edge_min_length_mm,
+               self.corner_gate_radius_mm) <= 0:
+            raise ValueError("Geometry radii, length and tolerance must be positive")
+        if not (0 < self.plane_parallel_angle_deg <= 90
+                and 0 < self.corner_min_edge_angle_deg <= 90):
+            raise ValueError("Geometry angle thresholds must be in (0, 90] degrees")
+
+
+
+@dataclass
+class ValidatorDetectorConfig(DetectorConfig):
+    mode: str = "validator"
+    validator: GuidedValidatorConfig = field(default_factory=GuidedValidatorConfig)
+
+
+
+# ----------------------------------------------------------------------
+# Fine: organized planes -> padded boundary/Hough -> graph/refiner.
+# ----------------------------------------------------------------------
+
 def _resolve_validator_values(args):
-    """Resolve validator settings in the same order as the runtime stages."""
+    """Resolve fine-mode settings in runtime stage order; retain the API name."""
     v3 = float(args.voxel_3d_mm)
     v2 = float(args.voxel_2d_mm)
     return {
@@ -296,67 +498,13 @@ def _resolve_validator_values(args):
     }
 
 
-def _resolve_detector_values(args):
-    """Resolve settings consumed only by the whole-cloud detector."""
-    v3 = float(args.voxel_3d_mm)
-    ced_radius_mm = args.centroid_radius_x * v3
-    return {
-        "voxel_3d_mm": v3,
-        "min_neighbors": args.min_neighbors,
-        "show_3d": not args.no_3d_view,
-        "only": args.only,
-        "centroid_radius_mm": ced_radius_mm,
-        "bilateral_sigma_spatial_mm": (
-            0.5 * ced_radius_mm
-            if args.bilateral_sigma_spatial_mm is None
-            else args.bilateral_sigma_spatial_mm
-        ),
-        "bilateral_sigma_ced": args.bilateral_sigma_ced,
-        "bilateral_radius_mm": (
-            ced_radius_mm
-            if args.bilateral_radius_mm is None
-            else args.bilateral_radius_mm
-        ),
-        "pca_radius_factor": args.pca_radius_factor,
-        "pca_radius_mm": ced_radius_mm * args.pca_radius_factor,
-        "pca_ratio_saturation_tau": args.pca_ratio_saturation_tau,
-        "fusion_threshold_mode": args.fusion_threshold_mode.replace("-", "_"),
-        "fusion_score_threshold": args.fusion_score_threshold,
-        "nms_radius_mm": (
-            0.5 * ced_radius_mm
-            if args.nms_radius_mm is None
-            else args.nms_radius_mm
-        ),
-    }
-
-
-def _resolve_extremity_values(args):
-    """Convert local voting lengths from 3-D voxel multipliers to mm."""
-    v3 = float(args.voxel_3d_mm)
-    return {
-        "radii_mm": tuple(radius * v3 for radius in args.ball_radii_x),
-        "padding_mm": args.ball_padding_x * v3,
-        "directions": args.ball_directions,
-        "object_clustering": args.ball_object_clustering,
-        "cluster_radius_mm": args.ball_cluster_radius_x * v3,
-        "nms_radius_mm": args.ball_nms_radius_x * v3,
-        "nms_method": args.ball_nms_method,
-        "min_vote_fraction": args.ball_min_vote_fraction,
-        "voting_mode": args.ball_voting_mode,
-        "soft_tau_mm": args.ball_soft_tau_x * v3,
-        "soft_alpha": args.ball_soft_alpha,
-        "voting_dtype": args.ball_voting_dtype,
-    }
-
 
 _DEFAULT_VALIDATOR = _resolve_validator_values(DEFAULTS)
-_DEFAULT_DETECTOR = _resolve_detector_values(DEFAULTS)
-_DEFAULT_EXTREMITY = _resolve_extremity_values(DEFAULTS)
 
 
 @dataclass
 class ValidatorConfig:
-    """Resolved settings for clicked-query plane/edge validation."""
+    """Resolved fine-mode settings; retain the shared validator API name."""
 
     # Shared/query geometry.
     voxel_3d_mm: float = _DEFAULT_VALIDATOR["voxel_3d_mm"]
@@ -462,127 +610,32 @@ class ValidatorConfig:
         return self.query_radius_mm + self.projection_halo_mm
 
 
-@dataclass
-class DetectorConfig:
-    """Resolved dense detector settings plus its shared validator config."""
 
-    voxel_3d_mm: float = _DEFAULT_DETECTOR["voxel_3d_mm"]
-    min_neighbors: int = _DEFAULT_DETECTOR["min_neighbors"]
-    show_3d: bool = _DEFAULT_DETECTOR["show_3d"]
-    only: bool = DEFAULTS.only
-    centroid_radius_mm: float = _DEFAULT_DETECTOR["centroid_radius_mm"]
-    bilateral_sigma_spatial_mm: float = _DEFAULT_DETECTOR["bilateral_sigma_spatial_mm"]
-    bilateral_sigma_ced: float = _DEFAULT_DETECTOR["bilateral_sigma_ced"]
-    bilateral_radius_mm: float = _DEFAULT_DETECTOR["bilateral_radius_mm"]
-    pca_radius_factor: float = _DEFAULT_DETECTOR["pca_radius_factor"]
-    pca_radius_mm: float = _DEFAULT_DETECTOR["pca_radius_mm"]
-    pca_ratio_saturation_tau: float | None = _DEFAULT_DETECTOR[
-        "pca_ratio_saturation_tau"
-    ]
-    fusion_threshold_mode: str = _DEFAULT_DETECTOR["fusion_threshold_mode"]
-    fusion_score_threshold: float = _DEFAULT_DETECTOR["fusion_score_threshold"]
-    nms_radius_mm: float = _DEFAULT_DETECTOR["nms_radius_mm"]
-    validator: ValidatorConfig | None = field(default_factory=ValidatorConfig)
+# ----------------------------------------------------------------------
+# Ball / extremity256: CED queries -> raw-XYZ local vertex hypotheses.
+# ----------------------------------------------------------------------
 
-
-def _resolve_guided_validator_values(args):
-    fine_voxel = args.validator_fine_voxel_mm
-    ransac_voxel = args.validator_ransac_voxel_mm
+def _resolve_extremity_values(args):
+    """Convert local voting lengths from 3-D voxel multipliers to mm."""
+    v3 = float(args.voxel_3d_mm)
     return {
-        "fine_voxel_mm": fine_voxel,
-        "fine_search_radius_mm": args.validator_fine_search_radius_x * fine_voxel,
-        "fine_ced_radius_mm": args.validator_fine_ced_radius_x * fine_voxel,
-        "fine_min_neighbors": args.validator_fine_min_neighbors,
-        "fine_bilateral_radius_mm": args.validator_fine_bilateral_radius_x * fine_voxel,
-        "fine_bilateral_sigma_spatial_mm": args.validator_fine_bilateral_sigma_spatial_x * fine_voxel,
-        "fine_bilateral_sigma_ced": args.validator_fine_bilateral_sigma_ced,
-        "fine_pca_radius_mm": args.validator_fine_pca_radius_x * fine_voxel,
-        "fine_pca_ratio_saturation_tau": args.validator_fine_pca_ratio_saturation_tau,
-        "fine_fusion_threshold_mode": args.validator_fine_fusion_threshold_mode.replace("-", "_"),
-        "fine_fusion_score_threshold": args.validator_fine_fusion_score_threshold,
-        "fine_fusion_peak_relative_ratio": args.validator_fine_fusion_peak_relative_ratio,
-        "fine_nms_method": args.validator_fine_nms_method,
-        "fine_nms_radius_mm": args.validator_fine_nms_radius_x * fine_voxel,
-        "ransac_voxel_mm": ransac_voxel,
-        "ransac_radius_mm": args.validator_ransac_radius_x * ransac_voxel,
-        "inlier_threshold_mm": args.validator_inlier_threshold_x * ransac_voxel,
-        "guided_sigma_mm": args.validator_guided_sigma_x * ransac_voxel,
-        "max_planes": args.validator_max_planes,
-        "ransac_iterations": args.validator_ransac_iterations,
-        "min_inliers": args.validator_min_inliers,
-        "min_inlier_ratio": args.validator_min_inlier_ratio,
-        "random_seed": args.validator_random_seed,
+        "radii_mm": tuple(radius * v3 for radius in args.ball_radii_x),
+        "padding_mm": args.ball_padding_x * v3,
+        "directions": args.ball_directions,
+        "object_clustering": args.ball_object_clustering,
+        "cluster_radius_mm": args.ball_cluster_radius_x * v3,
+        "nms_radius_mm": args.ball_nms_radius_x * v3,
+        "nms_method": args.ball_nms_method,
+        "min_vote_fraction": args.ball_min_vote_fraction,
+        "voting_mode": args.ball_voting_mode,
+        "soft_tau_mm": args.ball_soft_tau_x * v3,
+        "soft_alpha": args.ball_soft_alpha,
+        "voting_dtype": args.ball_voting_dtype,
     }
 
 
-_DEFAULT_GUIDED_VALIDATOR = _resolve_guided_validator_values(DEFAULTS)
 
-
-@dataclass(frozen=True)
-class GuidedValidatorConfig:
-    """Resolved stage-specific voxel sizes and mm lengths; CLI/defaults use *_x."""
-    fine_voxel_mm: float = _DEFAULT_GUIDED_VALIDATOR["fine_voxel_mm"]
-    fine_search_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["fine_search_radius_mm"]
-    fine_ced_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["fine_ced_radius_mm"]
-    fine_min_neighbors: int = _DEFAULT_GUIDED_VALIDATOR["fine_min_neighbors"]
-    fine_bilateral_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["fine_bilateral_radius_mm"]
-    fine_bilateral_sigma_spatial_mm: float = _DEFAULT_GUIDED_VALIDATOR["fine_bilateral_sigma_spatial_mm"]
-    fine_bilateral_sigma_ced: float = _DEFAULT_GUIDED_VALIDATOR["fine_bilateral_sigma_ced"]
-    fine_pca_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["fine_pca_radius_mm"]
-    fine_pca_ratio_saturation_tau: float | None = _DEFAULT_GUIDED_VALIDATOR["fine_pca_ratio_saturation_tau"]
-    fine_fusion_threshold_mode: str = _DEFAULT_GUIDED_VALIDATOR["fine_fusion_threshold_mode"]
-    fine_fusion_score_threshold: float = _DEFAULT_GUIDED_VALIDATOR["fine_fusion_score_threshold"]
-    fine_fusion_peak_relative_ratio: float = _DEFAULT_GUIDED_VALIDATOR["fine_fusion_peak_relative_ratio"]
-    fine_nms_method: str = _DEFAULT_GUIDED_VALIDATOR["fine_nms_method"]
-    fine_nms_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["fine_nms_radius_mm"]
-    ransac_voxel_mm: float = _DEFAULT_GUIDED_VALIDATOR["ransac_voxel_mm"]
-    ransac_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["ransac_radius_mm"]
-    max_planes: int = DEFAULTS.validator_max_planes
-    ransac_iterations: int = DEFAULTS.validator_ransac_iterations
-    inlier_threshold_mm: float = _DEFAULT_GUIDED_VALIDATOR["inlier_threshold_mm"]
-    guided_sigma_mm: float = _DEFAULT_GUIDED_VALIDATOR["guided_sigma_mm"]
-    min_inliers: int = DEFAULTS.validator_min_inliers
-    min_inlier_ratio: float = DEFAULTS.validator_min_inlier_ratio
-    random_seed: int = DEFAULTS.validator_random_seed
-
-    def validate(self):
-        numeric = [value for value in vars(self).values() if isinstance(value, (int, float, np.number))]
-        if not np.isfinite(numeric).all():
-            raise ValueError("Guided validator settings must be finite")
-        for name in ("fine_min_neighbors", "max_planes", "ransac_iterations", "min_inliers", "random_seed"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
-                raise ValueError(f"{name} must be an integer")
-        if min(self.fine_voxel_mm, self.ransac_voxel_mm, self.fine_search_radius_mm,
-               self.fine_ced_radius_mm, self.fine_nms_radius_mm,
-               self.fine_bilateral_radius_mm, self.fine_bilateral_sigma_spatial_mm,
-               self.fine_bilateral_sigma_ced, self.fine_pca_radius_mm,
-               self.ransac_radius_mm, self.inlier_threshold_mm, self.guided_sigma_mm) <= 0:
-            raise ValueError("Validator radii, threshold and guided sigma must be positive")
-        if not 0 <= self.max_planes <= 3 or self.ransac_iterations < 1:
-            raise ValueError("Require 0..3 planes and at least one RANSAC iteration")
-        if self.min_inliers < 3 or self.random_seed < 0:
-            raise ValueError("Require at least 3 inliers and a nonnegative seed")
-        if not 0 <= self.min_inlier_ratio <= 1:
-            raise ValueError("min_inlier_ratio must be in [0, 1]")
-        if self.fine_min_neighbors < 3:
-            raise ValueError("fine_min_neighbors must be at least 3")
-        if self.fine_pca_ratio_saturation_tau is not None and self.fine_pca_ratio_saturation_tau <= 0:
-            raise ValueError("Fine PCA saturation tau must be positive or None")
-        if self.fine_fusion_threshold_mode not in ("fixed", "global_mean", "peak_relative"):
-            raise ValueError("Fine fusion threshold mode must be fixed, global_mean or peak_relative")
-        if not 0 <= self.fine_fusion_score_threshold <= 1:
-            raise ValueError("Fine fusion threshold must be in [0, 1]")
-        if not 0 <= self.fine_fusion_peak_relative_ratio <= 1:
-            raise ValueError("Fine peak-relative ratio must be in [0, 1]")
-        if self.fine_nms_method not in ("greedy", "local_maximum"):
-            raise ValueError("Fine NMS method must be greedy or local_maximum")
-
-
-@dataclass
-class ValidatorDetectorConfig(DetectorConfig):
-    mode: str = "validator"
-    validator: GuidedValidatorConfig = field(default_factory=GuidedValidatorConfig)
+_DEFAULT_EXTREMITY = _resolve_extremity_values(DEFAULTS)
 
 
 @dataclass(frozen=True)
@@ -627,11 +680,17 @@ class ExtremityConfig:
             raise ValueError("Voting dtype must be float32 or float64")
 
 
+
 @dataclass
 class ExtremityDetectorConfig(DetectorConfig):
     mode: str = "extremity256"
     extremity: ExtremityConfig = field(default_factory=ExtremityConfig)
 
+
+
+# ----------------------------------------------------------------------
+# CLI: shared -> detector -> validator -> fine -> ball.
+# ----------------------------------------------------------------------
 
 def parse_args(argv=None, *, prog=None):
     parser = argparse.ArgumentParser(
@@ -652,242 +711,34 @@ def parse_args(argv=None, *, prog=None):
     shared.add_argument("--source", choices=("stl", "kinect", "realsense"))
     shared.add_argument("--frame-index", type=int)
     shared.add_argument("--fps", type=int, help="Live RealSense camera FPS")
-    shared.add_argument("--mode", choices=("fine", "detector", "ball", "extremity256", "validator"))
+    shared.add_argument("--mode", choices=("fine", "detector", "ball", "extremity256", "validator", "total"))
     shared.add_argument("--stl-unit-mm", type=float)
     shared.add_argument("--width", type=int)
     shared.add_argument("--height", type=int)
     shared.add_argument("--fov-deg", type=float)
     shared.add_argument("--voxel-3d-mm", "--voxel-mm", dest="voxel_3d_mm", type=float)
-    shared.add_argument("--min-neighbors", type=int)
     shared.add_argument("--no-3d-view", action="store_true")
     shared.add_argument("--min-depth-m", type=float)
     shared.add_argument("--max-depth-m", type=float)
-    shared.add_argument(
+
+    perturbation = parser.add_argument_group("shared synthetic perturbation")
+    perturbation.add_argument("--noise-mm", type=float)
+    perturbation.add_argument("--outlier-rate", type=float)
+    perturbation.add_argument("--outlier-mm", type=float)
+    perturbation.add_argument("--dropout-rate", type=float)
+    perturbation.add_argument("--dropout-patches", type=int)
+    perturbation.add_argument("--dropout-patch-radius-px", type=int)
+    perturbation.add_argument("--quantization-mm", type=float)
+    perturbation.add_argument("--seed", type=int)
+
+    # Detector options follow the dense whole-cloud pipeline order.
+    detector = parser.add_argument_group("detector: dense CED -> fusion -> NMS")
+    detector.add_argument("--min-neighbors", type=int,
+                          help="minimum CED/PCA support (also used by fine)")
+    detector.add_argument(
         "--centroid-radius-x", type=float,
         help="CED centroid radius / 3-D voxel (shared by fine and detector)",
     )
-    perturbation = parser.add_argument_group("shared synthetic perturbation")
-    guided = parser.add_argument_group("validator: separate Fine/RANSAC voxels and voxel multipliers")
-    for name, kind in (
-        ("fine_voxel_mm", float), ("fine_search_radius_x", float), ("fine_ced_radius_x", float),
-        ("fine_nms_radius_x", float), ("ransac_voxel_mm", float), ("ransac_radius_x", float),
-        ("fine_min_neighbors", int), ("fine_bilateral_radius_x", float),
-        ("fine_bilateral_sigma_spatial_x", float), ("fine_bilateral_sigma_ced", float),
-        ("fine_pca_radius_x", float), ("fine_pca_ratio_saturation_tau", float),
-        ("fine_fusion_score_threshold", float),
-        ("fine_fusion_peak_relative_ratio", float),
-        ("max_planes", int), ("ransac_iterations", int), ("inlier_threshold_x", float),
-        ("guided_sigma_x", float), ("min_inliers", int),
-        ("min_inlier_ratio", float), ("random_seed", int),
-    ):
-        guided.add_argument("--validator-" + name.replace("_", "-"), type=kind)
-    guided.add_argument("--validator-fine-fusion-threshold-mode", choices=("fixed", "global-mean", "peak-relative"))
-    guided.add_argument("--validator-fine-nms-method", choices=("greedy", "local_maximum"))
-    ball = parser.add_argument_group("ball / extremity256: query-local vertex hypotheses (3-D voxel multipliers)")
-    ball.add_argument("--ball-radii-x", type=float, nargs="+",
-                      help=f"candidate radii / voxel_3d_mm (default: {DEFAULTS.ball_radii_x})")
-    ball.add_argument("--ball-padding-x", type=float, help="search padding / voxel_3d_mm")
-    ball.add_argument("--ball-directions", type=int)
-    ball.add_argument("--ball-object-clustering", action=argparse.BooleanOptionalAction)
-    ball.add_argument("--ball-cluster-radius-x", type=float,
-                      help=f"Euclidean connectivity radius / voxel_3d_mm (default: {DEFAULTS.ball_cluster_radius_x:g})")
-    ball.add_argument("--ball-nms-radius-x", type=float, help="vertex NMS radius / voxel_3d_mm")
-    ball.add_argument("--ball-nms-method", choices=("local_maximum", "greedy"))
-    ball.add_argument("--ball-min-vote-fraction", type=float)
-    ball.add_argument("--ball-voting-mode", choices=("hard", "soft_dense", "soft_partition", "soft_sparse"))
-    ball.add_argument("--ball-soft-tau-x", type=float,
-                      help=f"sigmoid temperature / voxel_3d_mm (default: {DEFAULTS.ball_soft_tau_x:g})")
-    ball.add_argument("--ball-soft-alpha", type=float,
-                      help=f"sparse cutoff in tau units (default: {DEFAULTS.ball_soft_alpha:g})")
-    ball.add_argument("--ball-voting-dtype", choices=("float32", "float64"))
-
-    # Fine mode options follow the clicked-query pipeline order exactly.
-    validator_query = parser.add_argument_group("fine 0/6: query geometry")
-    validator_cornervins = parser.add_argument_group(
-        "fine 1/6: query-core CornerVINS AHC -> RANSAC/refit -> merge/hull"
-    )
-    validator_projection = parser.add_argument_group(
-        "fine 2/6: padded projection and continuous boundary"
-    )
-    validator_hough = parser.add_argument_group(
-        "fine 3/6: weighted Hough and accumulator NMS"
-    )
-    validator_line = parser.add_argument_group(
-        "fine 4/6: continuous 2-D line refinement and final NMS"
-    )
-    validator_restore = parser.add_argument_group(
-        "fine 5/6: 3-D line reconstruction and finite-edge merging"
-    )
-    validator_refiner = parser.add_argument_group(
-        "fine 6/6: graph-local edge refinement and corners"
-    )
-    # CornerVINS Step 1: organized-image AHC segmentation and region filtering.
-    validator_cornervins.add_argument(
-        "--cornervins-ahc-block-size", type=int,
-        help="AHC square-block side in organized depth pixels (default: 3 pixels)",
-    )
-    validator_cornervins.add_argument(
-        "--cornervins-ahc-mse-threshold-mm2", type=float,
-        help="fixed AHC plane-fit MSE in mm^2; omitted uses Feng's depth-noise model",
-    )
-    validator_cornervins.add_argument(
-        "--cornervins-ahc-refinement", dest="cornervins_ahc_refinement",
-        action="store_true", help="enable Feng Algorithm 4 erosion/region-growing refinement",
-    )
-    validator_cornervins.add_argument(
-        "--no-cornervins-ahc-refinement", dest="cornervins_ahc_refinement",
-        action="store_false", help="skip AHC erosion/region-growing refinement",
-    )
-    validator_cornervins.add_argument(
-        "--cornervins-region-mode", choices=("paper", "roi_test"),
-        help="minimum-region policy: paper=20000 points, roi_test=local threshold",
-    )
-    validator_cornervins.add_argument(
-        "--cornervins-min-region-points-paper", type=int,
-        help="paper-mode minimum AHC region size (default: 20000 points)",
-    )
-    validator_cornervins.add_argument(
-        "--cornervins-min-region-points-roi", type=int,
-        help="roi_test minimum AHC region size (default: 100 points)",
-    )
-
-    # CornerVINS Step 2: per-region RANSAC and least-squares plane refit.
-    validator_cornervins.add_argument(
-        "--cornervins-downsample-leaf-mm", type=float,
-        help="voxel leaf used only for deterministic RANSAC sampling (default: 50 mm)",
-    )
-    validator_cornervins.add_argument(
-        "--cornervins-ransac-threshold-mm", type=float,
-        help="full-resolution point-to-plane inlier gate (default: 15 mm)",
-    )
-    validator_cornervins.add_argument(
-        "--cornervins-ransac-min-inlier-ratio", type=float,
-        help="minimum accepted inlier fraction in (0,1] (default: 0.90)",
-    )
-    validator_cornervins.add_argument(
-        "--cornervins-ransac-max-trials", type=int,
-        help="maximum random plane hypotheses per AHC region (default: 256)",
-    )
-    validator_cornervins.add_argument(
-        "--cornervins-ransac-seed", type=int,
-        help="nonnegative deterministic RANSAC seed (default: 0)",
-    )
-
-    # CornerVINS Step 3: repeated plane merging.
-    validator_cornervins.add_argument(
-        "--cornervins-merge-angle-deg", type=float,
-        help="strict unoriented normal-angle merge gate (default: 5 deg)",
-    )
-    validator_cornervins.add_argument(
-        "--cornervins-merge-distance-mm", type=float,
-        help="strict symmetric plane-distance merge gate (default: 20 mm)",
-    )
-
-    # CornerVINS visualization switches; numeric results are unchanged.
-    validator_cornervins.add_argument(
-        "--no-cornervins-ahc-view", dest="cornervins_show_ahc_regions",
-        action="store_false",
-        help="hide 1/4 coarse-AHC and 2/4 refined-AHC views",
-    )
-    validator_cornervins.add_argument(
-        "--no-cornervins-plane-view", dest="cornervins_show_plane_patches",
-        action="store_false", help="hide 3/4 RANSAC/refit plane view",
-    )
-    validator_cornervins.add_argument(
-        "--no-cornervins-hulls", dest="cornervins_show_convex_hulls",
-        action="store_false", help="hide 4/4 merged-plane convex hull view",
-    )
-    validator_query.add_argument("--voxel-2d-mm", "--uv-voxel-mm", dest="voxel_2d_mm", type=float)
-    validator_query.add_argument("--query-radius-x", "--query-radius-vox", dest="query_radius_x", type=float)
-    validator_projection.add_argument("--boundary-radius-x", "--boundary-radius-vox", dest="boundary_radius_x", type=float)
-    validator_projection.add_argument("--boundary-epsilon-x", "--boundary-epsilon-vox", dest="boundary_epsilon_x", type=float)
-    validator_projection.add_argument(
-        "--projection-halo-mm", type=float,
-        help="extra projection/boundary context beyond the query radius in mm (default: 50)",
-    )
-    validator_projection.add_argument("--boundary-sigma-x", type=float)
-    validator_projection.add_argument("--plane-edge-graph", dest="plane_edge_graph_enabled",
-        action="store_true", help="CornerVINS planes -> padded 2-D boundary/Hough -> 3-D finite edge graph (default)")
-    validator_projection.add_argument("--no-plane-edge-graph", dest="plane_edge_graph_enabled",
-        action="store_false", help="disable the default plane -> edge graph workflow")
-    validator_projection.add_argument("--plane-edge-debug-2d", dest="plane_edge_debug_2d", action="store_true",
-        help="show the per-plane padded projection / boundary / Hough GUI (default)")
-    validator_projection.add_argument("--no-plane-edge-debug-2d", dest="plane_edge_debug_2d", action="store_false",
-        help="hide the per-plane 2-D diagnostic GUI")
-    validator_projection.add_argument("--plane-edge-export-json", help="write full numerical plane/edge graph as JSON")
-    validator_projection.add_argument("--plane-edge-alpha-x", type=float, help="alpha radius / voxel3D (0=adaptive)")
-    validator_hough.add_argument("--plane-edge-hough-bin-x", type=float,
-        help="2-D Hough rho bin / voxel_3d_mm")
-    validator_hough.add_argument("--plane-edge-hough-angle-deg", type=float,
-        help="2-D Hough theta bin in degrees")
-    validator_hough.add_argument("--plane-edge-hough-min-mean-weight", type=float,
-        help="minimum weighted-vote/count mean in [0,1] for an eligible Hough bin")
-    validator_hough.add_argument("--plane-edge-hough-score-threshold-mode",
-        choices=("off", "fixed", "peak-relative", "global-mean"),
-        help="weighted Hough score gate: off, absolute, peak-relative, or eligible-bin mean")
-    validator_hough.add_argument("--plane-edge-hough-score-threshold", type=float,
-        help="absolute score for fixed mode or [0,1] peak fraction for peak-relative mode")
-    validator_hough.add_argument("--plane-edge-hough-nms-mode", choices=("greedy", "local-max"),
-        help="2-D Hough peak suppression: greedy selection or simultaneous local maxima")
-    validator_hough.add_argument("--plane-edge-hough-nms-angle-deg", type=float,
-        help="2-D Hough peak-NMS half-width in degrees")
-    validator_hough.add_argument("--plane-edge-hough-nms-rho-x", type=float,
-        help="2-D Hough peak-NMS rho half-width / voxel_3d_mm")
-    validator_hough.add_argument("--plane-edge-max-peaks", type=int,
-        help="maximum accepted Hough peaks per projected plane")
-    validator_line.add_argument(
-        "--plane-edge-line-refinement", dest="plane_edge_line_refinement_enabled",
-        action="store_true",
-        help="continuously refine each Hough seed in rho/theta before finite-segment NMS (default)",
-    )
-    validator_line.add_argument(
-        "--no-plane-edge-line-refinement", dest="plane_edge_line_refinement_enabled",
-        action="store_false", help="use the unrefined TLS/gap 2-D segment path",
-    )
-    validator_line.add_argument("--plane-edge-line-refinement-max-iterations", type=int,
-        help="maximum iterations for each inside-direction rho/theta optimization")
-    validator_line.add_argument("--plane-edge-line-final-nms-angle-deg", type=float,
-        help="angle threshold for refined finite-segment NMS")
-    validator_line.add_argument("--plane-edge-line-final-nms-overlap", type=float,
-        help="minimum projected interval overlap ratio for refined finite-segment NMS")
-    validator_line.add_argument("--plane-edge-inlier-x", type=float,
-        help="2-D TLS line inlier distance / voxel_3d_mm")
-    validator_line.add_argument("--plane-edge-min-points", type=int)
-    validator_line.add_argument("--plane-edge-segment-gap-x", type=float,
-        help="2-D finite-segment split gap / voxel_3d_mm")
-    validator_restore.add_argument("--plane-edge-plane-inlier-x", type=float)
-    validator_restore.add_argument("--plane-edge-min-length-x", type=float)
-    validator_restore.add_argument("--plane-edge-direction-tolerance-deg", type=float,
-        help="maximum angle between lifted 2-D direction and fitted 3-D PCA line")
-    validator_restore.add_argument("--plane-edge-merge-distance-x", type=float,
-        help="3-D line-offset threshold / voxel_3d_mm for complete-link merging")
-    validator_restore.add_argument("--plane-edge-merge-gap-x", type=float,
-        help="3-D finite-interval gap / voxel_3d_mm for merging")
-    validator_restore.add_argument("--plane-edge-merge-angle-deg", type=float,
-        help="3-D direction-angle threshold for merging")
-    validator_refiner.add_argument("--plane-edge-refiner", dest="plane_edge_refiner_enabled",
-        action="store_true", help="refine connected plane-edge graphs after Hough detection (default)")
-    validator_refiner.add_argument("--no-plane-edge-refiner", dest="plane_edge_refiner_enabled",
-        action="store_false", help="keep only the unrefined Hough/PCA edge graph")
-    validator_refiner.add_argument("--plane-edge-refine-loss",
-        choices=("huber", "soft-l1", "linear"),
-        help="robust loss used by the post-processing refiner")
-    validator_refiner.add_argument("--plane-edge-refine-huber-delta-x", type=float,
-        help="refiner robust-loss transition / voxel_3d_mm")
-    validator_refiner.add_argument("--plane-edge-refine-plane-weight", type=float,
-        help="confidence multiplier for refined plane residuals")
-    validator_refiner.add_argument("--plane-edge-refine-boundary-weight", type=float,
-        help="confidence multiplier for 2-D boundary line residuals")
-    validator_refiner.add_argument("--plane-edge-refine-max-nfev", type=int,
-        help="maximum residual evaluations for each small refinement problem")
-    validator_refiner.add_argument("--plane-edge-refine-corner-intersection-x", type=float,
-        help="maximum closest-line gap for a refined corner / voxel_3d_mm")
-    validator_refiner.add_argument("--plane-edge-refine-corner-endpoint-gap-x", type=float,
-        help="finite-edge extension allowed for refined corners / voxel_3d_mm")
-    validator_refiner.add_argument("--plane-edge-refine-corner-merge-x", type=float,
-        help="spatial merge radius for repeated refined corners / voxel_3d_mm")
-    # Detector options follow the dense whole-cloud pipeline order.
-    detector = parser.add_argument_group("detector: dense CED -> fusion -> NMS")
     detector.add_argument("--only", action="store_true",
                           help="detector only: stop at NMS and show just the NMS Fusion heatmap")
     detector.add_argument(
@@ -926,14 +777,234 @@ def parse_args(argv=None, *, prog=None):
         help="3-D candidate NMS radius in mm (configured default: 50)",
     )
 
-    perturbation.add_argument("--noise-mm", type=float)
-    perturbation.add_argument("--outlier-rate", type=float)
-    perturbation.add_argument("--outlier-mm", type=float)
-    perturbation.add_argument("--dropout-rate", type=float)
-    perturbation.add_argument("--dropout-patches", type=int)
-    perturbation.add_argument("--dropout-patch-radius-px", type=int)
-    perturbation.add_argument("--quantization-mm", type=float)
-    perturbation.add_argument("--seed", type=int)
+    guided = parser.add_argument_group("validator: query-local RANSAC voxel and voxel multipliers")
+    for name, kind in (
+        ("ransac_voxel_mm", float), ("ransac_radius_x", float),
+        ("max_planes", int), ("ransac_iterations", int), ("inlier_threshold_x", float),
+        ("guided_sigma_x", float), ("min_inliers", int),
+        ("min_inlier_ratio", float), ("random_seed", int),
+    ):
+        guided.add_argument("--validator-" + name.replace("_", "-"), type=kind)
+    guided.add_argument("--validator-geometry", dest="validator_geometry_enabled",
+                        action=argparse.BooleanOptionalAction,
+                        help="validate a corner formed by at least two finite edges")
+    for name in ("edge_overlap_angle_deg", "edge_overlap_distance_mm", "edge_overlap_min_length_mm",
+                 "vertex_line_distance_mm",
+                 "vertex_endpoint_tolerance_mm", "vertex_group_span_mm"):
+        guided.add_argument("--validator-" + name.replace("_", "-"), type=float)
+    for name, kind in (
+        ("roi_padding_mm", float), ("plane_connect_radius_x", float),
+        ("plane_parallel_angle_deg", float), ("edge_min_length_x", float),
+        ("intersection_strip_half_width_mm", float),
+        ("boundary_merge_max_error_mm", float),
+        ("corner_min_edge_angle_deg", float),
+        ("corner_gate_radius_mm", float),
+    ):
+        guided.add_argument("--validator-" + name.replace("_", "-"), type=kind)
+
+    # Fine mode options follow the clicked-query pipeline order exactly.
+    fine_query = parser.add_argument_group("fine 0/6: query geometry")
+    fine_cornervins = parser.add_argument_group(
+        "fine 1/6: query-core CornerVINS AHC -> RANSAC/refit -> merge/hull"
+    )
+    fine_projection = parser.add_argument_group(
+        "fine 2/6: padded projection and continuous boundary"
+    )
+    fine_hough = parser.add_argument_group(
+        "fine 3/6: weighted Hough and accumulator NMS"
+    )
+    fine_line = parser.add_argument_group(
+        "fine 4/6: continuous 2-D line refinement and final NMS"
+    )
+    fine_restore = parser.add_argument_group(
+        "fine 5/6: 3-D line reconstruction and finite-edge merging"
+    )
+    fine_refiner = parser.add_argument_group(
+        "fine 6/6: graph-local edge refinement and corners"
+    )
+    # CornerVINS Step 1: organized-image AHC segmentation and region filtering.
+    fine_cornervins.add_argument(
+        "--cornervins-ahc-block-size", type=int,
+        help="AHC square-block side in organized depth pixels (default: 3 pixels)",
+    )
+    fine_cornervins.add_argument(
+        "--cornervins-ahc-mse-threshold-mm2", type=float,
+        help="fixed AHC plane-fit MSE in mm^2; omitted uses Feng's depth-noise model",
+    )
+    fine_cornervins.add_argument(
+        "--cornervins-ahc-refinement", dest="cornervins_ahc_refinement",
+        action="store_true", help="enable Feng Algorithm 4 erosion/region-growing refinement",
+    )
+    fine_cornervins.add_argument(
+        "--no-cornervins-ahc-refinement", dest="cornervins_ahc_refinement",
+        action="store_false", help="skip AHC erosion/region-growing refinement",
+    )
+    fine_cornervins.add_argument(
+        "--cornervins-region-mode", choices=("paper", "roi_test"),
+        help="minimum-region policy: paper=20000 points, roi_test=local threshold",
+    )
+    fine_cornervins.add_argument(
+        "--cornervins-min-region-points-paper", type=int,
+        help="paper-mode minimum AHC region size (default: 20000 points)",
+    )
+    fine_cornervins.add_argument(
+        "--cornervins-min-region-points-roi", type=int,
+        help="roi_test minimum AHC region size (default: 100 points)",
+    )
+
+    # CornerVINS Step 2: per-region RANSAC and least-squares plane refit.
+    fine_cornervins.add_argument(
+        "--cornervins-downsample-leaf-mm", type=float,
+        help="voxel leaf used only for deterministic RANSAC sampling (default: 50 mm)",
+    )
+    fine_cornervins.add_argument(
+        "--cornervins-ransac-threshold-mm", type=float,
+        help="full-resolution point-to-plane inlier gate (default: 15 mm)",
+    )
+    fine_cornervins.add_argument(
+        "--cornervins-ransac-min-inlier-ratio", type=float,
+        help="minimum accepted inlier fraction in (0,1] (default: 0.90)",
+    )
+    fine_cornervins.add_argument(
+        "--cornervins-ransac-max-trials", type=int,
+        help="maximum random plane hypotheses per AHC region (default: 256)",
+    )
+    fine_cornervins.add_argument(
+        "--cornervins-ransac-seed", type=int,
+        help="nonnegative deterministic RANSAC seed (default: 0)",
+    )
+
+    # CornerVINS Step 3: repeated plane merging.
+    fine_cornervins.add_argument(
+        "--cornervins-merge-angle-deg", type=float,
+        help="strict unoriented normal-angle merge gate (default: 5 deg)",
+    )
+    fine_cornervins.add_argument(
+        "--cornervins-merge-distance-mm", type=float,
+        help="strict symmetric plane-distance merge gate (default: 20 mm)",
+    )
+
+    # CornerVINS visualization switches; numeric results are unchanged.
+    fine_cornervins.add_argument(
+        "--no-cornervins-ahc-view", dest="cornervins_show_ahc_regions",
+        action="store_false",
+        help="hide 1/4 coarse-AHC and 2/4 refined-AHC views",
+    )
+    fine_cornervins.add_argument(
+        "--no-cornervins-plane-view", dest="cornervins_show_plane_patches",
+        action="store_false", help="hide 3/4 RANSAC/refit plane view",
+    )
+    fine_cornervins.add_argument(
+        "--no-cornervins-hulls", dest="cornervins_show_convex_hulls",
+        action="store_false", help="hide 4/4 merged-plane convex hull view",
+    )
+    fine_query.add_argument("--voxel-2d-mm", "--uv-voxel-mm", dest="voxel_2d_mm", type=float)
+    fine_query.add_argument("--query-radius-x", "--query-radius-vox", dest="query_radius_x", type=float)
+    fine_projection.add_argument("--boundary-radius-x", "--boundary-radius-vox", dest="boundary_radius_x", type=float)
+    fine_projection.add_argument("--boundary-epsilon-x", "--boundary-epsilon-vox", dest="boundary_epsilon_x", type=float)
+    fine_projection.add_argument(
+        "--projection-halo-mm", type=float,
+        help="extra projection/boundary context beyond the query radius in mm (default: 50)",
+    )
+    fine_projection.add_argument("--boundary-sigma-x", type=float)
+    fine_projection.add_argument("--plane-edge-graph", dest="plane_edge_graph_enabled",
+        action="store_true", help="CornerVINS planes -> padded 2-D boundary/Hough -> 3-D finite edge graph (default)")
+    fine_projection.add_argument("--no-plane-edge-graph", dest="plane_edge_graph_enabled",
+        action="store_false", help="disable the default plane -> edge graph workflow")
+    fine_projection.add_argument("--plane-edge-debug-2d", dest="plane_edge_debug_2d", action="store_true",
+        help="show the per-plane padded projection / boundary / Hough GUI (default)")
+    fine_projection.add_argument("--no-plane-edge-debug-2d", dest="plane_edge_debug_2d", action="store_false",
+        help="hide the per-plane 2-D diagnostic GUI")
+    fine_projection.add_argument("--plane-edge-export-json", help="write full numerical plane/edge graph as JSON")
+    fine_projection.add_argument("--plane-edge-alpha-x", type=float, help="alpha radius / voxel3D (0=adaptive)")
+    fine_hough.add_argument("--plane-edge-hough-bin-x", type=float,
+        help="2-D Hough rho bin / voxel_3d_mm")
+    fine_hough.add_argument("--plane-edge-hough-angle-deg", type=float,
+        help="2-D Hough theta bin in degrees")
+    fine_hough.add_argument("--plane-edge-hough-min-mean-weight", type=float,
+        help="minimum weighted-vote/count mean in [0,1] for an eligible Hough bin")
+    fine_hough.add_argument("--plane-edge-hough-score-threshold-mode",
+        choices=("off", "fixed", "peak-relative", "global-mean"),
+        help="weighted Hough score gate: off, absolute, peak-relative, or eligible-bin mean")
+    fine_hough.add_argument("--plane-edge-hough-score-threshold", type=float,
+        help="absolute score for fixed mode or [0,1] peak fraction for peak-relative mode")
+    fine_hough.add_argument("--plane-edge-hough-nms-mode", choices=("greedy", "local-max"),
+        help="2-D Hough peak suppression: greedy selection or simultaneous local maxima")
+    fine_hough.add_argument("--plane-edge-hough-nms-angle-deg", type=float,
+        help="2-D Hough peak-NMS half-width in degrees")
+    fine_hough.add_argument("--plane-edge-hough-nms-rho-x", type=float,
+        help="2-D Hough peak-NMS rho half-width / voxel_3d_mm")
+    fine_hough.add_argument("--plane-edge-max-peaks", type=int,
+        help="maximum accepted Hough peaks per projected plane")
+    fine_line.add_argument(
+        "--plane-edge-line-refinement", dest="plane_edge_line_refinement_enabled",
+        action="store_true",
+        help="continuously refine each Hough seed in rho/theta before finite-segment NMS (default)",
+    )
+    fine_line.add_argument(
+        "--no-plane-edge-line-refinement", dest="plane_edge_line_refinement_enabled",
+        action="store_false", help="use the unrefined TLS/gap 2-D segment path",
+    )
+    fine_line.add_argument("--plane-edge-line-refinement-max-iterations", type=int,
+        help="maximum iterations for each inside-direction rho/theta optimization")
+    fine_line.add_argument("--plane-edge-line-final-nms-angle-deg", type=float,
+        help="angle threshold for refined finite-segment NMS")
+    fine_line.add_argument("--plane-edge-line-final-nms-overlap", type=float,
+        help="minimum projected interval overlap ratio for refined finite-segment NMS")
+    fine_line.add_argument("--plane-edge-inlier-x", type=float,
+        help="2-D TLS line inlier distance / voxel_3d_mm")
+    fine_line.add_argument("--plane-edge-min-points", type=int)
+    fine_line.add_argument("--plane-edge-segment-gap-x", type=float,
+        help="2-D finite-segment split gap / voxel_3d_mm")
+    fine_restore.add_argument("--plane-edge-plane-inlier-x", type=float)
+    fine_restore.add_argument("--plane-edge-min-length-x", type=float)
+    fine_restore.add_argument("--plane-edge-direction-tolerance-deg", type=float,
+        help="maximum angle between lifted 2-D direction and fitted 3-D PCA line")
+    fine_restore.add_argument("--plane-edge-merge-distance-x", type=float,
+        help="3-D line-offset threshold / voxel_3d_mm for complete-link merging")
+    fine_restore.add_argument("--plane-edge-merge-gap-x", type=float,
+        help="3-D finite-interval gap / voxel_3d_mm for merging")
+    fine_restore.add_argument("--plane-edge-merge-angle-deg", type=float,
+        help="3-D direction-angle threshold for merging")
+    fine_refiner.add_argument("--plane-edge-refiner", dest="plane_edge_refiner_enabled",
+        action="store_true", help="refine connected plane-edge graphs after Hough detection (default)")
+    fine_refiner.add_argument("--no-plane-edge-refiner", dest="plane_edge_refiner_enabled",
+        action="store_false", help="keep only the unrefined Hough/PCA edge graph")
+    fine_refiner.add_argument("--plane-edge-refine-loss",
+        choices=("huber", "soft-l1", "linear"),
+        help="robust loss used by the post-processing refiner")
+    fine_refiner.add_argument("--plane-edge-refine-huber-delta-x", type=float,
+        help="refiner robust-loss transition / voxel_3d_mm")
+    fine_refiner.add_argument("--plane-edge-refine-plane-weight", type=float,
+        help="confidence multiplier for refined plane residuals")
+    fine_refiner.add_argument("--plane-edge-refine-boundary-weight", type=float,
+        help="confidence multiplier for 2-D boundary line residuals")
+    fine_refiner.add_argument("--plane-edge-refine-max-nfev", type=int,
+        help="maximum residual evaluations for each small refinement problem")
+    fine_refiner.add_argument("--plane-edge-refine-corner-intersection-x", type=float,
+        help="maximum closest-line gap for a refined corner / voxel_3d_mm")
+    fine_refiner.add_argument("--plane-edge-refine-corner-endpoint-gap-x", type=float,
+        help="finite-edge extension allowed for refined corners / voxel_3d_mm")
+    fine_refiner.add_argument("--plane-edge-refine-corner-merge-x", type=float,
+        help="spatial merge radius for repeated refined corners / voxel_3d_mm")
+
+    ball = parser.add_argument_group("ball / extremity256: query-local vertex hypotheses (3-D voxel multipliers)")
+    ball.add_argument("--ball-radii-x", type=float, nargs="+",
+                      help=f"candidate radii / voxel_3d_mm (default: {DEFAULTS.ball_radii_x})")
+    ball.add_argument("--ball-padding-x", type=float, help="search padding / voxel_3d_mm")
+    ball.add_argument("--ball-directions", type=int)
+    ball.add_argument("--ball-object-clustering", action=argparse.BooleanOptionalAction)
+    ball.add_argument("--ball-cluster-radius-x", type=float,
+                      help=f"Euclidean connectivity radius / voxel_3d_mm (default: {DEFAULTS.ball_cluster_radius_x:g})")
+    ball.add_argument("--ball-nms-radius-x", type=float, help="vertex NMS radius / voxel_3d_mm")
+    ball.add_argument("--ball-nms-method", choices=("local_maximum", "greedy"))
+    ball.add_argument("--ball-min-vote-fraction", type=float)
+    ball.add_argument("--ball-voting-mode", choices=("hard", "soft_dense", "soft_partition", "soft_sparse"))
+    ball.add_argument("--ball-soft-tau-x", type=float,
+                      help=f"sigmoid temperature / voxel_3d_mm (default: {DEFAULTS.ball_soft_tau_x:g})")
+    ball.add_argument("--ball-soft-alpha", type=float,
+                      help=f"sparse cutoff in tau units (default: {DEFAULTS.ball_soft_alpha:g})")
+    ball.add_argument("--ball-voting-dtype", choices=("float32", "float64"))
 
     parser.set_defaults(**vars(DEFAULTS))
     raw_argv = list(sys.argv[1:] if argv is None else argv)
@@ -964,6 +1035,11 @@ def parse_args(argv=None, *, prog=None):
         parser.error("--fps must be >= 1")
     return args
 
+
+
+# ----------------------------------------------------------------------
+# Shared argument validation and mode dispatch.
+# ----------------------------------------------------------------------
 
 def configure(args):
     numeric = [value for value in vars(args).values() if isinstance(value, (int, float))]
@@ -1018,7 +1094,7 @@ def configure(args):
     if args.mode in ("ball", "extremity256"):
         extremity = ExtremityConfig(**_resolve_extremity_values(args))
         extremity.validate()
-    if args.mode in ("detector", "ball", "extremity256", "validator"):
+    if args.mode in ("detector", "ball", "extremity256", "validator", "total"):
         if args.pca_radius_factor <= 0:
             raise ValueError("pca-radius-factor must be > 0.")
         if args.nms_radius_mm is not None and args.nms_radius_mm <= 0:
@@ -1040,11 +1116,13 @@ def configure(args):
             "fixed", "global_mean",
         ):
             raise ValueError("fusion-threshold-mode must be fixed or global-mean.")
-        if args.mode == "validator":
+        if args.mode in ("validator", "total"):
             guided_cfg = GuidedValidatorConfig(**_resolve_guided_validator_values(args))
             guided_cfg.validate()
-            cfg = ValidatorDetectorConfig(**_resolve_detector_values(args), validator=guided_cfg)
-        elif args.only:
+            if args.mode == "total" and not guided_cfg.geometry_enabled:
+                raise ValueError("--mode total requires --validator-geometry")
+            cfg = ValidatorDetectorConfig(**_resolve_detector_values(args), validator=guided_cfg, mode=args.mode)
+        elif args.mode == "detector":
             cfg = DetectorConfig(**_resolve_detector_values(args), validator=None)
         else:
             validator_values = _resolve_validator_values(args)

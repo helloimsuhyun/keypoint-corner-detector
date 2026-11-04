@@ -16,8 +16,8 @@ from .manager import (
     prepare_guided_validator_view,
     start_guided_validator_view,
     prepare_guided_validator_result,
+    save_guided_validator_roi_views,
     pick_guided_validator_query,
-    pick_validator_fine_query,
     close_query_views,
     poll_view_events,
     prepare_extremity_overview,
@@ -60,7 +60,7 @@ def run_frozen_click_stage(
     close_point_inspector = None
     root.title(f"{WINDOW_FROZEN} | {'BALL | ' if ball_mode else ''}{BUILD}")
     query_instruction = ("Click: nearest CED query | " if ball_mode or guided_mode else "Click: query | ") if allow_reselection else ""
-    workflow_keys = ("3D: 1 Coarse -> 2 Fine NMS -> 3 Planes | " if guided_mode else
+    workflow_keys = ("3D: 1 Coarse -> 2 Voxel -> 3 Planes | 4 ROI-Hull-TLS (S: PNG) / 5 Pair / 6 Corner + raw | " if guided_mode else
                      "3D: all queries + local views + point/directions | " if ball_mode else
                      "P/N: plane | J/K: Hough peak | ")
     instructions = query_instruction + workflow_keys + "R: recapture | Q/Esc: quit"
@@ -180,15 +180,9 @@ def run_frozen_click_stage(
             query_index = frozen.pop("pending_validator_query", None)
             if query_index is not None:
                 inspect_validator_query(query_index, frozen, cfg)
-            fine_selection = frozen.pop("pending_validator_fine_query", None)
-            fine = frozen.get("validator_fine_result")
-            if (fine_selection is not None and fine is not None
-                    and fine_selection[0] == fine["coarse_query_index"]
-                    and fine_selection[1] in fine["candidate_fine_indices"]):
-                inspect_validator_query(fine_selection[0], frozen, cfg, fine_index=fine_selection[1])
             pending = frozen.pop("pending_query", None)
             if pending is not None:
-                status.set("Computing Fine heatmap and NMS..." if guided_mode else
+                status.set("Computing query-local voxels and RANSAC..." if guided_mode else
                            "Opening stored local 3-D extremity votes..." if ball_mode else
                            "Computing planes, padded 2-D boundaries and 3-D graph...")
                 root.update_idletasks()
@@ -222,10 +216,43 @@ def run_frozen_click_stage(
     return action or "quit"
 
 
-def run_guided_validator_view_process(connection, scene_points_mm, query_indices, scene_colors):
+def run_total_view_loop(windows):
+    """Keep both total-mode windows responsive and share recapture/quit controls."""
+    action, stopping = "quit", False
+
+    def finish(value):
+        def pressed(_):
+            nonlocal action, stopping
+            action, stopping = value, True
+            return False
+        return pressed
+
+    try:
+        for window in windows:
+            window.register_key_callback(ord("R"), finish("recapture"))
+            window.register_key_callback(ord("Q"), finish("quit"))
+            window.register_key_callback(256, finish("quit"))
+        active = [True] * len(windows)
+        while not stopping and any(active):
+            for index, window in enumerate(windows):
+                if active[index]:
+                    active[index] = bool(window.poll_events())
+                    if active[index]:
+                        window.update_renderer()
+            time.sleep(.01)
+    finally:
+        for window in windows:
+            window.destroy_window()
+    return action
+
+
+def run_guided_validator_view_process(connection, scene_points_mm, query_indices, scene_colors, fusion_vmax=1.0,
+                                    raw_points_mm=None):
     """Keep native GUI/Filament shutdown separate from detector and Tk lifetime."""
     frozen = {"points_voxel_mm": scene_points_mm,
-              "validator_query_indices": query_indices, "validator_scene_colors": scene_colors}
+              "points_raw_mm": raw_points_mm,
+              "validator_query_indices": query_indices, "validator_scene_colors": scene_colors,
+              "validator_fusion_vmax": fusion_vmax}
     try:
         open_guided_validator_window(frozen, lambda action: connection.send(("action", action)))
         while frozen.get("guided_validator_display") is not None:
@@ -239,9 +266,6 @@ def run_guided_validator_view_process(connection, scene_points_mm, query_indices
             index = frozen.pop("pending_validator_query", None)
             if index is not None:
                 connection.send(("query", index))
-            index = frozen.pop("pending_validator_fine_query", None)
-            if index is not None:
-                connection.send(("fine_query", index))
             time.sleep(0.01)
     except (EOFError, BrokenPipeError):
         pass
@@ -258,7 +282,7 @@ def open_guided_validator_window(frozen, request_action):
     gui = display["gui"]
     pressed = None
 
-    def mouse(event, *, fine=False):
+    def mouse(event):
         nonlocal pressed
         if event.type == gui.MouseEvent.Type.BUTTON_DOWN:
             pressed = ((event.x, event.y) if event.is_button_down(gui.MouseButton.LEFT) else None)
@@ -268,26 +292,40 @@ def open_guided_validator_window(frozen, request_action):
         elif event.type == gui.MouseEvent.Type.BUTTON_UP:
             start, pressed = pressed, None
             if start is not None and np.linalg.norm(np.asarray(start) - [event.x, event.y]) <= 4:
-                picker = pick_validator_fine_query if fine else pick_guided_validator_query
-                index = picker(display, event.x, event.y)
+                index = pick_guided_validator_query(display, event.x, event.y)
                 if index is not None:
-                    if fine:
-                        frozen["pending_validator_fine_query"] = (display["fine_result"]["coarse_query_index"], index)
-                    else:
-                        frozen["pending_validator_query"] = index
+                    frozen["pending_validator_query"] = index
         return gui.Widget.EventCallbackResult.IGNORED
 
     def key(event):
         if event.type == gui.KeyEvent.DOWN:
+            if event.key == gui.KeyName.S:
+                save_guided_validator_roi_views(frozen)
+                return gui.Widget.EventCallbackResult.HANDLED
             if event.key in (gui.KeyName.Q, gui.KeyName.ESCAPE, gui.KeyName.R):
                 request_action("recapture" if event.key == gui.KeyName.R else "quit")
                 return gui.Widget.EventCallbackResult.HANDLED
         return gui.Widget.EventCallbackResult.IGNORED
 
     display["overview"].set_on_mouse(mouse)
-    display["fine_view"].set_on_mouse(lambda event: mouse(event, fine=True))
-    for widget in (display["overview"], display["fine_view"], display["local"]):
+    widgets = [display["overview"], display["roi_view"], display["local"]]
+    widgets.extend(panel["widget"] for stage in display["geometry_windows"] for panel in stage["panels"])
+    for widget in widgets:
         widget.set_on_key(key)
+    for stage in display["geometry_windows"]:
+        comparison = [panel for panel in stage["panels"]
+                      if panel.get("roi_debug_view") in ("D-before", "D-after")]
+        for panel in comparison:
+            def sync_camera(event, panel=panel, comparison=comparison, stage=stage):
+                def copy_camera():
+                    if not stage["closed"]:
+                        for other in comparison:
+                            if other is not panel:
+                                other["widget"].scene.camera.copy_from(panel["widget"].scene.camera)
+                                other["widget"].force_redraw()
+                display["app"].post_to_main_thread(stage["window"], copy_camera)
+                return gui.Widget.EventCallbackResult.IGNORED
+            panel["widget"].set_on_mouse(sync_camera)
 
 
 def open_ball_point_inspector(root, result):
@@ -448,7 +486,7 @@ def run_validator_mode(
         prepare_extremity_overview(frozen, show_3d=cfg.show_3d)
         print("[BALL] click a valid RGB/depth pixel to inspect the nearest existing CED NMS query", flush=True)
     elif getattr(cfg, "mode", None) == "validator":
-        print("[VALIDATOR] Click an orange Coarse NMS query; click a yellow Fine NMS candidate in panel 2 to fit planes in panel 3.", flush=True)
+        print("[VALIDATOR] Select one orange Coarse NMS query. Window 6 shows edges -> overlap removal -> extension / corner LS for that query.", flush=True)
     else:
         print("[QUERY] click a valid RGB/depth pixel in the frozen-frame window", flush=True)
     return run_frozen_click_stage(

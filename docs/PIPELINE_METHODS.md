@@ -5,7 +5,7 @@ and metric thresholds are in millimetres unless stated otherwise.
 
 ## 1. Stage order
 
-Interactive fine queries and detector NMS seeds share one entry point:
+Interactive fine queries and explicitly validated detector NMS seeds share one entry point:
 
 ```text
 voxel scene + organized RGB-D context
@@ -20,11 +20,12 @@ voxel scene + organized RGB-D context
 
 `run_validator_pipeline(points_mm, query_index, cfg, estimator=None,
 organized_context=...)` is the canonical numerical entry. CornerVINS plane
-extraction is unconditional for fine/detector configurations. There is no backend selector and no FPS/SAH
+extraction is unconditional for `ValidatorConfig` calls. CLI detector mode stops at NMS and does not construct this config. There is no backend selector and no FPS/SAH
 reference-plane clustering fallback.
 
-`--mode detector --only` is an explicit stop after the unchanged dense
-CED/bilateral/PCA/fusion-threshold/3-D NMS composition. It resolves
+`--mode detector` stops after the unchanged dense CED/bilateral/PCA/fusion-threshold/3-D NMS composition. Both the CLI detector and default `DetectorConfig` use `validator=None`; no plane, edge or corner computation runs. Scores, thresholding, NMS and scene IDs are unchanged. Library callers can still explicitly supply `ValidatorConfig` to invoke the shared validator.
+
+`--mode detector --only` additionally limits visualization to the NMS heatmap. It resolves
 `DetectorConfig.only=True`, `validator=None` and omits all validator, plane,
 edge and corner computation. Returned dense scores and NMS provenance are the
 same as the normal detector before validation; they contain no
@@ -33,130 +34,75 @@ only the existing NMS Corner Candidates panel, preserving its Fusion valid
 mask, linear Q99 range, red scene-indexed markers and M marker toggle.
 No geometry/CED/PCA/Fusion-only or auxiliary registered RGB windows open.
 `--no-3d-view` suppresses the remaining window too. The option is valid only
-with `--mode detector`; the default detector still validates every NMS seed.
+with `--mode detector`; omitting it retains the existing dense diagnostic panels without post-NMS validation.
 
-### 1.1 Coarse-to-fine guided sequential validator
+### 1.1 Coarse-query guided sequential validator
 
-`--mode validator` uses the original voxel-scene CED → bilateral CED → weighted
-PCA ratio → Fusion threshold → radius-local-maximum NMS to create Coarse queries.
-The existing Coarse functions, order, parameters and outputs are unchanged;
-the plan's schematic ordering/Greedy label does not replace the active Coarse
-implementation. `prepare_validator_queries` retains the original detector result
-in `validator_ced_scores`; its Fusion heatmap remains the left overview.
-
-Only a selected Coarse query starts the following independent experiment:
+`--mode validator` reuses the detector's unchanged voxel-scene CED → bilateral
+CED → weighted PCA/Fusion → threshold → radius-local-maximum NMS. Selecting an
+existing Coarse NMS sample runs the entire following composition immediately:
 
 ```text
-Coarse scene-indexed query
-  -> Fine-voxel evaluation ball with complete CED/PCA/bilateral support halo
-  -> existing dense CED/bilateral/PCA/Fusion functions at the Fine scale
-  -> reused eligibility threshold -> deterministic Greedy 3-D NMS
-  -> closest Fine candidate (or unchanged Coarse fallback)
-  -> Fine-centred RANSAC-voxel ball
-  -> first-point-guided, three-point hypotheses
-  -> count/RMS selection -> hard inlier removal -> at most three planes
+Coarse NMS query q_c (unchanged scene coordinate)
+  -> inclusive radius crop from original raw XYZ
+  -> query-local voxel downsampling
+  -> first-point-guided sequential RANSAC (core voxels only)
+  -> support recollection / hulls / finite edges / corner decision
 ```
 
-Defaults live in `settings.SettingsDefaults` and resolve through
-`GuidedValidatorConfig`; CLI options use `--validator-*`. Fine/RANSAC voxel sizes are absolute mm;
-all nine CLI/default length values are stage-specific voxel multipliers (`*_x`).
-Numerical functions receive resolved mm lengths in `GuidedValidatorConfig`;
-direct library mm overrides retain their explicit-mm contract. Obsolete anchored weighting/normal-angle
-settings and their CLI options are removed, along with the anchored extractor.
+There is no validator Fine score, second threshold/NMS, Top-K, query movement,
+Fine picker, or fallback stage. `validator_fine.py`, `validator_fine_*` defaults
+and CLI options, and resolved `fine_*` fields were removed. The separate
+`--mode fine` organized AHC/Hough/refiner pipeline is unchanged.
 
-| Setting (`SettingsDefaults` field) | Default | Length basis |
-|---|---|---|
-| `validator_fine_voxel_mm` | 5.0 mm | independent Fine voxel |
-| `validator_fine_search_radius_x` | 9.0 | Fine voxel (45 mm) |
-| `validator_fine_ced_radius_x` | 3.5 | Fine voxel (17.5 mm) |
-| `validator_fine_min_neighbors` | 6 | minimum neighborhood support |
-| `validator_fine_bilateral_radius_x` | 3.0 | Fine voxel (15 mm) |
-| `validator_fine_bilateral_sigma_spatial_x` | 1.5 | Fine voxel (7.5 mm) |
-| `validator_fine_bilateral_sigma_ced` | 0.05 | normalized CED range sigma |
-| `validator_fine_pca_radius_x` | 4.5 | Fine voxel (22.5 mm) |
-| `validator_fine_pca_ratio_saturation_tau` | 0.5 | dimensionless; None disables saturation |
-| `validator_fine_fusion_threshold_mode` | peak-relative | peak-relative, global-mean or fixed |
-| `validator_fine_fusion_score_threshold` | 0.10 | fixed cutoff; absolute floor in peak-relative mode |
-| `validator_fine_fusion_peak_relative_ratio` | 0.5 | fraction of finite valid Fine evaluation maximum, range [0, 1] |
-| `validator_fine_nms_method` | greedy | greedy or local_maximum |
-| `validator_fine_nms_radius_x` | 3.0 | Fine voxel (15 mm, current workspace setting) |
-| `validator_ransac_voxel_mm` | 10.0 mm | independent RANSAC voxel |
-| `validator_ransac_radius_x` | 6.0 | RANSAC voxel (60 mm) |
-| `validator_inlier_threshold_x` | 0.5 | RANSAC voxel (5 mm) |
-| `validator_guided_sigma_x` | 1.0 | RANSAC voxel (10 mm) |
-| `validator_max_planes` | 3 (valid range 0–3) | count, unchanged |
-| `validator_ransac_iterations` | 256 per round | count, unchanged |
-| `validator_min_inliers` | 20 | RANSAC-voxel sample count, unchanged |
-| `validator_min_inlier_ratio` | 0.08 | dimensionless, unchanged |
-| `validator_random_seed` | 42 | unchanged |
+**Crop before voxel.** For raw input $X$ and the selected scene coordinate $q_c$,
+let $X_c=\{x\in X:\|x-q_c\|\le R\}$. Apply the existing Open3D centroid voxel
+downsampler to $X_c$, using `validator_ransac_voxel_mm`, to obtain $P_c$.
+The downsampler's local grid origin follows that cropped input. Do not reuse
+Coarse voxels even when sizes match, and do not crop an already voxelized
+full-scene cloud. Therefore this intentionally changes sampling/centroids and
+potential plane results relative to the former global stage clouds.
+The query stays $q_c$ even when it is not a local voxel centroid.
 
-`prepare_validator_voxel_context` constructs Fine and RANSAC clouds from the full
-input with the existing voxel downsampler, caching each distinct voxel size/tree
-once per frame. Matching sizes share the same cloud/tree; the supplied Coarse
-scene is reused when its voxel size matches. Input raw samples are used only to
-prepare new clouds. Fine evaluation/neighborhoods use only Fine voxel centroids;
-RANSAC sampling/evaluation/support counts use only RANSAC voxel centroids. The
-selected Fine query need not coincide with a RANSAC voxel centroid.
+When geometry is enabled, also crop the disjoint raw shell
+$X_h=\{x:R<\|x-q_c\|\le R_s\}$, $R_s=R+P$.
+Voxelize this shell separately and concatenate $P=[P_c;P_h]$. This prevents
+outside observations from moving core centroids or entering RANSAC; only $P_c$
+is passed to the unchanged RANSAC extractor. Geometry support reads $P$.
+The two independent voxel grids can produce nearby samples along the interface;
+this preserves raw core/halo separation rather than a single global lattice.
+With geometry disabled, no support shell is prepared. Here $P$ is the resolved
+`roi_padding_mm` (absolute default 10 mm, finite/nonnegative). There is no
+independent support-radius floor or outer-contact margin. Default core/support
+radii are 75/85 mm; padding never changes the core voxel cloud.
 
-**Fine neighborhoods and NMS.** Evaluation samples are Fine voxel centroids in the
-inclusive search ball around $q_c$. All scoring/NMS values now come from the
-independent `validator_fine_*` settings. CED, PCA, bilateral radius/spatial sigma
-and NMS lengths each multiply the Fine voxel size. Bilateral range sigma is in
-normalized CED units; PCA saturation tau and Fusion thresholds are dimensionless.
-Fine minimum neighbors is a separately validated integer of at least three.
-Coarse CED/PCA/bilateral/threshold changes do not change Fine scoring parameters.
+`prepare_validator_voxel_context` caches validated raw/Coarse arrays and trees
+per frame. It stores only the most recent query's voxel cloud, keyed by query
+ID/coordinate, voxel size, core radius and effective support radius. Repeating
+that query reuses voxelization and reruns fitting; another query replaces the
+local cache. A context from a different Coarse scene is rejected. Source clouds
+and Coarse scores are never modified.
 
-The unchanged scorer still applies CED → simultaneous bilateral CED →
-original-CED-weighted PCA → optional tanh ratio saturation → product Fusion.
-At the current workspace's 5 mm Fine voxel, dedicated defaults give
-17.5/22.5/15/7.5 mm CED/PCA/bilateral-radius/spatial-sigma values, range
-sigma 0.05, saturation tau 0.5 and six neighbors. Changing CED
-radius no longer implicitly changes Fine PCA or bilateral lengths; each is
-explicitly configured. Setting Fine saturation tau to None uses the raw ratio.
+All validator `*_x` lengths multiply the RANSAC voxel; absolute `*_mm` fields,
+counts, angles, ratios and seed do not scale. Current workspace settings are:
 
-`validator_fine.find_fine_queries` extracts Fine voxel samples out to
-$R_{support}=R_{search}+\max(r_p,r_b)+r_c$. The last term includes the CED
-neighborhood of every PCA/bilateral support point. This is a computational halo,
-not a clipped evaluation ROI: every evaluation sample's dependencies are the
-same Fine-voxel samples as a full Fine-cloud calculation. Halo-edge scores are
-never candidates. All public Fine score arrays are sliced to the evaluation
-ball, and `original_point_indices` explicitly contains Fine voxel IDs. The existing
-threshold path supplies strict eligible $S_i>T$ masks. Fine independently chooses
-fixed, global-mean or peak-relative (default) thresholding. With $V$ the finite
-Fusion-valid evaluation samples, absolute threshold $T_0$ and dimensionless
-ratio $\alpha\in[0,1]$, peak-relative uses
-$$
-T=\max\left(T_0,\;\alpha\max_{i\in V}S_i\right).
-$$
-The default is $\alpha=0.5$, $T_0=0.10$. The support halo and invalid/nonfinite
-scores do not contribute to the peak. Empty $V$ retains $T_0$ with no eligible
-points. All-zero support is rejected, and a ratio of one rejects even the peak
-because eligibility remains strict. Fixed mode uses only $T_0$; global-mean
-uses the mean over $V$ and ignores $T_0$. A single extreme peak can suppress
-other real corners; neither a relative threshold nor its floor proves that a
-corner exists. The ratio/floor are starting values, not calibrated accuracy
-claims. `fine_nms_method="greedy"` ranks
-eligible points by decreasing Fusion score, breaks ties by Fine voxel ID, and
-suppresses within the inclusive configured radius of retained peaks.
-`fine_nms_method="local_maximum"` reuses the existing deterministic local-maximum
-candidate indices instead. Coarse scoring, configuration and its extractor are
-unchanged. Fine results record the threshold mode/value, peak-relative ratio and
-NMS method. Only Fine changes its default eligibility rule; Coarse keeps its
-existing fixed/global-mean choices, and RANSAC is unchanged.
-
-The default highlighted Fine query is the candidate closest to $q_c$ (ties: Fine voxel
-ID). All Fine NMS candidates are retained. In the interactive 3-D workflow, a
-Coarse click requests `stop_after_fine=True`: the entry returns the Fine result
-with `planes_computed=False`, without RANSAC. A Fine NMS click runs RANSAC using
-the stored Fine result. Later Fine selections reuse these same scores. Default
-library calls and `--no-3d-view` retain the full automatic nearest-Fine pipeline. If no candidate exists, $q_f=q_c$ and the console
-and result explicitly report `fine_fallback=True`.
+| Setting | Value | Resolved meaning |
+|---|---:|---|
+| `validator_ransac_voxel_mm` | 5.0 | local voxel in mm |
+| `validator_ransac_radius_x` | 15.0 | 75 mm raw core radius |
+| `validator_inlier_threshold_x` | 1.0 | strict 5 mm plane gate |
+| `validator_guided_sigma_x` | 1.5 | 7.5 mm sampling sigma |
+| `validator_max_planes` | 3 | maximum accepted planes |
+| `validator_ransac_iterations` | 256 | hypotheses per round |
+| `validator_min_inliers` | 35 | absolute support floor |
+| `validator_min_inlier_ratio` | 0.08 | fraction of original voxel ROI |
+| `validator_random_seed` | 42 | query-local RNG seed |
 
 **Guided sequential RANSAC.** For the inclusive RANSAC-voxel ball
-$I=\{i:\|p_i-q_f\|\le R\}$, compute the fixed acceptance count
+$I=\{i:\|p_i-q_c\|\le R\}$, compute the fixed acceptance count
 $N_{min}=\max(N_{configured},\lceil\rho |I|\rceil)$. It never shrinks as planes
 are removed. In each round let $A$ be the remaining samples and set
-$g_i=\exp[-\|p_i-q_f\|^2/(2\sigma_s^2)]$. The first sample is drawn with
+$g_i=\exp[-\|p_i-q_c\|^2/(2\sigma_s^2)]$. The first sample is drawn with
 $P(a=i)=g_i/\sum_{j\in A}g_j$, using log-weight subtraction for stable
 normalization and uniform fallback when no valid normalization survives.
 Probabilities are renormalized on remaining points every round. Draw the other
@@ -165,7 +111,7 @@ two points uniformly without replacement from $A\setminus\{a\}$.
 With $v_b=p_b-p_a$, $v_c=p_c-p_a$, reject any pair separation at or below
 $10^{-9}$ mm or cross-product norm at or below
 $10^{-12}\max(1,\|v_b\|\|v_c\|)$. Otherwise set
-$n=(v_b\times v_c)/\|v_b\times v_c\|$, $d=-n^Tp_a$. The Fine query defines
+$n=(v_b\times v_c)/\|v_b\times v_c\|$, $d=-n^Tp_a$. The unchanged Coarse query defines
 only the ROI and first-point sampling probabilities; it is not constrained to
 lie on a plane.
 
@@ -180,68 +126,538 @@ valid hypothesis. A query-local seeded RNG makes results reproducible for the
 same input order/configuration.
 
 **Entry point, IDs and results.** `run_validator_pipeline(points_mm, query_index,
-cfg, raw_points_mm=...)` remains the canonical composition entry. The raw input
-is used only for context construction; cached calls pass `voxel_context`.
-`ValidatorDetectorConfig` selects this experiment; existing `ValidatorConfig`
-retains the unchanged fine/detector composition. `query_index` is the Coarse
-scene ID. `fine_query_index`, Fine `candidate_fine_indices`,
-`evaluation_fine_indices` and `support_fine_indices` address the Fine voxel cloud.
-`roi_ransac_indices` and `inlier_ransac_indices` address the RANSAC voxel cloud;
-plane masks address the stored RANSAC ROI and remain disjoint. A fallback has
-`fine_query_index=None` and uses the original Coarse position.
+cfg, raw_points_mm=...)` remains the canonical composition. Cached calls supply
+`voxel_context`. `ValidatorDetectorConfig` selects this guided path;
+`ValidatorConfig` retains the independent organized pipeline.
+`query_index` indexes the supplied Coarse scene. `query_position_mm` and
+`coarse_query_position_mm` both equal its unchanged coordinate.
+`roi_raw_point_indices` addresses the original raw input before local voxelization.
+`ransac_points_mm` stores $[P_c;P_h]$; native `roi_ransac_indices`, plane
+`inlier_ransac_indices`, and geometry support IDs address this query-local array.
+RANSAC masks address `roi_points_mm`, and accepted plane masks remain disjoint.
+`core_voxel_count` and `halo_voxel_count` record the concatenation boundary.
+Vertex `distance_to_query_mm` replaces the former Fine-distance name;
+all distance gates now use the unchanged Coarse query.
 
-Each native cloud has a nearest-Coarse scene adapter, computed once. It supplies
-`fine_query_scene_index`, Fine `candidate_scene_indices`, `evaluation_scene_indices`,
-`support_scene_indices`, and public `roi_point_indices`/`inlier_point_indices` in
-the supplied Coarse scene space. Mapping may be many-to-one. Adapter IDs never
-replace native positions, masks or support counts. Other mode indexing contracts
-and the scene-indexed projection/edge/refiner pipeline are unchanged. Cached Fine
-results are checked against the Coarse query and Fine voxel size.
+`ransac_scene_indices` is the nearest-Coarse adapter for this local cloud.
+It supplies scene-domain `roi_point_indices`, plane `inlier_point_indices`, and
+geometry `support_point_indices` without replacing native coordinates, masks or
+support counts. Mapping can be many-to-one. These adapters do not identify raw
+contributors to a voxel. Local IDs from different queries are not interchangeable.
+`planes_computed=True` includes empty-ROI/zero-plane runs; there is no Fine-wait
+state. Report query, raw/voxel counts, voxel/core radius, plane diagnostics,
+corner coordinates and incident finite edges, and voxel/RANSAC/geometry timers.
 
-Report Coarse/Fine positions, displacement, candidate count/fallback, both voxel sizes, Fine CED
-radius, RANSAC radius, guided sigma, ROI count, plane normal/offset, inlier count,
-inlier ratio to the **original ROI**, RMS and RANSAC total time. The absolute
-query-to-plane distance $|n^Tq_f+d|$ is diagnostic only.
+**Visualization.** The main native window keeps three panels:
 
-**Visualization.** One native Open3D window now contains three labeled panels:
+1. Coarse Fusion heatmap and orange NMS queries, using the detector's valid mask,
+   linear full-frame Q99 range and color function. Only this panel picks queries.
+2. Stored core voxel input in gray, the orange unchanged query, and its radius
+   sphere. Caption reports raw count → voxel count, voxel size and query radius;
+   no second heatmap or candidate selection is calculated.
+3. Fitted-plane inliers/disks/normals, core points and the same orange query.
+   A two-line caption shows the stored per-plane RANSAC `inlier_count` with
+   P0/red, P1/green and P2/blue labels, and the stored effective `min_required`.
+   Counts are not recollected support counts; rendering does not change acceptance.
+   The disk for $(n,d)$ has center $c=q_c-(n^Tq_c+d)n$ and radius
+   $\sqrt{\max(0,R^2-|n^Tq_c+d|^2)}$. RGB extraction-order planes retain
+   alpha 0.60, rims/diameters and normal arrows. Disks illustrate models,
+   not observed boundaries.
 
-1. Coarse Fusion heatmap plus orange Coarse NMS markers, uploaded once.
-2. Fine Fusion heatmap of the stored Fine-voxel evaluation points plus yellow Fine NMS
-   markers. The nearest/selected Fine query is a larger red sphere. Colors use
-   the stored Fine Fusion values/valid mask, an independent valid-score linear
-   Q99 range and the same shared heatmap color function as Coarse.
-3. Plane fitting after a Fine NMS click: gray RANSAC-voxel ROI/outliers, orange Coarse
-   sphere, large red Fine sphere, Fine-centred wire RANSAC ball, and RGB plane
-   disks, inliers and normal arrows. Fine candidates stay in panel 2.
+Separate windows 4/5/6 display padded Hull/clipping/TLS diagnostics, pair
+intersections and final integrated corner geometry as described below. All rendering reads stored
+results through the manager, without fitting or mutating memberships. The
+existing display-only worker, scene upload, R/Q/Esc and bounded shutdown remain.
+`--no-3d-view` keeps RGB/depth Coarse selection and console reporting.
+Finite RANSAC may miss weak planes, hard removal assigns shared support to earlier
+planes, and local voxelization changes support counts. Fixed `min_inliers` may
+require adjustment for sparse observations. No device accuracy claim is made.
 
-A Coarse click refreshes panel 2 and clears previous plane fits; panel 3 waits for
-Fine selection. `planes_computed=False` distinguishes this from a computed
-zero-plane result. When no Fine candidate exists, Coarse fallback automatically
-runs RANSAC as before. Fine selection replaces only the red marker in panel 2
-and fitting geometry in panel 3; it preserves Coarse/Fine clouds, heatmaps and
-cameras. `fine_result.fine_search_radius_mm` supplies the display framing without
-changing score evaluation. Fine picking occurs only in panel 2 and queues its
-Fine voxel ID with the Coarse scene ID; stale selections are ignored. No display step
-recomputes or mutates numerical scores/memberships. R/Q/Esc work in all panels.
+### 1.2 Guided Plane–Edge–Corner validation
 
-For each unit plane $(n,d)$, project the selected query to
-$c=q_f-(n^Tq_f+d)n$. Draw the disk at $c$ with radius
-$\sqrt{\max(0,R^2-|n^Tq_f+d|^2)}$, so it is the plane/sphere intersection and
-stays inside the RANSAC ball. These disks illustrate infinite plane models, not
-observed patch boundaries. Planes/inliers use extraction-order red, green and
-blue. Retain the alpha-0.60 lit-transparency material, small emissive color,
-3-pixel rims/two diameters and normal arrows (starting on the projected plane).
-Rims and diameters are display guides, not extracted edges or intersections.
+The default guided pipeline now continues after RANSAC:
 
-The existing display-only worker, startup-only scene upload, camera picking,
-R/Q/Esc handling and bounded Filament shutdown remain. Subsequent IPC messages
-carry results/selected IDs; `--no-3d-view` retains RGB/depth Coarse selection and
-console reporting. There is no plane/corner refinement, edge detection,
-intersection or corner validation in this experiment. Sparse Fine-voxel neighborhoods
-can yield no Fine candidate, finite RANSAC can miss weak planes, and hard removal
-assigns intersection support to the earliest accepted plane. Downsampling reduces
-support counts and changes centroids, so fixed `min_inliers` may require adjustment
-for sparse scenes. This is the intended change from pre-voxel support.
+```text
+unchanged Coarse NMS -> raw query crop -> local voxel input
+  -> unchanged guided sequential RANSAC (core only)
+  -> independent support recollection in core + halo
+  -> connected per-plane tangent projection + convex hull
+  -> hull/strip finite plane intersections
+     + padded Hull segment clipping -> ACTIVE/INACTIVE Nodes -> TLS boundary lines
+  -> intersection/boundary overlap masks + active finite-edge graph
+  -> anchored candidate grouping + constrained / multi-line least squares
+  -> Coarse-query-centred vertex gate -> ACCEPT / REJECT / INCONCLUSIVE
+```
+
+Composition stays in `run_validator_pipeline`; the new numerical owners are
+`validator_plane_support.py`, `validator_edge_graph.py` and
+`validator_corner_graph.py`. There is no new Hough path, orthogonal-box constraint,
+or connection to the independent fine-mode AHC/refiner algorithms.
+
+**Support and indexing.** With the stored unit plane $(n_j,d_j)$ and selected
+Coarse query $q$, recollect native RANSAC-cloud points as
+$I_j=\{i:\|p_i-q\|\le R_s,\ |n_j^Tp_i+d_j|<t\}$, where
+$R_s=R_{core}+P$ and $t$ is the existing RANSAC gate.
+Every plane reads the original stage cloud; support may overlap across models,
+and earlier hard removal never excludes a point from recollection. The original
+models, disjoint core masks, native inlier IDs, counts and RMS remain unchanged.
+Pipeline adds stable extraction-order `plane_id` fields to its plane records. Padding changes recollected support/Hulls but never
+adds samples to RANSAC or changes its fitted models/core memberships.
+
+Build a Euclidean radius graph on each $I_j$. Prefer components that overlap the
+original plane's core inliers, then choose the nearest to the query (ties: core
+overlap count, component size, label). Never hull disconnected components
+together. Missing anchored support or multiple anchored components within the
+corner gate mark connectivity UNKNOWN. At least three noncollinear points are
+still required to form a 2-D convex hull; this is a geometric requirement.
+All component sizes, original-core overlaps, selected component and all
+recollected IDs remain diagnostic output. Connectivity cannot guarantee object
+instances or resolve noise bridges.
+
+Project the selected connected support using an orthonormal basis $(u,v)$ and
+$o=q-(n_j^Tq+d_j)n_j$. Store $(p_i-o)^Tu,(p_i-o)^Tv$, hull vertices/equations,
+lifted 3-D vertices and 2-D area. A relative SVD rank check and Qhull failure
+handling retain degenerate/insufficient patches as UNKNOWN. Planes are not refit.
+**Padded Hull -> ROI clipping -> Node-aware TLS.** Use support radius
+`R_s = R_core + roi_padding_mm`. Intersect each original padded Hull segment
+with the original core before TLS; never re-hull clipped points or join them
+along the ROI circumference. In plane coordinates, project the query to the
+stored plane origin and use the exact section radius `sqrt(R_core^2 - d^2)`,
+where d is the query-to-plane distance. The existing analytic segment/sphere
+helper works in these 2-D coordinates. A nonpositive section radius, zero-length
+segment, tangency or empty interval yields no segment. Both-exterior segments
+that cross the core retain their interior interval.
+
+Retained original Hull Nodes keep stable plane-local IDs, source ORIGINAL and
+`corner_enabled=True`. New clipping Nodes have distinct per-source-edge IDs,
+source CLIPPED and `corner_enabled=False`. Retain inactive Nodes and their
+Edges; inactivity forbids endpoint Corner evidence, not interior line use.
+Each clipped Edge retains its Plane ID and original Hull Edge ID. TLS groups
+merge only through a shared Node ID, including true cyclic adjacency; separated
+open chains cannot reconnect. Merged Lines retain ordered support Node IDs,
+all source Hull Edge IDs, their original traversal start/end Node identities,
+source and enabled states independently of fitted coordinates. Store the fitted
+maximum TLS residual. The SVD formula, complete-direction checks, maximum-error
+threshold and greedy first-eligible merge policy are unchanged. Input clipping
+can change fit values and merge outcomes.
+
+Reclip fitted TLS extrema to the core if needed before minimum-length checks.
+Any extra fit-created crop endpoint is CLIPPED/inactive with its parent Node ID;
+projection never promotes a clipped Node to active. Intersection segments retain
+their existing hull/strip computation and core clipping. Preserve source endpoints,
+`roi_clipped_start/end`, pre-core support overlap and surviving core interval
+diagnostics. Final vertices require the core and unchanged query gate. No point
+support check is restored. `boundary_debug` stores original Hull Nodes/Edges,
+clipped Nodes/Edges and final Lines; the UI only reads these snapshots.
+Finite padding does not prove physical boundary existence or resolve interior
+occlusion/hull bridges; a segment with inactive endpoints can still support a
+genuine interior intersection.
+
+Patch `support_indices` aliases native `support_ransac_indices`;
+`support_point_indices` is its explicit nearest-Coarse adapter. Recollected IDs
+and support ROI IDs retain both native and public scene domains. Adapter
+duplicates never change plane support counts. Edge point-support slots are
+retained but empty because point-to-edge memberships are no longer evaluated.
+
+**Finite edges.** Exclude plane pairs whose unoriented normal angle is below
+the configured threshold. For each remaining pair, solve
+$[n_i^T;n_j^T]p_0=-[d_i;d_j]$ by least squares; its unit direction is
+$v=(n_i\times n_j)/\|n_i\times n_j\|$. Translate $p_0$ along this line toward
+the query for local parameterization. Do not fix an arbitrary coordinate axis.
+For each tangent hull $H_i$, express the line as $p_i+t v_i$, with unit 2-D
+direction $v_i$. Clip the unchanged polygon by the two half-planes
+$-\delta\le\det(v_i,x-p_i)\le\delta$. Original vertices inside the strip and
+boundary intersections define a convex polygon; project its vertices onto the
+line and take the minimum/maximum line parameter. Convert projected parameters
+back to the original unit 3-D direction when its tangent projection is not
+exactly unit length. The two hull intervals contribute only their common
+positive-length interval, subject to the unchanged minimum edge length.
+Empty or point-like clipped intervals are invalid; strip boundary residuals
+within $10^{-8}$ mm are treated as zero. The hull is never buffered.
+`validator_intersection_strip_half_width_mm` is an independent absolute-mm
+half-width (default 5.0, finite and nonnegative), exposed as
+`--validator-intersection-strip-half-width-mm`. Zero uses the original exact
+hull-half-space/line clipping without changing its numerical tolerances.
+Values 0/2.5/5/7.5 mm are configurable; no comparison experiment was performed.
+
+`plane_pair_diagnostics` retains its existing fields and adds
+`strip_half_width_mm`, per-plane `hull_line_min_distance_mm`,
+`exact_interval_valid`, `tolerance_interval_valid`, `interval_exact_mm` and
+`interval_tolerance_mm` (arrays ordered by `plane_ids`), plus
+`common_interval_mm`, `edge_length_mm`, `support_passed`,
+`support_rejection_reason` and `recovered_by_tolerance`. Intervals parameterize
+the query-nearest line origin in mm; absent intervals are None.
+`recovered_by_tolerance` means a positive-width common interval reaches the
+minimum length while the exact common interval does not. Point-support checks
+have been removed: `point_support_checked=False`, `support_passed=None`, and
+`support_rejection_reason=None`. These diagnostics are also attached to generated
+intersection candidates and retained representatives. Strip intervals remain
+geometric candidates and do not prove the existence of observed physical edges.
+
+Boundary candidates start as core-clipped successive padded Hull segments,
+including the original closing segment when it survives. Skip zero-length segments;
+merge only Node-adjacent groups, including
+the last/first group. Retain each group's original ordered vertices and segment
+directions. For each proposed merge, deduplicate vertex coordinates for fitting,
+compute their mean $\mu$, and obtain the unit TLS direction $v$ from the leading
+right singular vector of the centered 2-D coordinates. Align its sign with hull
+traversal. Require the existing complete-direction agreement of original segments,
+plus agreement of both current group TLS directions and the proposed TLS direction,
+using `corner_min_edge_angle_deg` without absolute-dot reversal equivalence.
+Require $\max_i\|(I-vv^T)(p_i-\mu)\|\le\tau_{merge}$; RMS alone never accepts
+a merge. The independent absolute-mm `validator_boundary_merge_max_error_mm`
+(default 2.5, finite/nonnegative; CLI `--validator-boundary-merge-max-error-mm`)
+replaces the former RANSAC inlier tolerance for this boundary merge check only.
+Refit from all group vertices after every merge, retaining cyclic order and the
+cyclic adjacency across surviving groups. After convergence, refit each group and use
+$\mu+\min_i((p_i-\mu)^Tv)v$ and $\mu+\max_i((p_i-\mu)^Tv)v$ as finite endpoints.
+Lift these 2-D endpoints with the stored plane origin and tangent basis, then
+pass fitted coordinates together with inherited Node provenance to `_edge`. Degenerate TLS fits
+produce no candidate. Plane-pair clipping and the existing minimum-length check
+remain independent of boundary TLS fitting. Hull-based boundaries
+remain hypotheses and do not guarantee physical object boundaries.
+
+**Point-support removal.** `validator_edge_support_radius_x` and
+`validator_edge_min_support`, their resolved config fields and CLI options are
+removed together with point-to-segment distance filtering, minimum support
+counts, gap/span/RMS diagnostics and point-support quality calculation.
+A finite candidate is geometrically accepted only after Hull segment clipping,
+core-sphere clipping and minimum-length check. The former boundary-midpoint-only
+ROI check is replaced by this provenance/clip guard; the old point-to-edge radius
+is not reused as a crop margin. Plane support recollection,
+component selection, hull validity, TLS, strip width and plane-angle gates remain.
+Edge `support_ransac_indices`, `support_indices`, mapped `support_point_indices`
+and `support_by_plane` remain empty; `support_count=0` is an unmeasured
+compatibility slot, not a measured absence of support. `support_quality=1.0` is
+neutral for all edges, so deduplication falls back to length/source ID and it
+provides no point-evidence ranking. Edge/result `point_support_checked=False`
+and terminal `point support=disabled` make the new semantics explicit.
+
+Finite-edge deduplication uses complete-link agreement of type/plane IDs,
+unoriented direction, symmetric line offset and strictly positive interval
+overlap. Keep the highest-ranked representative and all `source_edge_ids`; do not
+extend it or fill a gap. Different-direction edges are never merged. The
+original candidate records preserve other members' support/provenance.
+
+**Intersection–boundary masking.** After same-type finite-edge deduplication,
+compare each valid intersection $I$ with each boundary $B$ that owns one of its
+planes. Require $\arccos(|u^Tv|)\le\theta_o$, both original boundary endpoints
+within $d_o$ of the infinite intersection line, and projected overlap
+$\max(0,\min(L_I,b_1)-\max(0,b_0))\ge\ell_o$ with sorted boundary projections.
+Defaults are 5 degrees, 5 mm and 2.5 mm. Map each qualifying overlap back to the
+original boundary's own parameter, accounting for direction sign, and union all
+mask intervals from all intersections. Preserve original TLS start/end/direction
+and source IDs. Store `masked_intervals_mm`, complementary
+`active_intervals_mm` and `masked_by_intersection_ids`; a fully masked boundary
+is INACTIVE and absent from active `edges`, while `all_edges` retains it.
+`boundary_overlap_diagnostics` records masks. Intersections stay active.
+A nonparallel crossing boundary is not masked. Active pieces are parameter
+intervals of the original length-validated edge, not newly fitted segments;
+mask cut endpoints are never vertex evidence or extrapolation origins.
+
+**Vertex candidates and least squares.** Inspect active edge pairs. For two
+Boundaries on the same plane, require a shared original ACTIVE endpoint Node
+that survives overlap masking on both Lines. Absorbed intermediate Nodes and
+nonadjacent Boundaries are not Corner candidates. Retain the existing midpoint
+as the initial pair candidate after that topology gate. Cross-plane Boundary pairs and
+intersection/boundary or multiple-intersection pairs retain their existing
+closest-point/LS path; inactive endpoint provenance still forbids endpoint
+evidence and extrapolation without disabling valid interior line support. Exclude
+angles below the single `corner_min_edge_angle_deg` threshold. Solve closest
+points using the full-rank matrix $[u,-v]$ and a stable least-squares solve.
+Their gap must meet the single `vertex_line_distance_mm` threshold. Parameters
+must be active and within the original finite extents plus
+`vertex_endpoint_tolerance_mm`. Mask boundaries/interiors are excluded.
+The same line-distance and endpoint thresholds apply when validating refined
+vertices against each incident finite segment. There are no additional min/max
+caps from legacy corner endpoint or parallel-angle settings.
+When an intersection is present, its closest point $I(t)$ is the candidate,
+not the midpoint of the two closest points. Boundary–boundary pairs start at
+the midpoint, with the same active-interval and existing geometric gates;
+their final grouped position is refined using all unique incident Lines.
+
+Group candidates on each anchor by sorted $t$, requiring the entire group
+span to be no more than `vertex_group_span_mm` (default 5 mm); proximity chains
+cannot merge distinct locations. For one intersection and incident boundaries,
+use unit weights and $Q_j=I_3-v_jv_j^T$:
+$t^*=\sum_j u^TQ_j(b_j-a)/\sum_j u^TQ_ju$, $p^*=a+t^*u$.
+Reject a denominator at or below $10^{-12}\max(1,N)$; clamp $t^*$ to the
+intersection's actual finite range and recheck residuals and active extents.
+This also resolves a single boundary's anchor point. For Boundary-only groups
+and groups with at least two intersection Edges, solve using every unique
+incident Line with equal weight:
+$(\sum Q_j)(p-r)=\sum Q_j(b_j-r)$ in local reference coordinates, rejecting
+rank deficiency by relative singular-value threshold $10^{-12}$.
+Boundary-only groups no longer retain the first pair's midpoint when further
+Lines join. Group merges refit all incident Lines with the same rank and
+post-fit active-extent/residual checks; the single-intersection constrained
+solution is unchanged.
+
+Combine groups only with shared incident edge IDs, complete compatibility of
+all member positions within the group span, successful refinement using all
+unique incident lines, and valid residual/active-extent checks after refinement.
+The refined point must also stay within the group span of every member.
+Different intersection locations remain distinct. `vertex_candidates`,
+`vertex_rejections`, per-vertex `refinement_method`, original member positions
+and final `ls_residuals_mm` retain provenance. No RANSAC plane, hull or TLS line
+is moved. The legacy vertex `supported` flag means geometric reachability only;
+point-support validation remains disabled as previously requested.
+
+Keep geometrically reachable vertices inside the core and with $\|v-q\|\le r_{corner}$.
+For every refined vertex, store `intersection_edge_count`, perpendicular
+infinite-Line fitting RMS `line_fit_rms_mm`, and `total_extension_mm` summed
+over unique incident Edges. With `t = (p - start) dot direction`, an Edge's
+extension is `max(0, -t, t - length)`. This ranking RMS is distinct from the
+finite-segment distances in `ls_residuals_mm`, which still enforce the existing
+acceptance gate and include endpoint overrun. Among accepted vertices, rank
+lexicographically by: shared intersection present first, lower Line RMS,
+lower total extension, lower query distance, then stable vertex ID. Round only
+the ranking RMS and extension to eight decimal mm places so sub-1e-8 mm
+floating-point noise does not override extension/distance tie breaking; this
+adds no physical acceptance threshold. An intersection-free candidate remains
+eligible when no shared-intersection candidate passes all existing gates.
+Neutral legacy support quality and Fusion are not ranking terms. Defaults are
+restored from experimental 30/30/30/50 mm to 5/5/5/10 mm for Line distance,
+endpoint tolerance, full group span and query gate respectively. CLI overrides
+remain available. Distance is measured from the unchanged Coarse query.
+`corner_position_mm` is this reconstructed
+position, not a replacement query sample. `corner_edge_ids` and `corner_edges` directly
+provide its incident finite segments, endpoints, plane IDs and support records.
+`verified=True` occurs only with ACCEPT and at least two valid geometric directions.
+No planes, unreliable patches or insufficient local edge geometry yield
+INCONCLUSIVE; sufficient patches without a geometric gated junction yield
+REJECT. Disabled geometry yields NOT_COMPUTED while
+preserving `planes_computed` independently.
+
+**Initial settings.** Fields below live in `SettingsDefaults`; resolved fields
+omit the `validator_` prefix in `GuidedValidatorConfig`. CLI uses hyphens.
+
+| Setting | Default | Rationale / units |
+|---|---:|---|
+| `validator_geometry_enabled` | True | `--validator-geometry` / `--no-validator-geometry` |
+| `validator_edge_overlap_angle_deg` | 25.0 | maximum unoriented intersection/boundary angle |
+| `validator_edge_overlap_distance_mm` | 15.0 | both boundary endpoints to intersection line |
+| `validator_edge_overlap_min_length_mm` | 2.5 | minimum finite overlap along the intersection |
+| `validator_vertex_line_distance_mm` | 5.0 | sole closest-point gap / refined finite-segment distance gate; absolute mm |
+| `validator_vertex_endpoint_tolerance_mm` | 5.0 | sole original endpoint extrapolation allowance; absolute mm; cannot extend a mask cut |
+| `validator_vertex_group_span_mm` | 5.0 | full anchor-parameter span and complete spatial grouping gate |
+| `validator_roi_padding_mm` | 10.0 | sole padding setting; absolute mm, support radius = core + padding; 0 supports core-only comparison |
+| `validator_plane_connect_radius_x` | 4.0 | 20 mm at 5 mm RANSAC voxel; unchanged support component radius |
+| `validator_plane_parallel_angle_deg` | 20 | small-angle intersection exclusion, not an orthogonality gate |
+| `validator_intersection_strip_half_width_mm` | 15.0 | independent strip half-width in mm; 0 retains exact hull/line clipping |
+| `validator_boundary_merge_max_error_mm` | 2.5 | independent maximum 2-D TLS vertex residual for adjacent boundary merges; absolute mm |
+| `validator_edge_min_length_x` | 1.0 | 5 mm minimum finite edge length |
+| `validator_corner_min_edge_angle_deg` | 30 | sole vertex minimum angle; also used by boundary coalescing and same-type edge direction matching |
+| `validator_corner_gate_radius_mm` | 10 | absolute Coarse-query-centred mm gate |
+
+The duplicate `validator_vertex_parallel_angle_deg` and
+`validator_corner_endpoint_tolerance_x` defaults, resolved fields and CLI options
+are removed. Current effective angle/distance/extension/group/gate values remain
+30 degrees / 5 mm / 5 mm / 5 mm / 10 mm. Callers formerly using the removed
+options must select the corresponding surviving thresholds explicitly. Changing
+RANSAC voxel size no longer silently caps the absolute-mm vertex distances via
+an additional voxel-multiplied endpoint setting.
+
+All `*_x` geometry lengths multiply the RANSAC voxel; counts/angles do not scale.
+These are initial experimental values, not calibrated accuracy claims. Existing
+Coarse score/NMS settings and RANSAC fitting rules are preserved. The direct
+query-local crop/voxel stage and its settings are described in section 1.1.
+Positive lengths, boolean enable and (0,90]-degree
+angle validation follow the existing config/CLI pattern.
+
+**Display and timing.** The original third panel retains only core observations,
+fitted-plane disks/normals and original query/core-ball markers, using alpha 0.60
+and the original core-radius camera framing. Manager-owned auxiliary native
+windows separate (4) padded Hull/ROI clipping/TLS and Before/After diagnostics,
+(5) plane-pair intersections, and (6) the final four-panel edge/mask/vertex/raw
+process. The former independent per-plane Boundary view is removed, its place
+taken by the former window 7; no window 7 remains. Window 5 filters by stored
+edge type, uses gray Hull rims for patch bounds and cyan finite shared Edges,
+and omits ROI spheres, query markers and Corner overlays. Window 4 deliberately
+shows core/padded ROI guides and Node provenance. Both read stored results;
+the detailed panel semantics are described below.
+Window 5 additionally draws the stored `intersection_line_origin_mm` and
+`intersection_line_direction` as a yellow infinite-line guide over the display
+span $[-R_s,R_s]$ around its query-nearest origin. On each owning plane, a
+translucent RGB rectangle spans the same line range and the stored strip
+half-width $\pm\delta$, with thin coloured strip boundaries and alpha 0.28.
+Zero width draws only the line. These guides also appear when hull overlap or
+minimum length fails, but not for pairs excluded as parallel.
+A display-only normal offset of $0.001\max(1,R_s)$ mm avoids coplanar hull/strip
+flicker; stored coordinates, clipping, support and acceptance are unchanged.
+The caption reports the strip width and distinguishes guides from cyan accepted
+finite edges. Main panel 3 retains its existing content.
+Window 6 displays original edges, removed intervals, extension/LS estimation and
+the selected Corner/incident Edges on raw XYZ in four panels as detailed below.
+Only panel 6-4 adds a background cloud; none of its panels adds ROI spheres.
+The disk remains an illustrative model/sphere intersection in panel 3; actual
+computed hulls remain in windows 4/5, with muted rims in panel 6-1.
+All windows live in the existing display-only worker. Auxiliary windows close
+independently; main-window close, recapture and quit clean up all windows.
+R/Q/Esc work in every view, including all process panels. Each auxiliary camera
+is retained when redisplaying the same Coarse query. Rendering reads
+stored results without model fitting, support reassignment or result mutation.
+Only Coarse picks queries; its heatmap and cached scores are unchanged.
+`stage_elapsed_s` reports local voxel preparation, RANSAC, support, edges,
+vertices and inclusive geometry duration; `elapsed_s` is the current pipeline
+call total. Geometry is an inclusive subtotal, not an additional disjoint stage.
+No performance claim or per-stage benchmark was measured in this task.
+
+**Reference and limits.** Inspected the official CornerVINS
+[`RunBorderDetection` / `ComputeIntersectionLine`](https://github.com/zydddd/CornerVINS/blob/main/src/plane_features/plane_detector.cpp)
+for plane-pair connectivity and finite hull-overlap intervals. The implementation
+here uses a general least-squares line point, overlapping core/halo memberships,
+observed boundary edges and two-edge corner acceptance; it does not copy the
+three-orthogonal-plane/SO(3) box refinement or the axis-fixed line solution.
+Tolerance-strip clipping reconstructs the geometric principle in Zhang et al.,
+CornerVINS, Section V-B / Algorithm 1 / Fig. 4(a–c),
+[IEEE TRO 2025](https://doi.org/10.1109/TRO.2025.3567532), using the local
+`ref_paper/` PDF. The public `ComputeEndPoints` call supplies a tolerance, but its
+definition is not reproduced here; this is not claimed to be an identical port.
+The existing fine-mode finite-segment matcher/refiner was reviewed but is not
+called with native RANSAC IDs or replaced by this path.
+Convex hulls cannot reconstruct concavity; occlusion boundaries, missing boundary
+samples, noise bridges and centroid discretization remain limitations. A centre
+gate reduces ROI-cut influence but does not prove physical boundary existence.
+Without edge/vertex point-support validation, hull bridges and tolerance-recovered
+segments may be accepted without nearby observations; ACCEPT now certifies the
+remaining geometric gates, not measured point support.
+**Selected-query execution and process display.** Validator runs only after
+selecting one existing Coarse NMS query. Automatic all-query traversal and its
+aggregate scene window are removed. Window 4 contains only the selected
+query's ROI debugging. The canonical per-query pipeline, native/scene
+index adapters, graph masks and LS equations remain unchanged. There is no
+cross-query result accumulation or new NMS.
+
+Window 6 has four panels in a 2-by-2 layout for that one stored query result:
+
+1. Original boundary/shared edges before masking, using `all_edges` including
+   fully masked sources. Boundary RGB follows plane IDs; shared edges are cyan.
+   Gray hull rims provide local plane context without background point clouds.
+2. Active retained intervals in gray/cyan and removed boundary intervals as
+   magenta dashes. Original TLS endpoints and numerical masks are never mutated.
+   A blue translucent cylinder (alpha 0.16) with radius
+   `edge_overlap_distance_mm` spans each finite shared edge, with blue end rings.
+   This illustrates the infinite-line perpendicular-distance gate over the finite
+   interval used for overlap, not a requirement that boundary endpoints lie
+   between cylinder caps. Plane membership, direction angle and minimum finite
+   overlap remain separate conditions. `edge_overlap_settings` snapshots the
+   actual distance/angle/minimum-length settings for the viewer; the caption
+   reports them without substituting the hull-intersection tolerance-strip width.
+3. Active geometry and the final vertex calculation. Yellow dashes show only
+   extrapolation actually needed by each stored refined vertex's incident Edges,
+   not the full configured endpoint allowance. For unit edge direction u and
+   stored vertex p, compute the display parameter `t = (p - start) dot u`.
+   Draw `[t, 0]` when t is negative, or `[length, t]` when t exceeds the length;
+   interior projections have no extension. Thin gray links distinguish a
+   nonzero refined-vertex/line residual from extension along the edge axis.
+   Short extensions use proportionally short dashes. Small filled vertex markers
+   with wire halos avoid hiding these intervals. No new intersections, numerical
+   endpoint changes or validation gates are introduced. White dots show stored pair candidates; gray links
+   show movement to each stored refined LS estimate. Accepted vertices are
+   green, gated-out vertices red, and the selected corner has a larger marker
+   and thicker green incident edges. These are diagnostics, not new intersections
+   or support evidence. Captions report candidate/vertex counts and final status.
+4. Only the final selected Corner and its contributing Edges over the original
+   unvoxelized input cloud in neutral gray. Draw contributing Boundary intervals
+   and the selected marker/halo in green, and contributing shared intersection
+   intervals in cyan, with the selected Corner's actually
+   used extrapolation in yellow dashes and any projection residual in thin gray.
+   Omit other vertices, candidates, Hulls and noncontributing Edges. Upload the
+   raw cloud once through the manager/display-worker startup path; later query
+   updates replace only overlay geometry. Initial camera framing stays local to
+   the selected query although the background contains the complete raw scene.
+   This display never validates additional NMS queries. Missing optional raw data
+   is labelled unavailable and is never replaced by Coarse voxels under a raw
+   label. A query without a selected Corner shows only the background and status.
+   `corner_edges` remains the sole contributor list. Report each type's count
+   and IDs; explicitly label a Boundary-only Corner when shared contributors
+   are absent. Do not add unrelated shared Edges or change numerical selection
+   to force an intersection into this display.
+
+The four panels share identical initial framing for direct comparison and keep
+independent cameras when redisplaying the same query. All read stored results
+through the existing manager/worker. R/Q/Esc and auxiliary-window cleanup remain.
+Main panel 3 and window 5 retain their roles. Window 4 replaces the old
+per-plane Boundary display with the former window 7's A: padded Hull, B: ROI
+clipping, C: TLS/endpoint inheritance with Line IDs and maximum fitting errors,
+and D: core-only Before versus padded/clipped After. A uses gray plane support,
+green Hull/Nodes, blue dashed core and orange dashed padded spheres. B uses blue
+retained Edges/active Nodes, orange inactive X marks, gray dashed original Hull
+and light-red dashed removed portions. C uses thin gray input, thick blue final
+Lines, blue active endpoints, orange inactive X marks and gray absorbed Nodes.
+D shares initial framing and synchronizes camera interaction between its two
+panels. Captions report clipped active/inactive Node counts, retained Edges,
+final Lines/endpoint states and post-mask Corner candidate counts. Only C draws
+3-D Line/error labels. Store the handles returned by SceneWidget.add_3d_label
+in each display panel and remove them individually with remove_3d_label on
+query updates, without requiring a SceneWidget.clear_3d_labels method. These
+display caches never mutate numerical results. The pipeline computes the core-only support/Hull/graph
+comparison once from identical stored models and core voxels; there is no second
+RANSAC, alternate query or influence on final selected Corner. This additional
+Hull/TLS/graph work is timed separately as `roi_debug_before` and contributes to
+total geometry time. The renderer never recomputes numerical geometry.
+S captures window 4's A/B/C PNGs and a paired `D_before_after.png` under
+`outputs/validator_roi/query_<id>_<timestamp>/`, including counts, legends and
+C's Line/error listing. No capture has been generated or actual GUI/device run
+performed during implementation; tests were explicitly excluded by the user.
+At the user's request, instruction-section-15 synthetic geometry experiments
+were not executed, and the existing unittest suite was not run during this task.
+A numerical one-plane/two-boundary-edge regression fixture was added but left
+unexecuted; the prior plane-only viewer fixture explicitly disables geometry.
+One-/two-/three-plane acceptance and measured edge/corner
+accuracy remain unverified; syntax/import/CLI checks do not establish these.
+
+### 1.3 Whole-scene total composition
+
+`--mode total` explicitly enables the whole-scene path without changing CLI
+`detector` (NMS only) or interactive `validator` (one selected query). Reuse the
+same detector settings, CED/bilateral/PCA/Fusion/threshold/3-D NMS equations,
+then invoke the canonical guided validator independently for every NMS scene ID.
+For each ACCEPT result retain exactly its existing selected Corner and incident
+`corner_edges`, including original Boundary/shared Edge types and active finite
+intervals. Return aggregate `final_corners` and `final_edges`, per-query compact
+status/provenance/timing records and detector scores. Query-local Edge and Corner
+IDs are qualified by `query_index`. Do not average, snap or merge different
+queries' results, add a final NMS, or force shared Edges into Boundary-only
+Corners. Nearby queries may therefore produce redundant geometry.
+
+Total uses `ValidatorDetectorConfig(mode="total")` and the same resolved guided
+parameters. No new detection hyperparameters are added. Geometry must be enabled.
+All raw/Coarse lengths remain mm, and the crop-before-local-voxel, separate
+core/halo, source index and seeded RANSAC contracts are unchanged.
+
+Preparation builds raw/Coarse KD-trees once. The Coarse tree is shared by dense
+scoring/NMS and nearest-scene adapters; the raw tree is reused across all seed
+ROIs. Total preprocessing omits the unused organized pixel/scene map. The shared
+pipeline's optional `include_debug=False` skips core-only comparison support,
+Hull, TLS, graph and Corner work, setting `roi_debug_before=None` and
+`debug_comparison_computed=False`; its timer is zero because it did not run.
+Default interactive calls retain that comparison. Guided batch mode with debug
+disabled stores compact records rather than accumulating raw/local point clouds
+and intermediate graphs. Finite/shape/index validation remains; when arrays are
+the identical cached Coarse object, the redundant full equality comparison is
+omitted. Dense logs omit individual seed dumps in total mode. No numerical
+RANSAC, residual, connectivity, TLS, strip, mask, angle, LS or gate computation
+is approximated. Progress and prepare/detector/validator times are reported.
+
+The manager opens exactly two result windows together. The first is the detector
+Fusion heatmap with the unchanged full-scene Q99 normalization, invalid-gray
+mask and red NMS markers. The second shows original raw XYZ in gray (0.38),
+final Corners in red, Boundary contributors in green, shared contributors in cyan, actual
+extrapolation in yellow dashes and residual links in thin gray. Show only the
+existing selected Corner per accepted query, without intermediate geometry.
+Render Edge bars only over active intervals, using the existing segment-cylinder
+helper. Edge radius is max(0.5, 0.15 times validator voxel) mm and Corner radius
+max(2, 0.8 times validator voxel) mm: 0.75/4 mm at a 5 mm voxel. Combine meshes
+by colour before adding them to the scene to bound draw-call count. Both views
+remain interactive; R recaptures, Q/Esc closes both, and closing one leaves the
+other active. There are no intermediate validator/Tk/RGB windows. Headless
+mode computes the same results; existing source acquisition is unchanged.
+
+Only Python syntax was checked. No test suite, synthetic data, device/GUI run,
+benchmark or speedup measurement was performed; the optimization claims concern
+removed/reused work, not a measured runtime multiplier.
 
 ## 2. Scene and organized-image indexing
 
@@ -443,8 +859,7 @@ $$
 Omitting $\tau$ uses $\widetilde r_i=r_i$. Fusion thresholding is fixed or the
 global mean over finite valid scores. Eligibility is strict, $F_i>T$.
 Inclusive-radius 3-D NMS retains a point only when no eligible neighbor has a
-larger score; equal scores favor the smaller scene index. Every NMS survivor is
-passed to the same CornerVINS validator pipeline.
+larger score; equal scores favor the smaller scene index. CLI detector output stops at these unverified candidates. Explicit library validation passes NMS survivors to the same CornerVINS validator pipeline.
 
 ## 9. Default parameter mapping
 
@@ -466,13 +881,20 @@ passed to the same CornerVINS validator pipeline.
 | `boundary_radius_x * voxel_2d_mm` | boundary radius | 90 mm |
 | `boundary_epsilon_x * voxel_2d_mm` | boundary epsilon | 25 mm |
 
-`settings.py` presents defaults, resolved validator fields, and CLI groups in
-the same execution order: query geometry, CornerVINS extraction, padded
-projection/boundary, weighted Hough, continuous 2-D line refinement, 3-D line
-restoration/merging, and graph-local refinement. The former multiscale-Harris,
+`settings.py` groups defaults, resolver/config definitions, and CLI help by
+consumer: shared input/preprocessing, detector, validator, fine, and ball.
+The validator section owns `validator_fine_*` and guided RANSAC settings;
+its Fine stage is distinct from `--mode fine`. The fine section retains the
+existing `ValidatorConfig` and resolver names for API compatibility and follows
+query geometry, CornerVINS extraction, padded projection/boundary, weighted
+Hough, continuous 2-D line refinement, 3-D line restoration/merging, and
+graph-local refinement. Shared CED support settings (`min_neighbors` and
+`centroid_radius_x`) are listed under detector and remain consumed by fine;
+validator and ball reuse them for their Coarse detector queries. Only declaration
+and help-group order changed; field names, defaults, validation, CLI options and
+unit conversions are preserved. The former multiscale-Harris,
 SAH-graph, and independent Edge3D diagnostic settings have been removed.
-Detector settings end at dense NMS and carry the shared `ValidatorConfig` used
-for every retained candidate. The superseded detector-only K-subspaces
+Detector settings end at dense NMS and default to `validator=None`. An explicitly supplied shared `ValidatorConfig` validates every retained candidate. The superseded detector-only K-subspaces
 plane-verifier implementation and its private diagnostics have been removed.
 
 ## 10. Visualization semantics
@@ -530,7 +952,7 @@ This optional path preserves every existing CED/bilateral/PCA/threshold/NMS
 equation, default and candidate location. `--mode extremity256` runs the original
 detector candidate composition, takes its NMS scene indices verbatim, then
 evaluates each query independently. It does not run the old detector's
-post-NMS validator automatically. `--mode detector` retains that old behavior.
+post-NMS validator automatically. `--mode detector` also stops at NMS; it does not run the local extremity stage.
 `--mode ball` is the clicked inspection UI for the same CED-fed local module.
 Neither path introduces FPS, query relocation, plane clustering, projection or
 Hough. The module generates unverified vertex hypotheses, not confirmed corners.
@@ -861,6 +1283,32 @@ trade-offs are in `outputs/soft_voting_20261029/CONCLUSION.md`.
 
 | Date | Revision |
 |---|---|
+| 2026-10-30 | Refined Boundary-only Corner groups with the existing translated, rank-checked all-Line 3-D LS solver, including after group merges, while retaining single-intersection constrained LS and all topology/extent/residual gates. Selected accepted Corners by shared-intersection presence, perpendicular Line RMS, total extension and query distance, with deterministic ID tie breaking and sub-1e-8 mm ranking roundoff suppression. Added per-vertex ranking metrics and restored experimental 30/30/30/50 mm limits to 5/5/5/10 mm. Guided validator and total share this policy; upstream scoring/RANSAC/Hull/TLS/strip/masking and disabled point support are unchanged. Only modified Python syntax was checked; no tests or GUI/device runs were performed. |
+| 2026-10-30 | Changed only total mode's final Corner display markers to red and doubled their radius (4 mm at 5 mm validator voxel). Updated the final-window colour legend; contributing Edge styles and numerical detection results are unchanged. Python syntax passed; no tests or GUI/device run was performed. |
+| 2026-10-30 | Added total mode: unchanged detector/NMS followed by the canonical guided validator for every scene seed, aggregating each ACCEPT query's selected Corner and contributing active Edge intervals. Added exactly two managed result views with Q99 Fusion and gray raw geometry, green Corner/Boundary, cyan shared bars and larger markers. Reused frame KD-trees, skipped unused organized mapping and core-only debug comparisons, retained compact query records, suppressed seed dumps and batched coloured meshes. Existing modes/numerical thresholds and seeded sampling are unchanged. Only modified Python syntax was checked; no tests, GUI/device runs or benchmark were performed. |
+| 2026-10-30 | Swapped only the auxiliary display numbers: 4 is Hull/clipping/TLS/Before-After, 5 is plane-pair intersection, and 6 remains final. Kept each view's contents, layout, camera/label lifecycle and PNG export attached to its original role. Numerical execution order and results are unchanged; only modified Python syntax was checked, without tests or GUI/device runs. |
+| 2026-10-30 | Removed the individual-plane Boundary window and moved the former window-7 Hull/clipping/TLS/Before-After views to window 5, including S-key export and camera/label lifecycle. Auxiliary order is now 4/5/6, with 6 last. Panel 6-4 distinguishes contributing shared intersections (cyan) from Boundary contributors/Corner (green) and reports type-specific IDs/counts or an explicit Boundary-only label. The numerical contributor list, Corner selection, geometry and configuration are unchanged. Only modified Python syntax was checked; no tests or GUI/device run was performed. |
+| 2026-10-30 | Changed panel 6-3 from full endpoint allowance guides to actually used refined-vertex extrapolation, with adaptive short dashes, residual links and wire-halo markers. Added panel 6-4 containing only the selected Corner/incident active Edges on the original raw cloud, uploaded once through the manager/worker and retained across overlay updates. Window 6 uses a 2-by-2 layout; numeric geometry, thresholds and selected-query scope are unchanged. Only modified Python syntax was checked; no tests or GUI/device run was performed. |
+| 2026-10-30 | Fixed ROI debug redraw for SceneWidget bindings without clear_3d_labels: retain Label3D handles in display panels and remove each with remove_3d_label before replacement. Numerical results, geometry and configuration are unchanged. Only Python syntax was checked; no tests or actual GUI/device runs were performed. |
+| 2026-10-30 | Replaced outer-contact Hull exclusion with padded Hull segment clipping before unchanged TLS formulas/thresholds. Added stable ORIGINAL/CLIPPED Nodes, inherited endpoint states and source Hull Edge IDs; same-plane Boundary Corners now require a shared active endpoint. Preserved core RANSAC voxels/models and cross-plane intersection/LS paths with inactive endpoint safeguards. Consolidated three radius/margin controls into absolute `validator_roi_padding_mm=10`. Added selected-query debug window 7 (A/B/C/D), stored core-only comparison, synchronized Before/After cameras and S-key PNG export. Only modified Python syntax was checked; no tests or GUI/device runs were performed. |
+| 2026-10-30 | Added explicit support padding and outer crop-contact margin (5x/2x RANSAC voxel). Hull support uses max(configured support radius, core + padding), while RANSAC retains the unchanged core cloud. Tagged pre-projection outer-contact hull segments, excluded them before TLS without bridging gaps, clipped all finite edges to the core sphere, and prohibited crop-created endpoints as vertex/extrapolation evidence. Preserved source endpoints and support/core overlap diagnostics; final vertices also require core membership. Point-support validation remains disabled. Only Python syntax was checked; no tests or GUI/device experiments were run. |
+| 2026-10-30 | Consolidated duplicate vertex/corner controls into one minimum angle, one line-distance gate, one endpoint extension allowance, group span and query gate. Removed vertex parallel-angle and legacy voxel-scaled corner endpoint defaults/config/CLI and redundant min/max gating. Preserved current 30-degree and 5/5/5/10 mm effective values, boundary direction behaviour, LS and display metadata. Vertex distances are now controlled solely in absolute mm. Only modified Python syntax was checked; tests and GUI/device runs were not performed. |
+| 2026-10-30 | Added a blue translucent line-distance cylinder over each finite shared edge in panel 6-2, using actual overlap settings stored as display metadata, plus end rings and angle/minimum-overlap captions. Kept masking and validation numerics unchanged. Only modified Python syntax was checked; no tests or actual GUI/device runs were performed. |
+| 2026-10-30 | Corrected validator scope to one selected Coarse NMS query: removed automatic scene traversal, aggregate IPC/state and window 7. Replaced window 6 with original per-plane/shared edges, retained/removed interval masks, and endpoint-extension/pair-candidate/LS-corner panels. Added only the effective extension tolerance as display metadata; kept all graph, RANSAC, support, hull, mask and LS numerics unchanged. Only modified Python syntax was checked; tests and device/GUI runs were not performed. |
+| 2026-10-30 | Added intersection/boundary duplicate masking with original TLS geometry and active intervals, anchor candidate span grouping, intersection-constrained and multi-line 3-D LS refinement with post-fit finite/residual gates, and independent overlap/vertex thresholds. Set the boundary TLS maximum-error default to the requested 2.5 mm. Retained boundary-only midpoint validation, current RANSAC/support/hull/strip/ROI gates and disabled point-support semantics. Added canonical all-NMS scene traversal and lazy final-only window 7 containing accepted corners/incident active edges. No cross-query NMS was added. Only modified Python syntax was checked; no tests, synthetic experiments or device/GUI runs were performed. |
+| 2026-10-30 | Removed edge support radius/minimum-count settings, CLI and point-to-edge/near-vertex validation, including derived point metrics/quality. Retained geometric hull minimum, RANSAC, component selection, TLS/strip, length and corner gates. Boundary ROI cut now uses the actual support radius without the former radius-dependent inner band. Retained empty support slots, neutral quality and explicit unchecked flags; updated terminal/output semantics. Only modified Python syntax was checked; no tests or experiments were run. |
+| 2026-10-30 | Replaced endpoint-chord boundary grouping with per-plane 2-D TLS over unique group vertices, maximum orthogonal residual gating, traversal-aligned original/group direction checks and projected min/max endpoints lifted to 3-D. Added independent absolute 2.5 mm boundary merge error and CLI. Preserved cyclic adjacent grouping, strip/intersection calculations, `_edge` validation and downstream schema. Only modified Python syntax was checked; no tests, synthetic data or benchmarks were run, as requested. |
+| 2026-10-30 | Stored existing plane-pair intersection line origins/directions in diagnostics and added window-4 yellow infinite-line guides plus per-plane translucent tolerance strips and width caption, including zero accepted-edge results. Reused stored geometry without changing detection/support decisions or other views. Only modified Python syntax was checked; tests and actual GUI/device runs were not performed. |
+| 2026-10-30 | Added per-plane RANSAC inlier counts with extraction-order colour labels and the effective minimum to the third-panel caption; reserved two lines. Read stored results only, preserving numerical results and plane acceptance. Only Python syntax was checked; no tests or device/GUI runs were performed. |
+| 2026-10-30 | Added CornerVINS-inspired hull/strip clipping and common projected finite intervals for guided plane-pair candidates, with independent absolute 5 mm half-width and exact baseline at zero. Added per-plane interval/distance and recovery/support rejection diagnostics. Kept existing point-support decisions, boundary edges, downstream validator and visualization unchanged. Only modified Python syntax was checked; no tests, synthetic data, ablations or benchmarks were run, as requested. |
+| 2026-10-30 | Removed the guided validator Fine scorer/NMS/Top-K/settings/picker and waiting/fallback states. Coarse NMS selection now keeps its coordinate, crops original raw core before local RANSAC voxelization, and immediately fits planes. Voxelize any geometry support shell separately; preserve core/native/scene IDs and expose local cloud/counts. Panel 2 now shows gray voxel input; panels 3–6 retain their roles. Coarse numerics and RANSAC/geometry rules are unchanged, while local sampling intentionally changes. Section-15 geometry experiments remain excluded. |
+| 2026-10-30 | Unified detector/validator Coarse/Fine Fusion coloring on the existing full-Coarse-frame Q99 reference. Removed Fine ROI display rescaling, forwarded the shared upper limit through renderer startup and displayed it in both captions. Preserved numerical results and invalid-gray/Turbo mapping; verified equal-score RGB identity, invalid masking and renderer propagation with focused headless tests. |
+| 2026-10-30 | Split guided geometry display into window 4 (finite plane-pair intersection edges), window 5 (separate per-plane boundary panels) and window 6 (integrated edges/vertices/decision). Preserved original panels 1/2/3 and all numerical results. Added read-only type/plane filters, independent window cleanup/keys and headless separation/colour/support/lifecycle checks; no synthetic geometry experiments were run. |
+| 2026-10-30 | Added finite-valid Fine peak/count, strict-threshold eligible count and empty-candidate reason diagnostics. Fine panel/console now display the actual resolved threshold and explicit Coarse fallback alongside Q99. Preserved all scores, thresholds, NMS/Top-K and fallback numerics; added threshold/equality/invalid-score/upper-tail and headless label regression coverage. Made Fine numerical fixtures explicit about their Greedy/top-K=3 settings so user-edited live defaults do not alter those expectations. |
+| 2026-10-30 | Restored the original plane-only third panel (core points, fitted disks/normals, alpha 0.60 and core-radius camera). Moved support hulls, finite edges, vertices and validation status to an independent fourth native window with manager-owned cleanup and R/Q/Esc handling. Preserved all numerical results; verified separation/lifecycle with headless UI tests, without running the requested-to-skip synthetic geometry experiments. |
+| 2026-10-30 | Added optional guided-mode core/halo support reconstruction, connected plane hulls, observed finite intersection/boundary edges, two-edge corner reconstruction and Fine-centred validation. Preserved all fitted-plane/Fine/Coarse numerics and existing fine-mode algorithms. Added native/scene support provenance, final corner/incident-edge output, status/timers and manager-owned 3-D geometry. Synchronized parameter descriptions to existing workspace settings. Section-15 synthetic geometry tests were explicitly not executed at the user's request. |
+| 2026-10-30 | Added post-Fine-NMS Fusion-ranked top-K selection (default 3, positive integer) and CLI/config validation. Preserved scores, threshold/NMS calculations, native/scene IDs and RANSAC fitting; existing nearest/manual query selection now uses the shortlist. Added original/retained count diagnostics and numerical ranking/tie/index/selection tests. Synchronized the Fine threshold description with the user's existing fixed workspace default. |
+| 2026-10-30 | Disabled automatic post-NMS validation in CLI detector mode and default `DetectorConfig`. Preserved dense CED/bilateral/PCA/Fusion/threshold/NMS values and diagnostic panels; `--only` still selects the NMS-only display. Explicit library validation and fine/guided-validator modes remain available. |
 | 2026-10-29 | Added Fine peak-relative Fusion gating with `T=max(absolute floor, ratio * finite valid Fine evaluation peak)`, default ratio 0.5/floor 0.10, and made it the Fine default. Kept strict eligibility, existing fixed/global-mean modes, score calculation, NMS geometry, Coarse defaults/CLI and RANSAC unchanged. Added CLI/config validation, resolved-threshold/ratio diagnostics and numerical edge-case tests. Preserved the user's current 5 mm Fine voxel and 3.5x CED radius and synchronized their documented lengths. |
 | 2026-10-29 | Made Fine CED support, PCA radius/saturation, bilateral radius/spatial/range sigmas, Fusion threshold mode/value and NMS method/radius independent `validator_fine_*` settings. Spatial lengths use Fine-voxel multipliers; dimensionless values and neighbor count do not scale. Preserved current scoring defaults and user-set NMS radius of 3x; added an existing local-maximum NMS choice alongside default Greedy. Coarse settings/algorithms and RANSAC are unchanged. |
 | 2026-10-29 | Added independent Fine/RANSAC voxel sizes and stage-specific `*_x` length defaults/CLI, cached full-cloud voxel preparation and explicit native/Coarse-scene index adapters. Fine scoring and RANSAC now exclusively use their downsampled clouds. Default 10 mm voxels preserve 90/30/15 and 60/5/10 mm lengths. Counts, ratios, seed, score formulas, three-stage UI and other mode algorithms are unchanged. |

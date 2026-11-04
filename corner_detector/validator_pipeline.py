@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -149,10 +150,7 @@ def _cornervins_clustering(points, query_index, cfg, organized_context):
 
 
 def prepare_validator_voxel_context(scene_points_mm, raw_points_mm, cfg):
-    """Cache stage clouds once; each keeps a nearest-Coarse scene-ID adapter."""
-    from scipy.spatial import cKDTree
-    from .preprocessing import voxel_downsample_3d
-
+    """Cache raw/Coarse trees; voxelize only after selecting a query."""
     scene = np.asarray(scene_points_mm, dtype=np.float64)
     raw = np.asarray(raw_points_mm, dtype=np.float64)
     for name, points in (("scene_points_mm", scene), ("raw_points_mm", raw)):
@@ -161,21 +159,34 @@ def prepare_validator_voxel_context(scene_points_mm, raw_points_mm, cfg):
     if not len(scene):
         raise ValueError("Validator requires a nonempty Coarse scene")
     cfg.validator.validate()
-    scene_tree = cKDTree(scene)
-    clouds = {float(cfg.voxel_3d_mm): {
-        "points_mm": scene, "point_tree": scene_tree,
-        "scene_indices": np.arange(len(scene), dtype=np.int64),
-    }}
-    context = {}
-    for stage, voxel in (("fine", cfg.validator.fine_voxel_mm),
-                         ("ransac", cfg.validator.ransac_voxel_mm)):
-        if voxel not in clouds:
-            points = voxel_downsample_3d(raw, voxel)
-            clouds[voxel] = {"points_mm": points, "point_tree": cKDTree(points),
-                             "scene_indices": np.asarray(scene_tree.query(points)[1], dtype=np.int64)}
-        context[stage] = clouds[voxel]
-        context[stage + "_voxel_mm"] = voxel
-    return context
+    return {"scene_points_mm": scene, "scene_tree": cKDTree(scene),
+            "raw_points_mm": raw, "raw_tree": cKDTree(raw)}
+
+
+def _query_voxel_cloud(context, query_index, cfg):
+    from .preprocessing import voxel_downsample_3d
+
+    query = context["scene_points_mm"][query_index]
+    radius = cfg.ransac_radius_mm
+    support_radius = cfg.padded_support_radius_mm if cfg.geometry_enabled else radius
+    key = (query_index, tuple(query), cfg.ransac_voxel_mm, radius, support_radius)
+    if context.get("query_cloud_key") == key:
+        return context["query_cloud"]
+    raw_ids = np.sort(np.asarray(context["raw_tree"].query_ball_point(query, support_radius), dtype=np.int64))
+    raw = context["raw_points_mm"][raw_ids]
+    distances = np.linalg.norm(raw - query, axis=1)
+    core_mask = distances <= radius
+    # Separate the halo so outside points cannot move core voxel centroids.
+    core = voxel_downsample_3d(raw[core_mask], cfg.ransac_voxel_mm)
+    halo = voxel_downsample_3d(raw[(distances > radius) & (distances <= support_radius)], cfg.ransac_voxel_mm)
+    points = np.concatenate((core, halo))
+    cloud = {"points_mm": points, "point_tree": cKDTree(points),
+             "core_points_mm": core, "core_tree": cKDTree(core),
+             "scene_indices": np.asarray(context["scene_tree"].query(points)[1], dtype=np.int64),
+             "raw_core_point_indices": raw_ids[core_mask],
+             "core_voxel_count": len(core), "halo_voxel_count": len(halo)}
+    context["query_cloud_key"], context["query_cloud"] = key, cloud
+    return cloud
 
 
 def run_validator_pipeline(
@@ -187,9 +198,7 @@ def run_validator_pipeline(
     organized_context=None,
     raw_points_mm=None,
     voxel_context=None,
-    fine_result=None,
-    fine_index=None,
-    stop_after_fine=False,
+    include_debug=True,
 ):
     """Keep Coarse scene IDs canonical and distinguish each stage's voxel IDs."""
     points = np.asarray(points_mm, dtype=np.float64)
@@ -200,54 +209,97 @@ def run_validator_pipeline(
         raise IndexError("query_index is outside points_mm")
     from .settings import ValidatorDetectorConfig
     if isinstance(cfg, ValidatorDetectorConfig):
+        started = time.perf_counter()
         from .guided_ransac import extract_guided_planes
-        from .validator_fine import find_fine_queries
+        from .validator_plane_support import reconstruct_plane_support
+        from .validator_edge_graph import build_validator_edge_graph
+        from .validator_corner_graph import empty_corner_validation, reconstruct_validator_corners
+        cfg.validator.validate()
         if voxel_context is None:
             if raw_points_mm is None:
-                raise ValueError("Guided validator requires raw_points_mm to prepare stage voxels")
+                raise ValueError("Guided validator requires raw_points_mm for query-local voxelization")
             voxel_context = prepare_validator_voxel_context(points, raw_points_mm, cfg)
-        if (voxel_context["fine_voxel_mm"] != cfg.validator.fine_voxel_mm
-                or voxel_context["ransac_voxel_mm"] != cfg.validator.ransac_voxel_mm):
-            raise ValueError("Voxel context sizes do not match validator settings")
-        coarse = points[query_index]
-        fine_cloud = voxel_context["fine"]
-        ransac_cloud = voxel_context["ransac"]
-        if fine_result is None:
-            fine_result = {**find_fine_queries(fine_cloud["points_mm"], coarse, cfg,
-                                              point_tree=fine_cloud["point_tree"]),
-                           "coarse_query_index": query_index,
-                           "fine_voxel_mm": cfg.validator.fine_voxel_mm}
-            for source, target in (("candidate_fine_indices", "candidate_scene_indices"),
-                                   ("evaluation_fine_indices", "evaluation_scene_indices"),
-                                   ("support_fine_indices", "support_scene_indices")):
-                fine_result[target] = fine_cloud["scene_indices"][fine_result[source]].copy()
-        if (fine_result["coarse_query_index"] != query_index
-                or not np.array_equal(fine_result["coarse_query_position_mm"], coarse)
-                or fine_result["fine_voxel_mm"] != cfg.validator.fine_voxel_mm):
-            raise ValueError("Fine results belong to a different coarse query")
-        candidates = fine_result["candidate_fine_indices"]
-        fallback = not len(candidates)
-        if fine_index is not None and fine_index not in candidates:
-            raise ValueError("Fine selection must be an existing Fine NMS voxel index")
-        if fine_index is None and not fallback:
-            distances = np.linalg.norm(fine_cloud["points_mm"][candidates] - coarse, axis=1)
-            fine_index = int(candidates[np.lexsort((candidates, distances))[0]])
-        query = coarse if fallback else fine_cloud["points_mm"][int(fine_index)]
-        if stop_after_fine and not fallback:
-            result = {"query_position_mm": query.copy(), "planes": [], "planes_computed": False}
-        else:
-            result = extract_guided_planes(ransac_cloud["points_mm"], query, cfg.validator,
-                                            point_tree=ransac_cloud["point_tree"])
-            result["roi_point_indices"] = ransac_cloud["scene_indices"][result["roi_ransac_indices"]].copy()
-            for plane in result["planes"]:
-                plane["inlier_point_indices"] = ransac_cloud["scene_indices"][plane["inlier_ransac_indices"]].copy()
-            result["planes_computed"] = True
-        result.update(query_index=query_index, coarse_query_position_mm=coarse.copy(),
-                      fine_query_index=fine_index,
-                      fine_query_scene_index=(query_index if fallback else int(fine_cloud["scene_indices"][fine_index])),
-                      fine_voxel_mm=cfg.validator.fine_voxel_mm, ransac_voxel_mm=cfg.validator.ransac_voxel_mm,
-                      fine_fallback=fallback,
-                      fine_query_shift_mm=float(np.linalg.norm(query - coarse)), fine_result=fine_result)
+        if (voxel_context["scene_points_mm"] is not points
+                and not np.array_equal(voxel_context["scene_points_mm"], points)):
+            raise ValueError("Voxel context belongs to a different Coarse scene")
+        query = points[query_index]
+        voxel_started = time.perf_counter()
+        ransac_cloud = _query_voxel_cloud(voxel_context, query_index, cfg.validator)
+        voxel_elapsed = time.perf_counter() - voxel_started
+        result = extract_guided_planes(ransac_cloud["core_points_mm"], query, cfg.validator,
+                                       point_tree=ransac_cloud["core_tree"])
+        scene_ids = ransac_cloud["scene_indices"]
+        result["roi_point_indices"] = scene_ids[result["roi_ransac_indices"]].copy()
+        result["planes"] = [
+            {**plane, "plane_id": plane_id,
+             "inlier_point_indices": scene_ids[plane["inlier_ransac_indices"]].copy()}
+            for plane_id, plane in enumerate(result["planes"])
+        ]
+        result.update(query_index=query_index, coarse_query_position_mm=query.copy(),
+                      planes_computed=True, ransac_voxel_mm=cfg.validator.ransac_voxel_mm,
+                      ransac_points_mm=ransac_cloud["points_mm"],
+                      ransac_scene_indices=scene_ids,
+                      roi_raw_point_indices=ransac_cloud["raw_core_point_indices"],
+                      core_voxel_count=ransac_cloud["core_voxel_count"],
+                      halo_voxel_count=ransac_cloud["halo_voxel_count"])
+        result.update(empty_corner_validation(query, len(result["planes"]), "geometry_disabled"))
+        timers = {"voxel": voxel_elapsed, "ransac": result["ransac_elapsed_s"],
+                  "plane_support": 0., "edge_graph": 0., "corner_graph": 0., "geometry": 0.}
+        if cfg.validator.geometry_enabled:
+            geometry_started = time.perf_counter()
+            support = reconstruct_plane_support(ransac_cloud["points_mm"], query, result["planes"],
+                                                cfg.validator, point_tree=ransac_cloud["point_tree"])
+            graph = build_validator_edge_graph(ransac_cloud["points_mm"], query, support, cfg.validator)
+            geometry = reconstruct_validator_corners(ransac_cloud["points_mm"], query, support, graph, cfg.validator)
+            before, before_elapsed = None, 0.
+            before_support = {"plane_patches": []}
+            before_graph = {"all_edges": [], "edge_candidates": []}
+            if include_debug:
+                # The core-only comparison is display data, never part of Corner selection.
+                before_started = time.perf_counter()
+                before_cfg = replace(cfg.validator, roi_padding_mm=0.)
+                before_support = reconstruct_plane_support(ransac_cloud["core_points_mm"], query, result["planes"],
+                                                           before_cfg, point_tree=ransac_cloud["core_tree"])
+                before_graph = build_validator_edge_graph(ransac_cloud["core_points_mm"], query, before_support, before_cfg)
+                before_corners = reconstruct_validator_corners(ransac_cloud["core_points_mm"], query,
+                                                               before_support, before_graph, before_cfg)
+                before = {"plane_patches": before_support["plane_patches"], **before_graph,
+                          "vertex_candidates": before_corners["vertex_candidates"],
+                          "vertices": before_corners["vertices"]}
+                before_elapsed = time.perf_counter() - before_started
+            timers.update(plane_support=support["elapsed_s"], edge_graph=graph["elapsed_s"],
+                          corner_graph=geometry.pop("elapsed_s"),
+                          roi_debug_before=before_elapsed,
+                          geometry=time.perf_counter() - geometry_started)
+            scene_ids = ransac_cloud["scene_indices"]
+            for patch in support["plane_patches"] + before_support["plane_patches"]:
+                patch["support_point_indices"] = scene_ids[patch["support_ransac_indices"]].copy()
+                patch["recollected_point_indices"] = scene_ids[patch["recollected_ransac_indices"]].copy()
+            for edge in (graph["all_edges"] + graph["edge_candidates"]
+                         + before_graph["all_edges"] + before_graph["edge_candidates"]):
+                edge["support_point_indices"] = scene_ids[edge["support_ransac_indices"]].copy()
+                for membership in edge["support_by_plane"]:
+                    membership["support_point_indices"] = scene_ids[membership["support_ransac_indices"]].copy()
+            result.update(geometry)
+            result.update(plane_patches=support["plane_patches"], edges=graph["edges"],
+                          edge_overlap_settings={"distance_mm": cfg.validator.edge_overlap_distance_mm,
+                                                 "angle_deg": cfg.validator.edge_overlap_angle_deg,
+                                                 "min_length_mm": cfg.validator.edge_overlap_min_length_mm},
+                          vertex_endpoint_tolerance_mm=cfg.validator.vertex_endpoint_tolerance_mm,
+                          all_edges=graph["all_edges"],
+                          boundary_debug=graph["boundary_debug"], roi_debug_before=before,
+                          debug_comparison_computed=bool(include_debug),
+                          boundary_overlap_diagnostics=graph["boundary_overlap_diagnostics"],
+                          edge_candidates=graph["edge_candidates"], plane_adjacency=graph["plane_adjacency"],
+                          plane_pair_diagnostics=graph["plane_pair_diagnostics"],
+                          support_radius_mm=support["support_radius_mm"],
+                          core_radius_mm=cfg.validator.ransac_radius_mm,
+                          roi_padding_mm=cfg.validator.roi_padding_mm,
+                          support_roi_ransac_indices=support["support_roi_ransac_indices"],
+                          support_roi_point_indices=scene_ids[support["support_roi_ransac_indices"]].copy(),
+                          support_roi_points_mm=support["support_roi_points_mm"])
+        result["stage_elapsed_s"] = timers
+        result["elapsed_s"] = time.perf_counter() - started
         return result
     started = time.perf_counter()
     clustering = _cornervins_clustering(
@@ -277,6 +329,21 @@ def run_validator_pipeline(
 
 
 def _final_geometry(query_result):
+    if "geometry_computed" in query_result:
+        if not query_result["verified"]:
+            return [], []
+        edges = [{"query_index": int(query_result["query_index"]),
+                  "source_edge_id": int(edge["edge_id"]),
+                  "edge_type": edge["edge_type"], "plane_ids": edge["plane_ids"].copy(),
+                  "start_mm": edge["start_mm"].copy(), "end_mm": edge["end_mm"].copy(),
+                  "active_intervals_mm": list(edge["active_intervals_mm"]),
+                  "corner_position_mm": query_result["corner_position_mm"].copy()}
+                 for edge in query_result["corner_edges"]]
+        corner = {"query_index": int(query_result["query_index"]),
+                  "corner_id": int(query_result["selected_vertex_id"]),
+                  "position_mm": query_result["corner_position_mm"].copy(),
+                  "edge_ids": query_result["corner_edge_ids"].copy()}
+        return edges, [corner]
     graph = query_result["plane_edge"]
     source_by_id = {int(edge["edge_id"]): edge for edge in graph.get("edges", ())}
     refinement = graph.get("refinement")
@@ -329,17 +396,29 @@ def run_validator_candidates(
     points_mm,
     candidate_indices,
     cfg,
-    estimator,
+    estimator=None,
     *,
     organized_context=None,
+    raw_points_mm=None,
+    voxel_context=None,
+    include_debug=True,
 ):
     """Invoke the canonical validator for every detector NMS candidate."""
     indices = np.asarray(candidate_indices, dtype=np.int64).reshape(-1)
     started = time.perf_counter()
+    from .settings import ValidatorDetectorConfig
+    guided = isinstance(cfg, ValidatorDetectorConfig)
+    if guided and len(indices) and voxel_context is None:
+        if raw_points_mm is None:
+            raise ValueError("Guided batch validation requires raw_points_mm")
+        voxel_context = prepare_validator_voxel_context(points_mm, raw_points_mm, cfg)
     records, final_edges, final_corners = [], [], []
-    for query_index in indices:
+    progress_started = started
+    for ordinal, query_index in enumerate(indices, 1):
         try:
             pipeline_kwargs = {}
+            if guided:
+                pipeline_kwargs.update(voxel_context=voxel_context, include_debug=include_debug)
             if organized_context is not None:
                 pipeline_kwargs["organized_context"] = organized_context
             result = run_validator_pipeline(
@@ -358,7 +437,19 @@ def run_validator_candidates(
         edges, corners = _final_geometry(result)
         final_edges.extend(edges)
         final_corners.extend(corners)
-        records.append({**result, "status": "ok"})
+        if guided and not include_debug:
+            record = {key: result[key] for key in (
+                "query_index", "query_position_mm", "validation_status", "verified",
+                "corner_position_mm", "corner_distance_mm", "corner_edge_ids",
+                "failure_reason", "stage_elapsed_s", "elapsed_s")}
+        else:
+            record = result
+        records.append({**record, "status": "ok"})
+        if getattr(cfg, "mode", None) == "total" and (
+                time.perf_counter() - progress_started >= 1. or ordinal == len(indices)):
+            print(f"[TOTAL validator] {ordinal}/{len(indices)} queries | "
+                  f"accepted={len(final_corners)} | elapsed={time.perf_counter() - started:.2f}s", flush=True)
+            progress_started = time.perf_counter()
     return {
         "method": "dense_nms_to_shared_validator_pipeline",
         "candidate_indices": indices.copy(),

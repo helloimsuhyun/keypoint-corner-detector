@@ -174,12 +174,14 @@ class ExtremityTest(unittest.TestCase):
         old, _ = configure(parse_args(["--source", "realsense", "--mode", "detector"]))
         new, _ = configure(parse_args(["--source", "realsense", "--mode", "extremity256"]))
         for key in vars(old):
-            self.assertEqual(getattr(old, key), getattr(new, key), key)
+            if key != "validator":
+                self.assertEqual(getattr(old, key), getattr(new, key), key)
         ball, _ = configure(parse_args(["--source", "realsense", "--mode", "ball"]))
         self.assertEqual(ball.voxel_3d_mm, old.voxel_3d_mm)
         self.assertEqual(ball.extremity.radii_mm, tuple(x * ball.voxel_3d_mm for x in DEFAULTS.ball_radii_x))
         for key in vars(old):
-            self.assertEqual(getattr(old, key), getattr(ball, key), key)
+            if key != "validator":
+                self.assertEqual(getattr(old, key), getattr(ball, key), key)
 
     def test_ball_defaults_are_shared_by_cli_and_library(self):
         from corner_detector.settings import ExtremityConfig as SettingsExtremityConfig

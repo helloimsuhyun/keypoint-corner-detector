@@ -10,8 +10,6 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from corner_detector.guided_ransac import extract_guided_planes, guided_probabilities
-from corner_detector.validator_fine import find_fine_queries
-from corner_detector.edge_suppression import dense_ced_weighted_pca_scores
 from corner_detector.candidate_extraction import greedy_nms_indices
 from corner_detector.settings import GuidedValidatorConfig, ValidatorDetectorConfig, configure, parse_args
 from corner_detector.validator_pipeline import prepare_validator_voxel_context, run_validator_pipeline
@@ -31,95 +29,111 @@ def plane_cloud(count):
 
 class GuidedIntegrationTest(unittest.TestCase):
     def config(self, *extra):
-        return configure(parse_args(["--source", "realsense", "--mode", "validator", *extra]))[0]
+        return configure(parse_args(["--source", "realsense", "--mode", "validator", "--no-validator-geometry", *extra]))[0]
 
     def test_default_stage_lengths_are_independent_of_coarse_voxel(self):
         cfg = self.config("--voxel-3d-mm", "5")
-        self.assertEqual(cfg.validator, GuidedValidatorConfig())
+        self.assertEqual(cfg.validator, replace(GuidedValidatorConfig(), geometry_enabled=False))
         other, _ = configure(parse_args(["--source", "realsense", "--mode", "detector",
                                          "--voxel-3d-mm", "5"]))
         for name in vars(other):
             if name != "validator":
                 self.assertEqual(getattr(cfg, name), getattr(other, name))
-        self.assertEqual(self.config("--validator-ransac-radius-x", "2.2").validator.ransac_radius_mm, 22)
+        self.assertEqual(self.config("--validator-ransac-voxel-mm", "4",
+                                     "--validator-ransac-radius-x", "2.2").validator.ransac_radius_mm, 8.8)
 
-    def test_fine_and_ransac_lengths_use_their_own_voxels(self):
-        cfg = self.config("--voxel-3d-mm", "7", "--validator-fine-voxel-mm", "2",
-                          "--validator-ransac-voxel-mm", "4", "--validator-fine-nms-radius-x", "1.5",
-                          "--validator-fine-ced-radius-x", "3")
-        stage = cfg.validator
-        self.assertEqual((stage.fine_search_radius_mm, stage.fine_ced_radius_mm, stage.fine_nms_radius_mm),
-                         (18., 6., 3.))
-        self.assertEqual((stage.fine_pca_radius_mm, stage.fine_bilateral_radius_mm,
-                          stage.fine_bilateral_sigma_spatial_mm), (9., 6., 3.))
-        self.assertEqual((stage.ransac_radius_mm, stage.inlier_threshold_mm, stage.guided_sigma_mm),
-                         (24., 2., 4.))
-        self.assertEqual((stage.max_planes, stage.ransac_iterations, stage.min_inliers,
-                          stage.min_inlier_ratio, stage.random_seed), (3, 256, 20, .08, 42))
-        changed = self.config("--validator-fine-voxel-mm", "2", "--validator-ransac-voxel-mm", "4",
-                              "--validator-fine-search-radius-x", "5", "--validator-guided-sigma-x", "2")
-        self.assertEqual(changed.validator.fine_search_radius_mm, 10.)
-        self.assertEqual(changed.validator.guided_sigma_mm, 8.)
 
-    def test_fine_scoring_cli_controls_are_independent_and_voxel_scaled(self):
-        cfg = self.config("--validator-fine-voxel-mm", "2", "--validator-fine-pca-radius-x", "5",
-            "--validator-fine-bilateral-radius-x", "4", "--validator-fine-bilateral-sigma-spatial-x", "2",
-            "--validator-fine-bilateral-sigma-ced", ".2", "--validator-fine-min-neighbors", "8",
-            "--validator-fine-pca-ratio-saturation-tau", ".3", "--validator-fine-fusion-threshold-mode", "fixed",
-            "--validator-fine-fusion-score-threshold", ".15", "--validator-fine-nms-method", "local_maximum")
-        fine = cfg.validator
-        self.assertEqual((fine.fine_pca_radius_mm, fine.fine_bilateral_radius_mm,
-                          fine.fine_bilateral_sigma_spatial_mm), (10., 8., 4.))
-        self.assertEqual((fine.fine_bilateral_sigma_ced, fine.fine_min_neighbors,
-                          fine.fine_pca_ratio_saturation_tau), (.2, 8, .3))
-        self.assertEqual((fine.fine_fusion_threshold_mode, fine.fine_fusion_score_threshold,
-                          fine.fine_nms_method), ("fixed", .15, "local_maximum"))
-        self.assertEqual(cfg.pca_radius_factor, 1.5)
+    def test_ransac_lengths_use_local_voxel_and_fine_settings_are_removed(self):
+        cfg = self.config("--voxel-3d-mm", "7", "--validator-ransac-voxel-mm", "4",
+                          "--validator-ransac-radius-x", "3", "--validator-inlier-threshold-x", ".5",
+                          "--validator-guided-sigma-x", "2")
+        self.assertEqual((cfg.validator.ransac_radius_mm, cfg.validator.inlier_threshold_mm,
+                          cfg.validator.guided_sigma_mm), (12., 2., 8.))
+        self.assertFalse(any(name.startswith("fine_") for name in vars(cfg.validator)))
+        with redirect_stdout(StringIO()), patch("sys.stderr", new=StringIO()), self.assertRaises(SystemExit):
+            self.config("--validator-fine-voxel-mm", "2")
 
-    def test_fine_peak_relative_cli_and_default_leave_coarse_threshold_unchanged(self):
-        default = self.config()
-        self.assertEqual(default.validator.fine_fusion_threshold_mode, "peak_relative")
-        self.assertEqual(default.validator.fine_fusion_peak_relative_ratio, .5)
-        cfg = self.config("--validator-fine-fusion-threshold-mode", "peak-relative",
-                          "--validator-fine-fusion-peak-relative-ratio", ".7")
-        self.assertEqual(cfg.validator.fine_fusion_peak_relative_ratio, .7)
-        self.assertEqual(cfg.fusion_threshold_mode, default.fusion_threshold_mode)
-        self.assertEqual(cfg.fusion_score_threshold, default.fusion_score_threshold)
-
-    def test_stage_context_downsamples_independently_and_reuses_equal_voxels(self):
-        scene = np.array([[0., 0, 0], [50., 0, 0]])
-        raw = np.array([[1., 0, 0], [2., 0, 0], [48., 0, 0], [49., 0, 0]])
-        fine = np.array([[1., 0, 0], [49., 0, 0]])
-        ransac = np.array([[2., 0, 0], [3., 0, 0], [48., 0, 0]])
-        cfg = self.config("--validator-fine-voxel-mm", "2", "--validator-ransac-voxel-mm", "4")
-        with patch("corner_detector.preprocessing.voxel_downsample_3d", side_effect=[fine, ransac]) as down:
-            context = prepare_validator_voxel_context(scene, raw, cfg)
-        self.assertEqual([call.args[1] for call in down.call_args_list], [2., 4.])
-        np.testing.assert_array_equal(context["fine"]["points_mm"], fine)
-        np.testing.assert_array_equal(context["ransac"]["points_mm"], ransac)
-        np.testing.assert_array_equal(context["fine"]["scene_indices"], [0, 1])
-
-        np.testing.assert_array_equal(context["ransac"]["scene_indices"], [0, 0, 1])
-        equal = self.config("--validator-fine-voxel-mm", "2", "--validator-ransac-voxel-mm", "2")
-        with patch("corner_detector.preprocessing.voxel_downsample_3d", return_value=fine) as down:
-            context = prepare_validator_voxel_context(scene, raw, equal)
-        down.assert_called_once()
-        self.assertIs(context["fine"], context["ransac"])
-        with patch("corner_detector.preprocessing.voxel_downsample_3d") as down:
-            context = prepare_validator_voxel_context(scene, raw, self.config("--validator-fine-voxel-mm", "10"))
-        down.assert_not_called()
-        self.assertIs(context["fine"]["points_mm"], scene)
-        np.testing.assert_array_equal(context["fine"]["scene_indices"], [0, 1])
-
-    def test_real_stage_voxels_produce_expected_centroids(self):
-        raw = np.array([[0., 0, 0], [.1, 0, 0], [2., 0, 0], [2.1, 0, 0]])
-        scene = np.array([[1.05, 0, 0]])
-        cfg = self.config("--voxel-3d-mm", "20", "--validator-fine-voxel-mm", "1",
-                          "--validator-ransac-voxel-mm", "10")
+    def test_raw_crop_precedes_voxel_even_when_sizes_equal_coarse_and_reuses_cache(self):
+        scene = np.array([[0., 0, 0], [10., 0, 0]])
+        raw = np.array([[0., 0, 0], [.1, 0, 0], [2., 0, 0], [2.1, 0, 0], [20., 0, 0]])
+        cfg = self.config("--voxel-3d-mm", "1", "--validator-ransac-voxel-mm", "1",
+                          "--validator-ransac-radius-x", "2", "--validator-max-planes", "0")
         context = prepare_validator_voxel_context(scene, raw, cfg)
-        fine = context["fine"]["points_mm"]
-        np.testing.assert_allclose(fine[np.argsort(fine[:, 0])], [[.05, 0, 0], [2.05, 0, 0]])
-        np.testing.assert_allclose(context["ransac"]["points_mm"], [[1.05, 0, 0]])
+        from corner_detector.preprocessing import voxel_downsample_3d
+        with patch("corner_detector.preprocessing.voxel_downsample_3d", wraps=voxel_downsample_3d) as down:
+            result = run_validator_pipeline(scene, 0, cfg, voxel_context=context)
+            np.testing.assert_array_equal(down.call_args_list[0].args[0], raw[:3])
+            self.assertEqual(down.call_args_list[0].args[1], 1.)
+            calls = down.call_count
+            again = run_validator_pipeline(scene, 0, cfg, voxel_context=context)
+            self.assertEqual(down.call_count, calls)
+        points = result["roi_points_mm"]
+        np.testing.assert_allclose(points[np.argsort(points[:, 0])], [[.05, 0, 0], [2., 0, 0]])
+        np.testing.assert_array_equal(result["roi_raw_point_indices"], [0, 1, 2])
+        np.testing.assert_array_equal(result["query_position_mm"], scene[0])
+        np.testing.assert_array_equal(result["ransac_scene_indices"], [0, 0])
+        np.testing.assert_array_equal(again["roi_points_mm"], result["roi_points_mm"])
+        self.assertTrue(result["planes_computed"])
+        self.assertNotIn("fine_result", result)
+        with self.assertRaises(ValueError):
+            run_validator_pipeline(scene + 1, 0, cfg, voxel_context=context)
+        np.testing.assert_array_equal(raw[:, 0], [0., .1, 2., 2.1, 20.])
+
+    def test_halo_is_separate_from_core_voxel_centroids_and_ransac_input(self):
+        scene = np.array([[0., 0, 0], [10., 0, 0]])
+        raw = np.array([[0., 0, 0], [1.9, 0, 0], [2.1, 0, 0], [3.9, 0, 0], [4.1, 0, 0]])
+        cfg = self.config("--validator-ransac-voxel-mm", "1", "--validator-ransac-radius-x", "2",
+                          "--validator-plane-support-radius-mm", "4", "--validator-max-planes", "0")
+        cfg = replace(cfg, validator=replace(cfg.validator, geometry_enabled=True))
+        context = prepare_validator_voxel_context(scene, raw, cfg)
+        from corner_detector.validator_pipeline import _query_voxel_cloud
+        cloud = _query_voxel_cloud(context, 0, cfg.validator)
+        np.testing.assert_array_equal(cloud["raw_core_point_indices"], [0, 1])
+        np.testing.assert_allclose(np.sort(cloud["core_points_mm"][:, 0]), [0., 1.9])
+        np.testing.assert_allclose(np.sort(cloud["points_mm"][cloud["core_voxel_count"]:, 0]), [2.1, 3.9])
+        self.assertEqual(cloud["halo_voxel_count"], 2)
+        self.assertTrue(np.all(np.linalg.norm(cloud["core_points_mm"], axis=1) <= 2.))
+
+    def test_empty_query_roi_returns_empty_computed_result(self):
+        cfg = self.config("--validator-ransac-radius-x", "1")
+        result = run_validator_pipeline(np.zeros((1, 3)), 0, cfg, raw_points_mm=np.array([[1000., 0, 0]]))
+        self.assertTrue(result["planes_computed"])
+        self.assertEqual(result["roi_points_mm"].shape, (0, 3))
+        self.assertEqual(result["planes"], [])
+        self.assertEqual(result["ransac_scene_indices"].shape, (0,))
+
+    def test_interactive_coarse_click_immediately_runs_ransac_without_moving_query(self):
+        cfg = self.config()
+        scene = np.array([[.25, 0, 0]])
+        raw = np.array([[0., 0, 0], [1., 0, 0], [0., 1., 0]])
+        frozen = {"points_voxel_mm": scene, "points_raw_mm": raw,
+                  "validator_query_indices": np.array([0])}
+        with patch.object(validator_query, "prepare_guided_validator_result"), redirect_stdout(StringIO()):
+            result = validator_query.inspect_validator_query(0, frozen, cfg)
+        self.assertTrue(result["planes_computed"])
+        np.testing.assert_array_equal(result["query_position_mm"], scene[0])
+        self.assertNotIn("validator_fine_result", frozen)
+
+    def test_coarse_heatmap_retains_detector_frame_scale(self):
+        points = np.column_stack((np.arange(4.), np.zeros((4, 2))))
+        values, valid = np.array([.02, .08, .2, 99.]), np.array([True, True, True, False])
+        scores = {key: values.copy() for key in ("ced_score", "pca_ratio_saturated", "fusion_score")}
+        scores.update({key: valid.copy() for key in ("ced_valid_mask", "pca_valid_mask", "fusion_valid_mask")})
+        frozen = {"points_voxel_mm": points, "validator_query_indices": np.array([0]),
+                  "validator_ced_scores": scores}
+        fake, _, scenes = self.open3d_stub()
+        with patch.object(view3d, "require_open3d", return_value=fake):
+            display = manager.prepare_guided_validator_view(frozen)
+            vmax = np.quantile(values[valid], .99)
+            self.assertEqual(display["fusion_vmax"], vmax)
+            cloud = scenes[0].add_geometry.call_args_list[0].args[1]
+            np.testing.assert_array_equal(cloud.colors, view3d.dense_heatmap_colors(values, valid, vmax=vmax))
+            manager.close_query_views(frozen)
+
+    def test_greedy_nms_keeps_second_peak_after_an_intermediate_point_is_suppressed(self):
+        points = np.column_stack(([0., 1., 2.], np.zeros((3, 2))))
+        np.testing.assert_array_equal(greedy_nms_indices(points, np.array([3., 2., 1.]),
+                                                       np.ones(3, bool), 1.1), [0, 2])
 
     def test_query_generation_disables_only_display_and_post_nms_validator(self):
         cfg = self.config()
@@ -170,8 +184,9 @@ class GuidedIntegrationTest(unittest.TestCase):
 
     def open3d_stub(self):
         fake = Mock()
-        widgets = [Mock(), Mock(), Mock()]
-        scenes = [Mock(), Mock(), Mock()]
+        widgets = [Mock() for _ in range(8)]
+        scenes = [Mock() for _ in range(8)]
+        fake.visualization.gui.Application.instance.create_window.side_effect = [Mock() for _ in range(4)]
         fake.visualization.gui.SceneWidget.side_effect = widgets
         fake.visualization.gui.Label.side_effect = Mock
         fake.visualization.rendering.Open3DScene.side_effect = scenes
@@ -185,13 +200,109 @@ class GuidedIntegrationTest(unittest.TestCase):
             getattr(fake.utility, name).side_effect = lambda value: np.array(value, copy=True)
         return fake, widgets, scenes
 
+    def test_geometry_has_its_own_window_and_never_overlays_plane_panel(self):
+        points = np.array([[0., 0, 0], [10., 0, 0], [0., 10., 0], [0., 0, 10.]])
+        result = {"query_index": 0, "query_position_mm": np.zeros(3),
+                  "coarse_query_position_mm": np.zeros(3), "radius_mm": 30.,
+                  "ransac_voxel_mm": 5., "roi_raw_point_indices": np.arange(4),
+                  "roi_points_mm": points.copy(), "planes_computed": True,
+                  "planes": [{"normal": np.array([0., 0, 1.]), "offset_mm": 0.,
+                              "inlier_mask": np.array([True, True, True, False])},
+                             {"normal": np.array([0., 1., 0]), "offset_mm": 0.,
+                              "inlier_mask": np.array([True, True, False, True])}],
+                  "geometry_computed": True, "validation_status": "ACCEPT",
+                  "support_roi_points_mm": points.copy(), "support_radius_mm": 50.,
+                  "support_roi_ransac_indices": np.arange(4),
+                  "plane_patches": [{"plane_id": 0, "valid": True,
+                                     "support_ransac_indices": np.arange(3),
+                                     "hull_vertices_mm": points[:3].copy()},
+                                    {"plane_id": 1, "valid": True,
+                                     "support_ransac_indices": np.array([0, 1, 3]),
+                                     "hull_vertices_mm": points[[0, 1, 3]].copy()}],
+                  "edge_candidates": [
+                      {"source_edge_id": 3, "edge_type": "boundary", "plane_ids": [0],
+                       "valid": False, "start_mm": points[1].copy(), "end_mm": points[2].copy()},
+                      {"source_edge_id": 4, "edge_type": "plane_intersection", "plane_ids": [0, 1],
+                       "valid": False, "start_mm": points[0].copy(), "end_mm": points[1].copy()}],
+                  "edges": [
+                      {"edge_id": index, "edge_type": kind, "plane_ids": plane_ids,
+                       "start_mm": points[0].copy(), "end_mm": points[endpoint].copy()}
+                      for index, kind, plane_ids, endpoint in (
+                          (0, "boundary", [0], 2), (1, "boundary", [1], 3),
+                          (2, "plane_intersection", [0, 1], 1))],
+                  "corner_edge_ids": [0, 1, 2], "selected_vertex_id": 0,
+                  "vertices": [{"vertex_id": 0, "valid": True, "status": "ACCEPT",
+                                "position_mm": np.zeros(3)}]}
+        frozen = {"points_voxel_mm": points, "validator_query_indices": np.array([0]),
+                  "validator_scene_colors": np.full(points.shape, .4)}
+        fake, widgets, scenes = self.open3d_stub()
+        with patch.object(view3d, "require_open3d", return_value=fake), \
+                patch.object(view3d, "update_validator_roi_view"):
+            display = manager.prepare_guided_validator_view(frozen)
+            stages = display["geometry_windows"]
+            self.assertEqual([stage["number"] for stage in stages], [4, 5, 6])
+            self.assertEqual([len(stage["panels"]) for stage in stages], [1, 3, 1])
+            self.assertEqual(display["app"].create_window.call_count, 4)
+            manager.prepare_guided_validator_result(frozen, result)
+            plane_names = {call.args[0] for call in scenes[2].add_geometry.call_args_list}
+            self.assertEqual(plane_names, {"roi", "radius", "coarse_query",
+                                          "plane_0", "outline_0", "normal_0",
+                                          "plane_1", "outline_1", "normal_1"})
+            names = [{call.args[0] for call in scene.add_geometry.call_args_list} for scene in scenes]
+            self.assertEqual({name for name in names[3] if name.startswith("finite_edge_")}, {"finite_edge_2"})
+            self.assertEqual({name for name in names[4] if name.startswith("finite_edge_")}, {"finite_edge_0"})
+            self.assertEqual({name for name in names[5] if name.startswith("finite_edge_")}, {"finite_edge_1"})
+            self.assertEqual(names[6], set())
+            self.assertIn("not observed", stages[1]["panels"][2]["label"].text)
+            self.assertTrue({"finite_edge_0", "finite_edge_1", "finite_edge_2", "corner_vertex_0"} <= names[7])
+            self.assertIn("unknown_edge_4", names[3])
+            self.assertNotIn("unknown_edge_3", names[3])
+            self.assertIn("unknown_edge_3", names[4])
+            self.assertNotIn("unknown_edge_4", names[4])
+            for scene_names in names[3:7]:
+                self.assertNotIn("corner_vertex_0", scene_names)
+                self.assertNotIn("core_radius", scene_names)
+            cloud = next(call.args[1] for call in scenes[4].add_geometry.call_args_list
+                         if call.args[0] == "support_context")
+            np.testing.assert_array_equal(cloud.points, points[:3])
+            for scene_index, edge_id, expected in ((3, 2, [0., .9, 1.]), (4, 0, [1., .6, .1]),
+                                                    (5, 1, [1., .6, .1]), (7, 2, [.1, 1., .2])):
+                line = next(call.args[1] for call in scenes[scene_index].add_geometry.call_args_list
+                            if call.args[0] == f"finite_edge_{edge_id}")
+                line.paint_uniform_color.assert_called_with(expected)
+            material = next(call.args[2] for call in scenes[2].add_geometry.call_args_list
+                            if call.args[0] == "plane_0")
+            self.assertEqual(material.base_color[3], .60)
+            np.testing.assert_allclose(scenes[2].camera.look_at.call_args.args[1], [51., 39., 45.])
+            np.testing.assert_allclose(scenes[3].camera.look_at.call_args.args[1], [85., 65., 75.])
+            calls = [scene.add_geometry.call_count for scene in scenes[3:]]
+            manager.prepare_guided_validator_result(frozen, {**result, "planes_computed": False})
+            self.assertEqual([scene.add_geometry.call_count for scene in scenes[3:]], calls)
+            for stage in stages:
+                for panel in stage["panels"]:
+                    self.assertIn("NOT_COMPUTED", panel["label"].text)
+            manager.close_query_views(frozen)
+            display["window"].close.assert_called_once()
+            for stage in stages:
+                stage["window"].close.assert_called_once()
+        np.testing.assert_array_equal(result["planes"][0]["inlier_mask"], [True, True, True, False])
+        np.testing.assert_array_equal(result["plane_patches"][0]["hull_vertices_mm"], points[:3])
+
+
     def test_open3d_uploads_scene_once_and_replaces_only_roi(self):
         raw = plane_cloud(3)
         scene = np.vstack((np.zeros((1, 3)), raw))
-        result = run_validator_pipeline(scene, 0, self.config(), raw_points_mm=raw)
+        result = run_validator_pipeline(scene, 0, self.config("--no-validator-geometry"), raw_points_mm=raw)
+        for plane in result["planes"]:
+            native_ids = plane["inlier_ransac_indices"]
+            np.testing.assert_array_equal(result["ransac_points_mm"][native_ids],
+                                          result["roi_points_mm"][plane["inlier_mask"]])
+            np.testing.assert_array_equal(plane["inlier_point_indices"],
+                                          result["ransac_scene_indices"][native_ids])
         before = [plane["inlier_mask"].copy() for plane in result["planes"]]
         frozen = {"points_raw_mm": raw, "points_voxel_mm": scene,
-                  "validator_query_indices": np.array([0]), "validator_scene_colors": np.full(scene.shape, .4)}
+                  "validator_query_indices": np.array([0]), "validator_scene_colors": np.full(scene.shape, .4),
+                  "validator_fusion_vmax": .2}
         fake, widgets, scenes = self.open3d_stub()
         with patch.object(view3d, "require_open3d", return_value=fake):
             display = manager.prepare_guided_validator_view(frozen)
@@ -201,17 +312,12 @@ class GuidedIntegrationTest(unittest.TestCase):
             np.testing.assert_array_equal(overview_cloud.points, frozen["points_voxel_mm"])
             np.testing.assert_array_equal(overview_cloud.colors, frozen["validator_scene_colors"])
             manager.prepare_guided_validator_result(frozen, result)
-            fine = result["fine_result"]
-            fine_scores = fine["scores"]
-            fine_cloud = scenes[1].add_geometry.call_args_list[0].args[1]
-            np.testing.assert_array_equal(fine_cloud.points, fine_scores["query_position_mm"])
-            np.testing.assert_array_equal(fine_cloud.colors, view3d.dense_heatmap_colors(
-                fine_scores["fusion_score"], fine_scores["fusion_valid_mask"],
-                vmax=view3d.dense_heatmap_vmax(fine_scores)["fusion_score"]))
-            fine_camera_calls = widgets[1].setup_camera.call_count
-            fine_upload_count = sum(call.args[0] == "fine_heatmap" for call in scenes[1].add_geometry.call_args_list)
+            roi_cloud = scenes[1].add_geometry.call_args_list[0].args[1]
+            np.testing.assert_array_equal(roi_cloud.points, result["roi_points_mm"])
+            roi_camera_calls = widgets[1].setup_camera.call_count
+            self.assertIn("Raw core:", display["labels"][1].text)
             first_count = scenes[2].add_geometry.call_count
-            self.assertEqual(first_count, 4 + 3 * len(result["planes"]))
+            self.assertEqual(first_count, 3 + 3 * len(result["planes"]))
             cloud = scenes[2].add_geometry.call_args_list[0].args[1]
             np.testing.assert_array_equal(cloud.points, result["roi_points_mm"])
             self.assertEqual(len(cloud.colors), len(result["roi_ransac_indices"]))
@@ -231,15 +337,13 @@ class GuidedIntegrationTest(unittest.TestCase):
             self.assertEqual(scenes[2].add_geometry.call_count, first_count * 2)
             self.assertEqual(scenes[0].add_geometry.call_count, overview_uploads)
             self.assertEqual(widgets[0].setup_camera.call_count, overview_camera_calls)
-            self.assertEqual(widgets[1].setup_camera.call_count, fine_camera_calls)
-            self.assertEqual(sum(call.args[0] == "fine_heatmap" for call in scenes[1].add_geometry.call_args_list),
-                             fine_upload_count)
+            self.assertEqual(widgets[1].setup_camera.call_count, roi_camera_calls)
             self.assertFalse(any(call.args[0].startswith("plane_") for call in scenes[1].add_geometry.call_args_list))
             pending = {**result, "planes": [], "planes_computed": False}
             manager.prepare_guided_validator_result(frozen, pending)
             self.assertEqual(scenes[2].clear_geometry.call_count, 3)
             self.assertEqual(scenes[2].add_geometry.call_count, first_count * 2)
-            self.assertIn("click a Fine NMS", display["labels"][2].text)
+            self.assertIn("select a Coarse query", display["labels"][2].text)
             manager.close_query_views(frozen, keep_guided_validator=True)
             self.assertIs(frozen["guided_validator_display"], display)
             manager.close_query_views(frozen)
@@ -282,7 +386,8 @@ class GuidedIntegrationTest(unittest.TestCase):
             manager.start_guided_validator_view(frozen)
         get_context.assert_called_once_with("spawn")
         expected_colors = view3d.dense_heatmap_colors(values, valid, vmax=np.quantile(values[valid], .99))
-        np.testing.assert_array_equal(context.Process.call_args.kwargs["args"][-1], expected_colors)
+        np.testing.assert_array_equal(context.Process.call_args.kwargs["args"][-2], expected_colors)
+        self.assertEqual(context.Process.call_args.kwargs["args"][-1], np.quantile(values[valid], .99))
         np.testing.assert_array_equal(scores["fusion_score"], values)
         np.testing.assert_array_equal(scores["fusion_valid_mask"], valid)
         np.testing.assert_array_equal(frozen["validator_query_indices"], [0])
@@ -311,8 +416,7 @@ class GuidedIntegrationTest(unittest.TestCase):
         request_action = Mock()
         gui = fake.visualization.gui
         with patch.object(view3d, "require_open3d", return_value=fake), \
-                patch.object(query_ui, "pick_guided_validator_query", return_value=0), \
-                patch.object(query_ui, "pick_validator_fine_query", return_value=7):
+                patch.object(query_ui, "pick_guided_validator_query", return_value=0):
             query_ui.open_guided_validator_window(frozen, request_action)
             display = frozen["guided_validator_display"]
             mouse = widgets[0].set_on_mouse.call_args.args[0]
@@ -325,18 +429,26 @@ class GuidedIntegrationTest(unittest.TestCase):
             mouse(event(gui.MouseEvent.Type.BUTTON_DOWN))
             mouse(event(gui.MouseEvent.Type.BUTTON_UP))
             self.assertEqual(frozen["pending_validator_query"], 0)
-            display["fine_result"] = {"coarse_query_index": 0}
-            fine_mouse = widgets[1].set_on_mouse.call_args.args[0]
-            fine_mouse(event(gui.MouseEvent.Type.BUTTON_DOWN))
-            fine_mouse(event(gui.MouseEvent.Type.BUTTON_UP))
-            self.assertEqual(frozen["pending_validator_fine_query"], (0, 7))
+            widgets[1].set_on_mouse.assert_not_called()
             widgets[2].set_on_mouse.assert_not_called()
             widgets[2].set_on_key.assert_called_once()
+            for widget in widgets[3:]:
+                widget.set_on_mouse.assert_not_called()
+                widget.set_on_key.assert_called_once()
             key = widgets[1].set_on_key.call_args.args[0]
             key(SimpleNamespace(type=gui.KeyEvent.DOWN, key=gui.KeyName.R))
             request_action.assert_called_once_with("recapture")
+            stages = display["geometry_windows"]
+            geometry_close = stages[0]["window"].set_on_close.call_args.args[0]
+            self.assertTrue(geometry_close())
+            self.assertFalse(display["closed"])
+            self.assertFalse(stages[1]["closed"])
+            self.assertFalse(stages[2]["closed"])
             close_callback = display["window"].set_on_close.call_args.args[0]
             self.assertTrue(close_callback())
+            stages[0]["window"].close.assert_not_called()
+            stages[1]["window"].close.assert_called_once()
+            stages[2]["window"].close.assert_called_once()
             display["app"].run_one_tick.return_value = False
             manager.poll_view_events(frozen)
             self.assertNotIn("guided_validator_display", frozen)
@@ -455,201 +567,11 @@ class GuidedNumericsTest(unittest.TestCase):
 
     def test_configuration_validation(self):
         for changes in ({"ransac_radius_mm": 0.}, {"guided_sigma_mm": np.nan},
-                        {"fine_voxel_mm": 0.}, {"ransac_voxel_mm": -1.},
-                        {"fine_pca_radius_mm": 0.}, {"fine_min_neighbors": 2},
-                        {"fine_bilateral_sigma_ced": 0.}, {"fine_pca_ratio_saturation_tau": -1.},
-                        {"fine_pca_ratio_saturation_tau": np.nan}, {"fine_fusion_threshold_mode": "bad"},
-                        {"fine_fusion_score_threshold": 2.}, {"fine_nms_method": "bad"},
-                        {"fine_fusion_peak_relative_ratio": -.1}, {"fine_fusion_peak_relative_ratio": 1.1},
-                        {"fine_fusion_peak_relative_ratio": np.nan},
+                        {"ransac_voxel_mm": -1.},
                         {"max_planes": 4}, {"min_inliers": 2}, {"min_inlier_ratio": 1.1},
                         {"ransac_iterations": 1.5}, {"random_seed": -1}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 replace(GuidedValidatorConfig(), **changes).validate()
-
-
-class FineCedTest(unittest.TestCase):
-    def cfg(self):
-        return ValidatorDetectorConfig(centroid_radius_mm=10., pca_radius_factor=1.5,
-            bilateral_radius_mm=10., bilateral_sigma_spatial_mm=5., min_neighbors=3,
-            validator=GuidedValidatorConfig(fine_voxel_mm=10., ransac_voxel_mm=10.,
-                fine_search_radius_mm=6., fine_ced_radius_mm=3.,
-                fine_nms_radius_mm=3., fine_min_neighbors=3, fine_pca_radius_mm=4.5,
-                fine_bilateral_radius_mm=3., fine_bilateral_sigma_spatial_mm=1.5,
-                fine_fusion_threshold_mode="global_mean"))
-
-    def test_halo_scores_match_full_original_cloud_and_differ_from_clipped_roi(self):
-        raw = np.random.default_rng(12).uniform(-12, 12, (1200, 3))
-        cfg = self.cfg()
-        fine = find_fine_queries(raw, np.zeros(3), cfg)
-        reference = dense_ced_weighted_pca_scores(raw, 3., 4.5, 3,
-            bilateral_radius_mm=3., bilateral_sigma_spatial_mm=1.5,
-            bilateral_sigma_ced=cfg.validator.fine_bilateral_sigma_ced,
-            pca_ratio_saturation_tau=cfg.validator.fine_pca_ratio_saturation_tau)
-        ids = fine["evaluation_fine_indices"]
-        self.assertLess(len(fine["support_fine_indices"]), len(raw))
-        self.assertGreater(len(fine["support_fine_indices"]), len(ids))
-        for key in ("ced_score", "bilateral_ced_score", "pca_ratio_raw", "fusion_score"):
-            np.testing.assert_allclose(fine["scores"][key], reference[key][ids], atol=1e-12)
-        clipped = dense_ced_weighted_pca_scores(raw[ids], 3., 4.5, 3)
-        self.assertGreater(np.max(np.abs(clipped["ced_score"] - fine["scores"]["ced_score"])), 1e-3)
-        np.testing.assert_array_equal(fine["scores"]["original_point_indices"], ids)
-
-    def test_greedy_nms_keeps_second_peak_after_an_intermediate_point_is_suppressed(self):
-        points = np.array([[0., 0, 0], [2., 0, 0], [4., 0, 0]])
-        np.testing.assert_array_equal(greedy_nms_indices(points, [1., .8, .7], [True]*3, 3.), [0, 2])
-        np.testing.assert_array_equal(greedy_nms_indices(points, [1., 1., 1.], [True]*3, 3.), [0, 2])
-
-    def test_coarse_tuning_does_not_change_fine_scores_or_candidates(self):
-        points = np.random.default_rng(12).uniform(-12, 12, (1200, 3))
-        cfg = self.cfg()
-        original = find_fine_queries(points, np.zeros(3), cfg)
-        changed = replace(cfg, centroid_radius_mm=80., pca_radius_factor=3., min_neighbors=30,
-            bilateral_radius_mm=100., bilateral_sigma_spatial_mm=50., bilateral_sigma_ced=.9,
-            pca_ratio_saturation_tau=None, fusion_threshold_mode="fixed", fusion_score_threshold=.99)
-        fine = find_fine_queries(points, np.zeros(3), changed)
-        for key in ("ced_score", "bilateral_ced_score", "pca_ratio_raw", "pca_ratio_saturated", "fusion_score"):
-            np.testing.assert_array_equal(fine["scores"][key], original["scores"][key])
-        np.testing.assert_array_equal(fine["candidate_fine_indices"], original["candidate_fine_indices"])
-        self.assertEqual(fine["fusion_score_threshold"], original["fusion_score_threshold"])
-        self.assertGreater(len(original["candidate_fine_indices"]), 0)
-        rejected = find_fine_queries(points, np.zeros(3), replace(cfg, validator=replace(
-            cfg.validator, fine_fusion_threshold_mode="fixed", fine_fusion_score_threshold=1.)))
-        self.assertEqual(len(rejected["candidate_fine_indices"]), 0)
-
-    def test_fine_nms_method_selects_existing_greedy_or_local_maximum_path(self):
-        points = np.array([[0., 0, 0], [2., 0, 0], [4., 0, 0]])
-        cfg = self.cfg()
-        cfg.validator = replace(cfg.validator, fine_fusion_threshold_mode="fixed", fine_fusion_score_threshold=0.)
-        values = np.array([1., .8, .7])
-        scores = {key: values.copy() for key in ("ced_score", "bilateral_ced_score", "pca_ratio_raw",
-                                                "pca_ratio_saturated", "fusion_score")}
-        scores.update(pca_valid_mask=np.ones(3, dtype=bool), fusion_valid_mask=np.ones(3, dtype=bool),
-                      invalid_support_mask=np.zeros(3, dtype=bool), query_position_mm=points.copy())
-        with patch("corner_detector.validator_fine.dense_ced_weighted_pca_scores", return_value=scores):
-            greedy = find_fine_queries(points, np.zeros(3), cfg)
-            local = find_fine_queries(points, np.zeros(3), replace(cfg, validator=replace(
-                cfg.validator, fine_nms_method="local_maximum")))
-        np.testing.assert_array_equal(greedy["candidate_fine_indices"], [0, 2])
-        np.testing.assert_array_equal(local["candidate_fine_indices"], [0])
-
-    def test_fine_pca_saturation_can_be_disabled(self):
-        cfg = self.cfg()
-        cfg.validator = replace(cfg.validator, fine_pca_ratio_saturation_tau=None)
-        points = np.random.default_rng(12).uniform(-12, 12, (500, 3))
-        fine = find_fine_queries(points, np.zeros(3), cfg)
-        np.testing.assert_array_equal(fine["scores"]["pca_ratio_raw"], fine["scores"]["pca_ratio_saturated"])
-
-    def test_fine_peak_relative_ratio_controls_threshold_before_nms(self):
-        points = np.column_stack((np.arange(4.), np.zeros((4, 2))))
-        values = np.array([.8, .4, .3, .09])
-        scores = {key: values.copy() for key in ("ced_score", "bilateral_ced_score", "pca_ratio_raw",
-                                                "pca_ratio_saturated", "fusion_score")}
-        scores.update(pca_valid_mask=np.ones(4, dtype=bool), fusion_valid_mask=np.ones(4, dtype=bool),
-                      invalid_support_mask=np.zeros(4, dtype=bool))
-        cfg = self.cfg()
-        cfg.validator = replace(cfg.validator, fine_fusion_threshold_mode="peak_relative",
-                                fine_fusion_peak_relative_ratio=.5, fine_nms_radius_mm=.1)
-        with patch("corner_detector.validator_fine.dense_ced_weighted_pca_scores", return_value=scores):
-            fine = find_fine_queries(points, np.zeros(3), cfg)
-            lower = find_fine_queries(points, np.zeros(3), replace(cfg, validator=replace(
-                cfg.validator, fine_fusion_peak_relative_ratio=.25)))
-        self.assertEqual(fine["fusion_score_threshold"], .4)
-        self.assertEqual(fine["fusion_peak_relative_ratio"], .5)
-        np.testing.assert_array_equal(fine["candidate_fine_indices"], [0])
-        self.assertEqual(lower["fusion_score_threshold"], .2)
-        np.testing.assert_array_equal(lower["candidate_fine_indices"], [0, 1, 2])
-        np.testing.assert_array_equal(lower["scores"]["fusion_score"], fine["scores"]["fusion_score"])
-
-    def test_display_disk_is_projected_onto_plane_and_stays_inside_roi(self):
-        result = {"query_position_mm": np.zeros(3), "radius_mm": 5.,
-                  "roi_points_mm": np.array([[0., 0, 4.]]),
-                  "planes": [{"normal": np.array([0., 0, 1.]), "offset_mm": -4.,
-                              "inlier_mask": np.array([True])}]}
-        disk = view3d.guided_validator_primitives(result)["disk_vertices_mm"][0]
-        np.testing.assert_allclose(disk[:, 2], 4.)
-        np.testing.assert_allclose(np.linalg.norm(disk, axis=1), 5.)
-        np.testing.assert_allclose(np.mean(disk[:-1], axis=0), [0., 0, 4.], atol=1e-12)
-
-    def test_pipeline_selects_nearest_fine_query_and_reuses_scores_on_fine_reselection(self):
-        raw = np.random.default_rng(12).uniform(-12, 12, (500, 3))
-        scene = np.vstack(([[0., 0, 0], [100., 100., 100.]], raw))
-        cfg = self.cfg()
-        result = run_validator_pipeline(scene, 0, cfg, raw_points_mm=raw)
-        fine = result["fine_result"]
-        self.assertGreater(len(fine["candidate_fine_indices"]), 1)
-        candidates = fine["candidate_fine_indices"]
-        expected = candidates[np.lexsort((candidates, np.linalg.norm(scene[candidates], axis=1)))[0]]
-        self.assertEqual(result["fine_query_index"], expected)
-        self.assertEqual(result["query_index"], 0)
-        np.testing.assert_array_equal(result["query_position_mm"], scene[expected])
-        self.assertFalse(result["fine_fallback"])
-        other = int(candidates[candidates != expected][0])
-        with patch("corner_detector.validator_fine.find_fine_queries", side_effect=AssertionError("recomputed")):
-            selected = run_validator_pipeline(scene, 0, cfg, raw_points_mm=raw,
-                fine_result=fine, fine_index=other)
-        self.assertEqual(selected["fine_query_index"], other)
-        self.assertIs(selected["fine_result"], fine)
-        np.testing.assert_array_equal(selected["query_position_mm"], scene[other])
-        with self.assertRaises(ValueError):
-            run_validator_pipeline(scene, 1, cfg, raw_points_mm=raw, fine_result=fine)
-
-    def test_empty_fine_candidates_fall_back_to_coarse_query(self):
-        raw = np.zeros((2, 3))
-        scene = np.array([[1., 0, 0]])
-        result = run_validator_pipeline(scene, 0, self.cfg(), raw_points_mm=raw)
-        self.assertTrue(result["fine_fallback"])
-        self.assertIsNone(result["fine_query_index"])
-        np.testing.assert_array_equal(result["query_position_mm"], scene[0])
-        self.assertEqual(result["planes"], [])
-
-    def test_interactive_coarse_selection_stops_at_fine_and_fine_click_runs_ransac(self):
-        raw = np.random.default_rng(12).uniform(-12, 12, (500, 3))
-        cfg = self.cfg()
-        frozen = {"points_raw_mm": raw, "points_voxel_mm": np.vstack((np.zeros((1, 3)), raw)),
-                  "validator_query_indices": np.array([0])}
-        with patch("corner_detector.guided_ransac.extract_guided_planes", side_effect=AssertionError("early RANSAC")), \
-                redirect_stdout(StringIO()) as output:
-            first = validator_query.inspect_validator_query(0, frozen, cfg)
-        self.assertFalse(first["planes_computed"])
-        self.assertIn("Fine heatmap/NMS ready", output.getvalue())
-        self.assertGreater(len(first["fine_result"]["candidate_fine_indices"]), 0)
-        chosen = int(first["fine_result"]["candidate_fine_indices"][0])
-        with patch("corner_detector.validator_fine.find_fine_queries", side_effect=AssertionError("recomputed Fine")), \
-                redirect_stdout(StringIO()):
-            fitted = validator_query.inspect_validator_query(0, frozen, cfg, fine_index=chosen)
-        self.assertTrue(fitted["planes_computed"])
-        self.assertEqual(fitted["fine_query_index"], chosen)
-        self.assertIs(first["fine_result"], fitted["fine_result"])
-
-    def test_empty_fine_fallback_still_fits_when_interactive_stop_is_requested(self):
-        result = run_validator_pipeline(np.zeros((1, 3)), 0, self.cfg(),
-                                        raw_points_mm=np.zeros((2, 3)), stop_after_fine=True)
-        self.assertTrue(result["fine_fallback"])
-        self.assertTrue(result["planes_computed"])
-
-    def test_pipeline_uses_stage_voxels_and_keeps_scene_provenance(self):
-        source = np.array([[500., 500., 500.]])
-        scene = np.array([[0., 0, 0], [100., 100., 100.]])
-        fine_points = np.vstack((np.zeros((1, 3)), np.random.default_rng(12).uniform(-12, 12, (500, 3))))
-        ransac_points = plane_cloud(3)
-        cfg = replace(self.cfg(), validator=replace(self.cfg().validator,
-            fine_voxel_mm=2., ransac_voxel_mm=4., inlier_threshold_mm=.01))
-        with patch("corner_detector.preprocessing.voxel_downsample_3d", side_effect=[fine_points, ransac_points]):
-            context = prepare_validator_voxel_context(scene, source, cfg)
-        result = run_validator_pipeline(scene, 0, cfg, voxel_context=context)
-        self.assertEqual(result["query_index"], 0)
-        np.testing.assert_array_equal(result["query_position_mm"], fine_points[result["fine_query_index"]])
-        self.assertEqual(result["fine_query_scene_index"], 0)
-        np.testing.assert_array_equal(result["roi_points_mm"], ransac_points[result["roi_ransac_indices"]])
-        self.assertEqual(len(result["planes"]), 3)
-        for plane in result["planes"]:
-            ids = plane["inlier_ransac_indices"]
-            np.testing.assert_array_equal(ids, result["roi_ransac_indices"][plane["inlier_mask"]])
-            self.assertGreater(ids.max(), len(scene))
-            np.testing.assert_array_equal(plane["inlier_point_indices"], context["ransac"]["scene_indices"][ids])
-        np.testing.assert_array_equal(result["fine_result"]["candidate_scene_indices"],
-            context["fine"]["scene_indices"][result["fine_result"]["candidate_fine_indices"]])
 
 
 if __name__ == "__main__":

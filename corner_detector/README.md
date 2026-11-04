@@ -1,6 +1,88 @@
 # `corner_detector` package
 
-활성 validator의 평면 추출 경로는 하나다.
+`total`은 **detector → 모든 NMS query의 기존 validator → scene 최종 코너/기여 에지**를 자동 실행한다.
+
+```bash
+python3 -m corner_detector --mode total --source stl --input /path/to/model.stl
+```
+
+결과 창은 두 개뿐이다: (1) detector Fusion 히트맵/NMS, (2) 원본 회색 점군 위
+최종 코너(빨강)/Boundary 에지(초록), 기여 공통 교선(청록), 실제 연장(노란 점선).
+5 mm validator voxel에서 코너 마커 반경은 4 mm, edge 막대 반경은 0.75 mm다.
+R은 재촬영, Q/Esc는 두 창 종료이며 `--no-3d-view`는 계산/로그만 실행한다.
+각 NMS query에서 기존 validator가 선택한 코너 하나를 모으고, 별도의 병합/NMS는 추가하지 않는다.
+설정은 기존 detector·`validator_*` 값을 공유한다. `--no-validator-geometry`와 함께 사용할 수 없다.
+KD-tree를 공유하고 Before/After·organized 픽셀 매핑·후보별 긴 로그를 생략한다.
+중간 query 결과는 쌓지 않고 최종 기하/상태만 보관하며, 에지·코너 mesh는 색상별로 묶어 그린다.
+속도 배수는 측정하지 않았다. 아래 `validator`의 단일 query 디버그 동작은 유지한다.
+
+기본 `detector`는 CED → bilateral → weighted PCA → Fusion → 3-D NMS까지만 실행한다.
+후단 validator는 자동 실행하지 않으며 후보는 기하 검증 전 상태다. `--only`는 NMS
+화면만 표시하는 옵션으로 유지한다. `fine`과 별도 `validator` 모드는 그대로 사용할 수 있다.
+
+detector와 validator의 Coarse Fusion 히트맵은 **프레임 전체 Coarse Fusion Q99**를
+공통 색상 상한으로 사용한다. 같은 점수는 같은 색으로 표시하며 invalid 점은 회색이다.
+Coarse 점수·threshold·NMS는 유지한다.
+
+`validator`는 **Coarse NMS → query 반경의 원본 점 crop → 로컬 voxel → guided RANSAC**을 실행한다.
+`validator_fine_*`와 Fine 재점수화·NMS·Top-K·추가 클릭은 제거했다. query 좌표는 그대로 유지한다.
+반경은 `validator_ransac_radius_x × validator_ransac_voxel_mm`, voxel은
+`validator_ransac_voxel_mm`으로 설정한다. 2번 패널에는 회색 voxel 입력 점군과 점 개수를 표시한다.
+RANSAC 뒤에는 support 재수집 → 평면 Hull →
+유한 교선·경계 에지 → 코너 검증을 실행한다. **서로 다른 방향의 유한 에지 두 개 이상**이
+만나고 원래 Coarse query 중심 gate를 통과하면 `ACCEPT`다. 최종 좌표는 `corner_position_mm`,
+지지 에지는 `corner_edges`와 `corner_edge_ids`에 저장된다. 터미널에도 좌표와 에지 끝점을 출력한다.
+에지·코너 주변의 Point Support 거리/최소 개수 검증은 제거했다. 평면 support와 Hull은 유지하며,
+최종 ACCEPT는 남은 기하 조건 통과를 뜻한다. `point_support_checked=False`로 구분한다.
+`validator`와 `total`의 최종 코너는 통과한 후보 중 공통 교선 포함 → 직선 피팅 RMS →
+필요한 총 외삽 길이 → query 거리 순으로 선택한다. 유효 교선 후보가 없으면 Boundary-only를 사용한다.
+Boundary-only도 모든 기여 Line으로 3D 최소제곱 위치를 계산하며, 처음 두 선의 중간점에 고정하지 않는다.
+기본 Line 거리/외삽/그룹 범위는 각각 5 mm, query gate는 10 mm다.
+기존 3-D 세 번째 패널은 RANSAC 점군·평면·법선만 표시한다. 후속 결과는 별도 창으로 나눈다.
+
+- **5번:** 여러 평면 사이의 유한 교선 에지만 청록색으로 표시한다.
+- **4번:** Padded Hull → ROI clipping → TLS/Node 상태 → Before/After를 표시한다(기존 7번 이동).
+- **6번:** 선택한 NMS query 하나에 대해 2×2의 네 패널로 과정을 표시한다.
+  **6-1:** 평면별 원본 Boundary(RGB)와 공통 교선(청록).
+  **6-2:** 남은 구간(회색/청록), 제거 구간(자홍색 점선), overlap 거리 반경(파란 반투명 원통).
+  **6-3:** 실제 사용한 끝점 연장(노란 점선), 교점 후보(흰 점), LS 추정 코너와 선택된 기여 에지(초록).
+  **6-4:** 원본 raw 점군(회색) 위 선택 코너/Boundary 기여 에지(초록), 기여 공통 교선(청록), 실제 연장(노란 점선).
+  Boundary와 공통 교선의 기여 ID/개수를 따로 표시하며, 공통 교선이 없는 Boundary-only 코너도 명시한다.
+  LS 코너와 edge 직선 사이 잔차는 얇은 회색 연결선으로 구분한다.
+
+Validator는 선택한 후보 하나만 계산한다. 전체 scene을 자동 순회하지 않으며,
+창 순서는 4 → 5 → 6이고 6번이 마지막이다. 7번 창은 없다.
+
+교선과 중복되는 Boundary는 원래 TLS 직선을 보존한 채 구간 마스크로 제거한다.
+마스크 끝점은 코너로 사용하지 않는다. 교선 위 Vertex 그룹은 구속 LS로, 여러 교선의
+공통 Vertex는 3D Multi-Line LS로 정밀화하고 기존 각도·유한 구간·query gate를 다시 검사한다.
+독립 overlap/vertex 임계값은 `settings.py`의 `validator_edge_overlap_*`,
+`validator_vertex_*` 및 대응 CLI에서 조절한다.
+
+5번의 회색 Hull 외곽선은 패치 범위이며 확정된 에지가 아니다.
+4번은 ROI 구와 Node 상태를, 6번은 Edge 처리 및 최종 코너를 표시한다.
+각 창은 독립적으로 닫을 수 있고, 재촬영·종료 시 전체를 정리한다.
+`validator_roi_padding_mm=10.0`은 voxel과 독립적인 추가 반경이며,
+support 반경은 정확히 core+padding이다(현재 75+10=85 mm).
+기존 support 반경·voxel 배수 padding·바깥 경계 margin 설정은 제거했다.
+Padded Hull의 각 선분을 core와 평면의 정확한 단면 원으로 먼저 자른 뒤 TLS 병합한다.
+양 끝이 밖이어도 core를 관통하는 선분은 유지하고 ROI 테두리 연결선은 만들지 않는다.
+원래 내부 Hull Node는 ACTIVE, 잘라 생긴 Node는 INACTIVE이며 병합 후에도 상태를 유지한다.
+같은 평면의 코너는 공통 ACTIVE 끝점을 공유하는 이웃 Line에만 허용한다.
+평면 간 교선/LS 경로와 query gate 10 mm는 유지하며, 최종 코너도 core 안이어야 한다.
+4번 창은 선택한 query의 A: padded Hull, B: clipping, C: TLS/끝점 상태,
+D: core-only Before와 padded After를 보여준다. D의 카메라는 함께 움직인다.
+S를 누르면 `outputs/validator_roi/query_<id>_<timestamp>/`에
+`A.png`, `B.png`, `C.png`, `D_before_after.png`를 저장한다.
+Before 비교는 동일 RANSAC 모델/core voxel로 Hull·TLS·그래프만 추가 계산한다.
+유한 padding으로 가림 경계나 내부 Hull bridge까지 판별할 수는 없다.
+`--no-validator-geometry`는 기존 평면 추출까지만 실행한다.
+
+```bash
+python3 -m corner_detector --mode validator --source stl --input /path/to/model.stl
+```
+
+기존 평면·그래프 validator의 평면 추출 경로는 하나다.
 
 ```text
 query-core organized AHC
@@ -10,7 +92,7 @@ query-core organized AHC
   -> padded boundary/Hough/3-D finite-edge graph/refiner
 ```
 
-`query_debug.inspect_query`와 detector NMS seed는 모두
+`query_debug.inspect_query`와 라이브러리에서 명시적으로 검증하는 detector NMS seed는
 `validator_pipeline.run_validator_pipeline`을 호출한다. 평면 추출 backend 선택이나
 별도 plane-cluster 활성화 옵션은 없다.
 
@@ -22,7 +104,7 @@ query-core organized AHC
 
 ## CED Query → Local Extremity 가설 (`ball`)
 
-기존 `detector`와 `validator`는 그대로 유지한다. `ball`은 기존 CED → PCA →
+`ball`은 `detector`와 동일한 기존 CED → PCA →
 3-D NMS 후보를 먼저 계산한 뒤, 후보별 원본 XYZ ROI에서 정점 가설을 찾는다.
 클릭은 가장 가까운 **기존 CED NMS Query**의 결과를 선택한다. Query 위치를
 이동하거나 FPS로 새 Query를 만들지 않는다. 프레임별 결과를 캐시하므로 재클릭이나

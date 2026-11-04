@@ -32,11 +32,13 @@ def run_dense_heatmap_mode(
     rgb_colors_rgb=None,
     validator_estimator=None,
     organized_context=None,
+    point_tree=None,
+    print_candidates=True,
 ):
     """Score points, run NMS seeds through validator, and show final geometry."""
     points = np.asarray(points_mm, dtype=np.float64)
     started = time.perf_counter()
-    point_tree = cKDTree(points)
+    point_tree = cKDTree(points) if point_tree is None else point_tree
     scores = dense_ced_weighted_pca_scores(
         points,
         cfg.centroid_radius_mm,
@@ -147,7 +149,7 @@ def run_dense_heatmap_mode(
         f"eigenvalue-epsilon={scores['eigenvalue_epsilon_mm2']:.3e} mm^2",
         flush=True,
     )
-    for candidate in extraction["candidates"]:
+    for candidate in extraction["candidates"] if print_candidates else ():
         position = np.asarray(candidate["position_mm"], dtype=np.float64)
         print(
             f"  candidate index={candidate['point_index']} "

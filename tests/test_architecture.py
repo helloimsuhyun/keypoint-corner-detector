@@ -14,7 +14,8 @@ NUMERIC = (
     "plane_edge_graph_pipeline.py", "line_refinement_2d.py", "refiner.py",
     "extremity.py",
     "extremity_voting.py",
-    "guided_ransac.py", "validator_fine.py",
+    "guided_ransac.py", "validator_plane_support.py",
+    "validator_edge_graph.py", "validator_corner_graph.py",
 )
 
 

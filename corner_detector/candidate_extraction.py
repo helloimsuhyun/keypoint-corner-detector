@@ -1,4 +1,4 @@
-"""Dense local-maximum candidates and Fine-only greedy 3-D NMS."""
+"""Dense local-maximum candidates and greedy 3-D NMS."""
 
 from __future__ import annotations
 
