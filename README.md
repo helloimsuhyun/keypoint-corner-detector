@@ -8,6 +8,9 @@ Kinect/RealSense/STL의 organized depth 입력에서 query 단위 평면과 평�
 ```bash
 cd /home/choisuhyun/keypoint-corner-detector
 
+python3 -m corner_detector \
+  --source realsense \
+  --mode detector
 
 python3 -m corner_detector \
   --source kinect \

@@ -1047,6 +1047,7 @@ def as_plane_cluster_analysis(
     roi_indices: np.ndarray,
     projection_halo_mm: float = 0.0,
     projection_inlier_mm: float | None = None,
+    query_position_mm: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Adapt fitted query-core planes and residual-gated halo observations."""
 
@@ -1054,7 +1055,9 @@ def as_plane_cluster_analysis(
     if not np.isfinite(projection_halo_mm) or projection_halo_mm < 0.0:
         raise ValueError("projection_halo_mm must be finite and nonnegative")
     roi = np.unique(np.asarray(roi_indices, dtype=np.int64).reshape(-1))
-    query = points[int(query_index)]
+    query = points[int(query_index)] if query_position_mm is None else np.asarray(query_position_mm, dtype=np.float64)
+    if query.shape != (3,) or not np.isfinite(query).all():
+        raise ValueError("query_position_mm must be a finite XYZ coordinate")
     padded = np.flatnonzero(
         np.linalg.norm(points - query, axis=1)
         <= float(query_radius_mm) + float(projection_halo_mm) + 1e-9
@@ -1106,7 +1109,7 @@ def as_plane_cluster_analysis(
     return {
         "method": "cornervins_query_plane_extraction",
         "query_index": int(query_index),
-        "query_position_mm": points[int(query_index)].copy(),
+        "query_position_mm": query.copy(),
         "query_radius_mm": float(query_radius_mm),
         "search_scope": "query",
         "roi_geometry": "3d_ball",

@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "corners": [
+    {
+      "id": "corner_001",
+      "point_index": 113335,
+      "refinement_path_xyz_mm": [
+        [
+          167.0375213623047,
+          133.51339721679688,
+          511.0000305175781
+        ],
+        [
+          164.67018127441406,
+          133.77467346191406,
+          512.0
+        ]
+      ],
+      "refined_xyz_mm": [
+        164.67018127441406,
+        133.77467346191406,
+        512.0
+      ],
+      "refinement": {
+        "method": "discrete_q10_global_voxel_points",
+        "voxel_size_mm": 2.0,
+        "radius_mm": 30,
+        "search_radius_mm": 6,
+        "candidate_spacing_mm": 0,
+        "q10_before": 0.11388934776901811,
+        "q10_after": 0.13582865654464998,
+        "neighbors_before": 530,
+        "neighbors_after": 540,
+        "evaluated": 24,
+        "available_downsampled_candidates": 24,
+        "displacement_mm": 2.583118915917655,
+        "step_displacement_mm": 2.583118915917655,
+        "total_displacement_mm": 2.583118915917655,
+        "iteration": 1,
+        "boundary_hit": false,
+        "min_support_ratio": 0.8,
+        "converged": true
+      }
+    },
+    {
+      "id": "corner_002",
+      "point_index": 90256,
+      "refinement_path_xyz_mm": [
+        [
+          313.5840759277344,
+          58.88762283325195,
+          654.0000610351562
+        ],
+        [
+          315.02252197265625,
+          53.965328216552734,
+          657.0
+        ],
+        [
+          316.7511291503906,
+          53.965328216552734,
+          657.0
+        ]
+      ],
+      "refined_xyz_mm": [
+        316.7511291503906,
+        53.965328216552734,
+        657.0
+      ],
+      "refinement": {
+        "method": "discrete_q10_global_voxel_points",
+        "voxel_size_mm": 2.0,
+        "radius_mm": 30,
+        "search_radius_mm": 6,
+        "candidate_spacing_mm": 0,
+        "q10_before": 0.52356036186482,
+        "q10_after": 0.6065219188957995,
+        "neighbors_before": 125,
+        "neighbors_after": 112,
+        "evaluated": 15,
+        "available_downsampled_candidates": 15,
+        "displacement_mm": 1.728607177734375,
+        "step_displacement_mm": 1.728607177734375,
+        "total_displacement_mm": 6.577145596800427,
+        "iteration": 2,
+        "boundary_hit": false,
+        "min_support_ratio": 0.8,
+        "converged": true
+      }
+    },
+    {
+      "id": "corner_003",
+      "point_index": 110632,
+      "refinement_path_xyz_mm": [
+        [
+          469.6299743652344,
+          203.9326934814453,
+          849.0000610351562
+        ],
+        [
+          474.6481628417969,
+          203.2120819091797,
+          846.0
+        ],
+        [
+          472.980712890625,
+          198.98960876464844,
+          847.0000610351562
+        ]
+      ],
+      "refined_xyz_mm": [
+        472.980712890625,
+        198.98960876464844,
+        847.0000610351562
+      ],
+      "refinement": {
+        "method": "discrete_q10_global_voxel_points",
+        "voxel_size_mm": 2.0,
+        "radius_mm": 30,
+        "search_radius_mm": 6,
+        "candidate_spacing_mm": 1,
+        "q10_before": 0.16432698993313466,
+        "q10_after": 0.1764904273403561,
+        "neighbors_before": 274,
+        "neighbors_after": 270,
+        "evaluated": 14,
+        "available_downsampled_candidates": 14,
+        "displacement_mm": 4.64863322601262,
+        "step_displacement_mm": 4.64863322601262,
+        "total_displacement_mm": 6.297740482345059,
+        "iteration": 2,
+        "boundary_hit": false,
+        "min_support_ratio": 0.8,
+        "converged": true
+      }
+    }
+  ]
+}

@@ -17,6 +17,8 @@ _PLANE_COLORS = np.asarray([
     [0.35, 0.85, 0.35],
 ], dtype=np.float64)
 
+_Q10_PLANE_COLORS = np.array([(255, 130, 62), (81, 218, 129), (159, 130, 255)]) / 255.
+
 _REFINER_EDGE_COLORS = {
     1: np.asarray([1.00, 0.62, 0.08], dtype=np.float64),
     2: np.asarray([0.05, 0.92, 1.00], dtype=np.float64),
@@ -29,6 +31,107 @@ class _LazyOpen3D:
 
 
 o3d = _LazyOpen3D()
+
+
+def synchronize_baseline_cameras(widgets, previous=None):
+    """Copy rotation, pan and zoom from whichever comparison panel changed."""
+    def signature(widget):
+        camera = widget.scene.camera
+        return np.concatenate((np.asarray(camera.get_view_matrix()).ravel(),
+                               np.asarray(camera.get_projection_matrix()).ravel()))
+    current = [signature(widget) for widget in widgets]
+    changed = ([0] if previous is None else
+               [i for i, (now, before) in enumerate(zip(current, previous))
+                if not np.allclose(now, before, rtol=0, atol=1e-7)])
+    if changed:
+        master = changed[0]
+        for i, widget in enumerate(widgets):
+            if i != master:
+                widget.scene.camera.copy_from(widgets[master].scene.camera)
+            widget.force_redraw()
+        current = [signature(widget) for widget in widgets]
+    return current, bool(changed)
+
+
+def open_baseline_comparison_view(points_mm, rgb, gt_mm, results, *, title):
+    """One row: GT followed by each method on the identical saved input cloud."""
+    points = np.asarray(points_mm)
+    colors = np.asarray(rgb)
+    panels = [{"method": "GT", "status": "ok", "xyz_mm": np.asarray(gt_mm)}, *results]
+    if (points.ndim != 2 or points.shape[1] != 3 or not len(points)
+            or colors.shape != points.shape or not np.isfinite(points).all()):
+        raise ValueError("Comparison requires finite nonempty XYZ and matching RGB")
+    for panel in panels:
+        xyz = np.asarray(panel["xyz_mm"])
+        if xyz.ndim != 2 or xyz.shape[1] != 3 or not np.isfinite(xyz).all():
+            raise ValueError("Comparison corners must be finite (K, 3) coordinates in mm")
+    gui, rendering = o3d.visualization.gui, o3d.visualization.rendering
+    app = gui.Application.instance
+    app.initialize()
+    window = app.create_window(f"BASELINES | {title}", min(1920, 520 * len(panels)), 760)
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(points)
+    cloud.colors = o3d.utility.Vector3dVector(.25 + .35 * colors.astype(float) / 255.)
+    cloud_material = rendering.MaterialRecord()
+    cloud_material.shader, cloud_material.point_size = "defaultUnlit", 2.0
+    marker_material = rendering.MaterialRecord()
+    marker_material.shader, marker_material.point_size = "defaultUnlit", 11.0
+    bounds = cloud.get_axis_aligned_bounding_box()
+    widgets, labels = [], []
+    names = {"harris3d": "PCL Harris3D", "orthogonal": "Sommer", "ahmed": "Ahmed"}
+    for index, panel in enumerate(panels):
+        widget = gui.SceneWidget()
+        widget.scene = rendering.Open3DScene(window.renderer)
+        widget.scene.set_background([.07, .07, .09, 1.])
+        widget.scene.add_geometry("input_cloud", cloud, cloud_material, False)
+        xyz = panel["xyz_mm"]
+        if len(xyz):
+            markers = o3d.geometry.PointCloud()
+            markers.points = o3d.utility.Vector3dVector(xyz)
+            markers.paint_uniform_color([.1, 1., .25] if index == 0 else [1., .15, .1])
+            widget.scene.add_geometry("corners", markers, marker_material, False)
+        name = names.get(panel["method"], panel["method"])
+        if panel.get("implementation") == "python_port":
+            name += " (Python port)"
+        status = f"{len(xyz)} corners" if panel["status"] == "ok" else panel["status"].upper()
+        label = gui.Label(f"{name} | {status}")
+        label.tooltip = panel.get("error", "") or "Drag: rotate | wheel: zoom | camera synchronized across all panels"
+        window.add_child(label)
+        window.add_child(widget)
+        widget.setup_camera(60., bounds, bounds.get_center())
+        center = bounds.get_center()
+        distance = max(float(np.linalg.norm(bounds.get_extent())), 1.) * 1.5
+        widget.scene.camera.look_at(center, center + [0., 0., -distance], [0., -1., 0.])
+        widgets.append(widget)
+        labels.append(label)
+
+    def layout(_):
+        rect = window.content_rect
+        for index, (widget, label) in enumerate(zip(widgets, labels)):
+            left = rect.x + index * rect.width // len(widgets)
+            right = rect.x + (index + 1) * rect.width // len(widgets)
+            label.frame = gui.Rect(left + 8, rect.y, right - left - 8, 32)
+            widget.frame = gui.Rect(left, rect.y + 32, right - left, max(1, rect.height - 32))
+
+    signatures, _ = synchronize_baseline_cameras(widgets)
+    closed = False
+
+    def close():
+        nonlocal closed
+        closed = True
+        return True
+
+    def tick():
+        nonlocal signatures
+        if closed:
+            return False
+        signatures, changed = synchronize_baseline_cameras(widgets, signatures)
+        return changed
+
+    window.set_on_layout(layout)
+    window.set_on_tick_event(tick)
+    window.set_on_close(close)
+    return {"app": app, "window": window, "widgets": widgets, "labels": labels}
 
 
 def guided_validator_primitives(result):
@@ -58,15 +161,20 @@ def guided_validator_primitives(result):
 
 
 def open_guided_validator_view(scene_points_mm, query_indices, scene_colors, *, fusion_vmax=1.0,
-                               raw_points_mm=None):
+                               raw_points_mm=None, query_positions_mm=None, projection_only=False):
     """Upload Coarse once; display query-local voxel input and fitted planes separately."""
     fusion_vmax = float(fusion_vmax)
     if not np.isfinite(fusion_vmax) or fusion_vmax < 0:
         raise ValueError("Fusion display maximum must be finite and nonnegative")
+    scene_points = np.asarray(scene_points_mm)
+    queries = scene_points[query_indices] if query_positions_mm is None else np.asarray(query_positions_mm, dtype=float)
+    if queries.shape != (len(query_indices), 3) or not np.isfinite(queries).all():
+        raise ValueError("Query marker coordinates must align with scene query IDs")
     gui, rendering = o3d.visualization.gui, o3d.visualization.rendering
     app = gui.Application.instance
     app.initialize()
-    window = app.create_window("VALIDATOR | 1. Coarse -> 2. Query voxel -> 3. Plane fitting", 1800, 650)
+    window = app.create_window(("NEW VALIDATOR" if projection_only else "VALIDATOR") +
+                               " | 1. Coarse -> 2. Query voxel -> 3. Plane fitting", 1800, 650)
     overview, roi_view, local = gui.SceneWidget(), gui.SceneWidget(), gui.SceneWidget()
     panels = (overview, roi_view, local)
     labels = [gui.Label(text) for text in (
@@ -90,8 +198,6 @@ def open_guided_validator_view(scene_points_mm, query_indices, scene_colors, *, 
             widget.frame = gui.Rect(left, rect.y + label_height, right - left, max(1, rect.height - label_height))
 
     window.set_on_layout(layout)
-    scene_points = np.asarray(scene_points_mm)
-    queries = scene_points[query_indices]
     cloud = o3d.geometry.PointCloud()
     cloud.points = o3d.utility.Vector3dVector(scene_points)
     cloud.colors = o3d.utility.Vector3dVector(scene_colors)
@@ -112,11 +218,28 @@ def open_guided_validator_view(scene_points_mm, query_indices, scene_colors, *, 
                "query_indices": np.asarray(query_indices).copy(), "closed": False,
                "fusion_vmax": fusion_vmax}
     display["geometry_windows"] = []
-    for number, title, edge_type in (
+    if projection_only:
+        projection_window = app.create_window("NEW VALIDATOR | 4. 2D plane projections", 1260, 480)
+        label, image = gui.Label("4. 2D projection | select a query"), gui.ImageWidget()
+        projection_window.add_child(label)
+        projection_window.add_child(image)
+        stage = {"window": projection_window, "number": 4, "edge_type": None, "panels": [], "closed": False}
+        def projection_layout(_):
+            rect = projection_window.content_rect
+            label.frame = gui.Rect(rect.x, rect.y, rect.width, 28)
+            image.frame = gui.Rect(rect.x, rect.y + 28, rect.width, max(1, rect.height - 28))
+        def projection_closed():
+            stage["closed"] = True
+            return True
+        projection_window.set_on_layout(projection_layout)
+        projection_window.set_on_close(projection_closed)
+        display.update(projection_image=image, projection_label=label, projection_stage=stage)
+        display["geometry_windows"].append(stage)
+    for number, title, edge_type in (() if projection_only else (
         (4, "Padded hull / ROI clipping / TLS / Before-After | S: save PNG", None),
         (5, "Plane-pair intersection edges", "plane_intersection"),
-        (6, "Edges -> overlap removal -> corner LS -> selected corner on raw cloud", None),
-    ):
+        (6, "Edges -> overlap removal -> endpoint Corners -> all candidates on raw cloud", None),
+    )):
         stage_window = app.create_window(f"VALIDATOR | {number}. {title}",
                                          1800 if number in (4, 6) else 1000,
                                          1000 if number in (4, 6) else 800)
@@ -182,6 +305,14 @@ def open_guided_validator_view(scene_points_mm, query_indices, scene_colors, *, 
 
     window.set_on_close(closed)
     return display
+
+
+def update_validator_projection_view(display, rgb):
+    stage = display["projection_stage"]
+    if not stage["closed"]:
+        display["projection_image"].update_image(o3d.geometry.Image(np.ascontiguousarray(rgb)))
+        display["projection_label"].text = "4. 2D UV projection | hull / edge / corner not computed"
+        stage["window"].post_redraw()
 
 
 def _pick_validator_points(widget, points, indices, pixel_x, pixel_y):
@@ -347,7 +478,7 @@ def _add_validator_corner_geometry(scene, result, *, edge_type=None, plane_id=No
         if not edge["valid"]:
             lines(f"unknown_edge_{edge['source_edge_id']}", [edge["start_mm"], edge["end_mm"]],
                   [[0, 1]], [.45, .45, .45], 1.)
-    selected = set(result["corner_edge_ids"]) if edge_type is None else set()
+    selected = {edge_id for corner in result["corners"] for edge_id in corner["edge_ids"]} if edge_type is None else set()
     for edge in result["edges"]:
         if edge_type is not None and edge["edge_type"] != edge_type:
             continue
@@ -363,19 +494,16 @@ def _add_validator_corner_geometry(scene, result, *, edge_type=None, plane_id=No
               color, 5. if edge["edge_id"] in selected else 3.)
     if edge_type is not None:
         return
-    for vertex in result["vertices"]:
-        chosen = vertex["vertex_id"] == result["selected_vertex_id"]
-        marker = o3d.geometry.TriangleMesh.create_sphere(radius=1.6 if chosen else .8)
-        marker.translate(vertex["position_mm"])
+    for index, corner in enumerate(result["corners"]):
+        marker = o3d.geometry.TriangleMesh.create_sphere(radius=1.6)
+        marker.translate(corner["position"])
         material = rendering.MaterialRecord()
-        color = ([.1, 1., .2] if vertex["valid"] else
-                 [1., .8, .1] if vertex["status"] == "UNKNOWN" else [1., .15, .15])
-        material.shader, material.base_color = "defaultUnlit", color + [1.]
-        scene.add_geometry(f"corner_vertex_{vertex['vertex_id']}", marker, material)
+        material.shader, material.base_color = "defaultUnlit", [.1, 1., .2, 1.]
+        scene.add_geometry(f"corner_candidate_{index}", marker, material)
 
 
 def _add_validator_graph_step(scene, result, step):
-    """Read one query's original edges, masks and LS results into a process panel."""
+    """Read one query's original edges, masks and endpoint Corners into a process panel."""
     rendering = o3d.visualization.rendering
     geometry_names = []
 
@@ -441,8 +569,9 @@ def _add_validator_graph_step(scene, result, step):
             lines(f"process_hull_{patch['plane_id']}",
                   [point for i in range(len(vertices))
                    for point in (vertices[i], vertices[(i + 1) % len(vertices)])], [.25, .25, .25], 1.)
-    selected = set(result["corner_edge_ids"])
-    displayed_edges = result["corner_edges"] if step == 4 else original if step == 1 else active
+    selected = {identifier for corner in result["corners"] for identifier in corner["edge_ids"]}
+    displayed_edges = ([edge for edge in active if edge["edge_id"] in selected] if step == 4
+                       else original if step == 1 else active)
     for edge in displayed_edges:
         shared = edge["edge_type"] == "plane_intersection"
         color = ([0., .9, 1.] if shared else
@@ -459,52 +588,21 @@ def _add_validator_graph_step(scene, result, step):
                       edge.get("masked_intervals_mm", ()), [1., .15, 1.], 4., dashed=True)
     if step not in (3, 4):
         return geometry_names
-    vertices = [vertex for vertex in result["vertices"]
-                if step != 4 or vertex["vertex_id"] == result["selected_vertex_id"]]
     by_id = {edge["edge_id"]: edge for edge in active}
-    for vertex in vertices:
-        position = vertex["position_mm"]
-        for edge_id in vertex["edge_ids"]:
-            edge = by_id[edge_id]
-            length = float(np.linalg.norm(edge["end_mm"] - edge["start_mm"]))
-            direction = (edge["end_mm"] - edge["start_mm"]) / length
-            parameter = float((position - edge["start_mm"]) @ direction)
-            extension = ((parameter, 0.) if parameter < -1e-8 else
-                         (length, parameter) if parameter > length + 1e-8 else None)
-            if extension is None:
-                continue
-            name = f"used_extension_v{vertex['vertex_id']}_e{edge_id}"
-            intervals(name, edge, [extension], [1., .8, .1], 2., dashed=True)
-            projected = edge["start_mm"] + parameter * direction
-            if np.linalg.norm(projected - position) > 1e-8:
-                lines(name + "_residual", [projected, position], [.65, .65, .65], 1.)
-    candidates = result.get("vertex_candidates", ()) if step == 3 else ()
-    if candidates:
-        cloud = o3d.geometry.PointCloud()
-        cloud.points = o3d.utility.Vector3dVector([item["position_mm"] for item in candidates])
-        cloud.paint_uniform_color([.85, .85, .85])
+    for index, corner in enumerate(result["corners"]):
+        position = corner["position"]
+        for identifier, side in corner["endpoint_ids"].items():
+            endpoint = by_id[identifier]["start_mm" if side == 0 else "end_mm"]
+            lines(f"endpoint_gap_c{index}_e{identifier}", [endpoint, position], [1., .8, .1], 2.)
+        marker = o3d.geometry.TriangleMesh.create_sphere(radius=.3)
+        marker.translate(position)
         material = rendering.MaterialRecord()
-        material.shader, material.point_size = "defaultUnlit", 5.
-        scene.add_geometry("pair_vertex_candidates", cloud, material)
-        geometry_names.append("pair_vertex_candidates")
-    for vertex in vertices:
-        chosen = vertex["vertex_id"] == result["selected_vertex_id"]
-        color = [.1, 1., .2] if vertex["valid"] else [1., .2, .2]
-        marker = o3d.geometry.TriangleMesh.create_sphere(radius=.3 if chosen else .25)
-        marker.translate(vertex["position_mm"])
-        material = rendering.MaterialRecord()
-        material.shader, material.base_color = "defaultUnlit", color + [1.]
-        scene.add_geometry(f"estimated_vertex_{vertex['vertex_id']}", marker, material)
-        geometry_names.append(f"estimated_vertex_{vertex['vertex_id']}")
-        # A wire halo keeps short extensions visible beside the corner marker.
-        points, indices = _wire_sphere(vertex["position_mm"], 1.6 if chosen else .8, 32)
-        lines(f"vertex_halo_{vertex['vertex_id']}",
-              [points[index] for pair in indices for index in pair], color, 1.)
-        if step == 3:
-            lines(f"ls_shift_{vertex['vertex_id']}",
-                  [point for member in vertex.get("member_positions_mm", ())
-                   if np.linalg.norm(member - vertex["position_mm"]) > 1e-8
-                   for point in (member, vertex["position_mm"])], [.7, .7, .7], 1.)
+        material.shader, material.base_color = "defaultUnlit", [.1, 1., .2, 1.]
+        name = f"corner_candidate_{index}"
+        scene.add_geometry(name, marker, material)
+        geometry_names.append(name)
+        points, indices = _wire_sphere(position, 1.6, 32)
+        lines(f"corner_halo_{index}", [points[i] for pair in indices for i in pair], [.1, 1., .2], 1.)
     return geometry_names
 
 
@@ -609,11 +707,11 @@ def _add_validator_roi_debug(widget, result, view, label_handles):
             for line in final:
                 label_handles.append(widget.add_3d_label(
                     (line["start_mm"] + line["end_mm"]) * .5,
-                    f"{line['id']} | TLS max error {line['tls_max_error_mm']:.3f} mm"))
+                    f"{line['id']} | TLS RMS error {line['tls_rms_error_mm']:.3f} mm"))
     if view.startswith("D-"):
-        for index, candidate in enumerate(snapshot["vertex_candidates"]):
+        for index, candidate in enumerate(snapshot["corners"]):
             marker = o3d.geometry.TriangleMesh.create_sphere(radius=.7, resolution=6)
-            marker.translate(candidate["position_mm"])
+            marker.translate(candidate["position"])
             material = rendering.MaterialRecord()
             material.shader, material.base_color = "defaultUnlit", [.9, .9, .9, 1.]
             scene.add_geometry(f"debug_corner_candidate_{index}", marker, material)
@@ -625,7 +723,7 @@ def _add_validator_roi_debug(widget, result, view, label_handles):
             f"Final lines: {sum(line['kept_in_graph'] for patch in debug for line in patch['lines'])} | "
             f"endpoints A/I: {sum(node['corner_enabled'] for node in endpoints.values())}/"
             f"{sum(not node['corner_enabled'] for node in endpoints.values())} | "
-            f"corner candidates: {len(snapshot['vertex_candidates'])}")
+            f"corner candidates: {len(snapshot['corners'])}")
 
 
 def save_guided_validator_roi_views(display):
@@ -713,7 +811,7 @@ def update_validator_geometry_view(display, result):
                     }[view]
                     label.text = f"{title} | query {result['query_index']}\n{counts}\n{legend}"
                     panel["png_line_errors"] = ("\n" + "\n".join(
-                        f"{line['id']}: TLS max error {line['tls_max_error_mm']:.3f} mm"
+                        f"{line['id']}: TLS RMS error {line['tls_rms_error_mm']:.3f} mm"
                         for patch in result["boundary_debug"] for line in patch["lines"] if line["kept_in_graph"])) if view == "C" else ""
                     if panel.get("query_index") != result["query_index"]:
                         query, radius = result["query_position_mm"], result["support_radius_mm"]
@@ -751,29 +849,27 @@ def update_validator_geometry_view(display, result):
                                       f"{criteria}\n"
                                       "Magenta dashed: removed | gray: kept | cyan: shared")
                     elif step == 3:
-                        label.text = (f"6-3. Extension / corner LS | {result['validation_status']}\n"
-                                      f"{len(result.get('vertex_candidates', ()))} candidates -> {len(result['vertices'])} vertices | yellow dashes: used extension\n"
-                                      "White: candidates | green: accepted | red: rejected | gray links: LS / residual")
+                        label.text = (f"6-3. Endpoint Corner integration | {result['validation_status']}\n"
+                                      f"{len(result['corners'])} unverified Corners | endpoint/merge radius {result['corner_radius_mm']:g} mm\n"
+                                      "Green: candidates | yellow: selected endpoint gaps | no refinement")
                     else:
                         background = (f"{panel['raw_point_count']} original raw points" if panel["raw_point_count"] else
                                       "original raw cloud unavailable")
-                        shared_ids = [edge["edge_id"] for edge in result["corner_edges"]
-                                      if edge["edge_type"] == "plane_intersection"]
-                        boundary_ids = [edge["edge_id"] for edge in result["corner_edges"]
-                                        if edge["edge_type"] == "boundary"]
-                        shared_label = (str(shared_ids) if shared_ids else
-                                        "none (boundary-only)" if result["selected_vertex_id"] is not None else
-                                        "none (no selected corner)")
-                        label.text = (f"6-4. Selected corner on original cloud | {result['validation_status']} | query {result['query_index']}\n"
-                                      f"Corner {result['selected_vertex_id']} | boundary {len(boundary_ids)}: {boundary_ids} | shared {len(shared_ids)}: {shared_label} | {background}\n"
-                                      "Gray: raw | green: corner / boundary | cyan: contributing shared edge | yellow dashes: extension")
+                        used = {identifier for corner in result["corners"] for identifier in corner["edge_ids"]}
+                        shared_ids = [edge["edge_id"] for edge in result["edges"]
+                                      if edge["edge_id"] in used and edge["edge_type"] == "plane_intersection"]
+                        boundary_ids = [edge["edge_id"] for edge in result["edges"]
+                                        if edge["edge_id"] in used and edge["edge_type"] == "boundary"]
+                        label.text = (f"6-4. All Corner candidates on original cloud | query {result['query_index']}\n"
+                                      f"{len(result['corners'])} Corners | boundary {boundary_ids} | shared {shared_ids} | {background}\n"
+                                      "Gray: raw | green: unverified corners / boundary | cyan: shared | yellow: endpoint gap")
                 if number == 6:
                     panel["overlay_geometry_names"] = _add_validator_graph_step(scene, result, panel["graph_step"])
                 else:
                     _add_validator_corner_geometry(scene, result, edge_type=edge_type, plane_id=plane_id)
                 query, radius = result["query_position_mm"], result["support_radius_mm"]
                 if number == 6:
-                    radius += result.get("vertex_endpoint_tolerance_mm", 0.)
+                    radius += result.get("corner_radius_mm", 0.)
                 if panel.get("query_index") != result["query_index"]:
                     bounds = o3d.geometry.AxisAlignedBoundingBox(query - radius, query + radius)
                     widget.setup_camera(60.0, bounds, query)
@@ -1284,6 +1380,8 @@ def dense_heatmap_colors(scores, valid_mask, *, vmax=1.0):
     return colors
 
 
+
+
 def pca_ratio_heatmap_colors(score_result, *, vmax=1.0):
     """Color the PCA ratio actually consumed by fusion.
 
@@ -1335,12 +1433,16 @@ def dense_heatmap_vmax(score_result, quantile=0.99):
     ced_shared = valid_quantile("ced_score", "ced_valid_mask")
     pca = valid_quantile("pca_ratio_saturated", "pca_valid_mask")
     fusion = valid_quantile("fusion_score", "fusion_valid_mask")
-    return {
+    result = {
         "ced_score": ced_shared,
         "bilateral_ced_score": ced_shared,
         "pca_ratio_saturated": pca,
         "fusion_score": fusion,
+        "fusion_score_raw": fusion,
     }
+    if score_result.get("fusion_mode") == "local_minimum":
+        result["local_minimum_score"] = valid_quantile("local_minimum_score", "local_minimum_valid_mask")
+    return result
 
 
 def corner_candidate_primitives(points_mm, score_result):
@@ -1390,6 +1492,65 @@ def corner_candidate_primitives(points_mm, score_result):
         "nms_radius_mm": float(extraction["nms_radius_mm"]),
         "candidate_count": int(extraction["candidate_count"]),
     }
+
+
+def fusion_rejection_primitives(points_mm, score_result):
+    """Color cached threshold/NMS/post-gate outcomes without rerunning a stage."""
+    points = np.asarray(points_mm, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all():
+        raise ValueError("points_mm must be finite with shape (N, 3)")
+    extraction = score_result["candidate_extraction"]
+    scores = np.asarray(score_result["fusion_score"], dtype=float)
+    valid = np.asarray(score_result["fusion_valid_mask"], dtype=bool)
+    if scores.shape != (len(points),) or valid.shape != scores.shape:
+        raise ValueError("Fusion score/validity must align with points_mm")
+    valid = valid & np.isfinite(scores)
+    eligible = np.asarray(extraction.get("eligible_score_mask",
+        valid & (scores > extraction["fusion_score_threshold"])), dtype=bool)
+    if eligible.shape != scores.shape:
+        raise ValueError("Fusion eligibility must align with points_mm")
+    indices = np.asarray(extraction.get("nms_candidate_indices", extraction["candidate_indices"]), dtype=np.int64)
+    if indices.ndim != 1 or np.any(indices < 0) or np.any(indices >= len(points)):
+        raise ValueError("NMS indices must be valid scene indices")
+    nms = np.zeros(len(points), dtype=bool)
+    nms[indices] = True
+    gate = extraction.get("post_nms_lambda1_gate")
+    passed, invalid = np.ones(len(indices), dtype=bool), np.zeros(len(indices), dtype=bool)
+    if gate is not None and gate["enabled"]:
+        passed = np.asarray(gate["passed_mask"], dtype=bool)
+        invalid = np.asarray(gate["invalid_mask"], dtype=bool)
+        if (passed.shape != indices.shape or invalid.shape != indices.shape
+                or not np.array_equal(indices, gate["nms_indices"])):
+            raise ValueError("Post-NMS gate masks must align with raw NMS indices")
+    ratio_failed, pca_invalid, gate_passed = (np.zeros(len(points), dtype=bool) for _ in range(3))
+    ratio_failed[indices] = ~passed & ~invalid
+    pca_invalid[indices] = invalid
+    gate_passed[indices] = passed
+    groups = (
+        ("invalid_score", ~valid, (.16, .16, .18)),
+        ("fusion_threshold", valid & ~eligible, (.10, .40, 1.)),
+        ("nms_suppressed", eligible & ~nms, (.40, .40, .42)),
+        ("lambda1_upper", ratio_failed, (1., .05, .75)),
+        ("invalid_weighted_pca", pca_invalid, (1., .55, .05)),
+        ("gates_passed", gate_passed, (.10, 1., .30)),
+    )
+    colors = np.empty((len(points), 3))
+    counts = {}
+    for name, mask, color in groups:
+        colors[mask] = color
+        counts[name] = int(np.count_nonzero(mask))
+    threshold = extraction["fusion_score_threshold"]
+    gate_text = (f"weighted lambda1/R_PCA² > {gate['threshold']:g}"
+                 if gate is not None and gate["enabled"] else "lambda1 gate OFF")
+    legend = (f"BLUE: Fusion <= {threshold:g} ({counts['fusion_threshold']}) | "
+              f"MAGENTA: {gate_text} ({counts['lambda1_upper']}) | "
+              f"ORANGE: invalid weighted PCA ({counts['invalid_weighted_pca']}) | "
+              f"GREEN: both gates passed, pre-Q10 ({counts['gates_passed']}) | "
+              f"GRAY: NMS suppressed ({counts['nms_suppressed']}) | "
+              f"DARK: invalid Fusion ({counts['invalid_score']})")
+    return {"indices": indices.copy(), "positions_mm": points[indices].copy(),
+            "marker_colors": colors[indices].copy(), "point_colors": colors,
+            "counts": counts, "legend": legend}
 
 
 def _wire_sphere(center, radius, samples):
@@ -1534,12 +1695,14 @@ def cornervins_scene_roi_primitives(
 
 def _camera_signature(parameters):
     """Return the numeric camera state used to detect the manipulated view."""
-    intrinsic = np.asarray(
-        parameters.intrinsic.intrinsic_matrix,
-        dtype=np.float64,
-    ).reshape(-1)
-    extrinsic = np.asarray(parameters.extrinsic, dtype=np.float64).reshape(-1)
-    return np.concatenate((intrinsic, extrinsic))
+    intrinsic = np.asarray(parameters.intrinsic.intrinsic_matrix, dtype=np.float64)
+    extrinsic = np.asarray(parameters.extrinsic, dtype=np.float64)
+    if (intrinsic.shape != (3, 3) or extrinsic.shape != (4, 4)
+            or not np.isfinite(intrinsic).all() or not np.isfinite(extrinsic).all()
+            or intrinsic[0, 0] <= 0 or intrinsic[1, 1] <= 0
+            or abs(np.linalg.det(extrinsic[:3, :3])) <= 1e-12):
+        raise ValueError("Invalid Open3D camera matrices")
+    return np.concatenate((intrinsic.ravel(), extrinsic.ravel()))
 
 
 def synchronize_dense_camera_views(windows, active, previous_signatures):
@@ -1559,10 +1722,11 @@ def synchronize_dense_camera_views(windows, active, previous_signatures):
     for index, vis in enumerate(windows):
         if not active[index]:
             continue
-        parameters[index] = (
-            vis.get_view_control().convert_to_pinhole_camera_parameters()
-        )
-        signatures[index] = _camera_signature(parameters[index])
+        try:
+            parameters[index] = vis.get_view_control().convert_to_pinhole_camera_parameters()
+            signatures[index] = _camera_signature(parameters[index])
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            continue
 
     if previous_signatures is None:
         return signatures, None
@@ -1589,33 +1753,35 @@ def synchronize_dense_camera_views(windows, active, previous_signatures):
     for index, vis in enumerate(windows):
         if not active[index] or index == master_index:
             continue
-        vis.get_view_control().convert_from_pinhole_camera_parameters(
-            master_parameters,
-            allow_arbitrary=True,
-        )
-        signatures[index] = master_signature.copy()
+        if signatures[index] is None:
+            continue
+        try:
+            restored = vis.get_view_control().convert_from_pinhole_camera_parameters(master_parameters, allow_arbitrary=True)
+            if restored is not False:
+                signatures[index] = master_signature.copy()
+        except (TypeError, ValueError, RuntimeError):
+            continue
     return signatures, master_index
 
 
-def dense_heatmap_panels():
-    """Return the seven synchronized whole-cloud panel specifications."""
+def dense_heatmap_panels(bilateral_mode="ced", fusion_mode="pca_ratio"):
+    """Return six synchronized panels for the selected bilateral stage."""
+    bilateral_panel = ("Bilateral CED", "bilateral_ced_score", "bilateral_valid_mask", "CED range")
+    if bilateral_mode == "fusion":
+        bilateral_panel = ("Raw Fusion (before bilateral)", "fusion_score_raw", "fusion_valid_mask", "Fusion Q99")
+    elif bilateral_mode == "off":
+        bilateral_panel = ("Original CED (bilateral OFF)", "bilateral_ced_score", "ced_valid_mask", "CED range")
+    factor_panel = ("PCA Ratio Used for Fusion", "pca_ratio_saturated", "pca_valid_mask", "PCA range")
+    if fusion_mode == "local_minimum":
+        factor_panel = ("Local lambda1 Minimum (Min-Max)", "local_minimum_score",
+                        "local_minimum_valid_mask", "Local minimum range")
     return (
         ("Original Point Cloud", None, None, "geometry"),
         ("Point-wise CED", "ced_score", "ced_valid_mask", "CED range"),
+        bilateral_panel,
+        factor_panel,
         (
-            "Bilateral CED",
-            "bilateral_ced_score",
-            "bilateral_valid_mask",
-            "CED range",
-        ),
-        (
-            "PCA Ratio Used for Fusion",
-            "pca_ratio_saturated",
-            "pca_valid_mask",
-            "PCA range",
-        ),
-        (
-            "Final Fusion Score",
+            "Bilateral Fusion Score" if bilateral_mode == "fusion" else "Final Fusion Score",
             "fusion_score",
             "fusion_valid_mask",
             "Fusion Q99",
@@ -1637,12 +1803,14 @@ def show_dense_score_heatmaps(
     rgb_points_mm=None,
     rgb_colors_rgb=None,
     only_nms=False,
+    lite_debug_callback=None,
 ):
     """Show score fields and optional registered RGB in synchronized views."""
     points = np.asarray(points_mm, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all():
         raise ValueError("points_mm must be finite with shape (N, 3)")
-    if only_nms:
+    lite = score_result.get("lite_validator")
+    if only_nms and lite is None:
         rgb_points_mm = rgb_colors_rgb = None
     if (rgb_points_mm is None) != (rgb_colors_rgb is None):
         raise ValueError("rgb_points_mm and rgb_colors_rgb must be provided together")
@@ -1669,10 +1837,25 @@ def show_dense_score_heatmaps(
             raise ValueError("rgb_colors_rgb values must be in [0, 1] or [0, 255]")
     display_vmax = dense_heatmap_vmax(score_result, quantile=0.99)
     candidate_debug = corner_candidate_primitives(points, score_result)
-    panels = dense_heatmap_panels()
+    rejection_debug = fusion_rejection_primitives(points, score_result)
+    print("[NMS GATE COLORS] " + rejection_debug["legend"], flush=True)
+    panels = dense_heatmap_panels(score_result.get("bilateral_mode", "ced"),
+                                  score_result.get("fusion_mode", "pca_ratio"))
     panel_indices = (5,) if only_nms else range(len(panels))
     windows = []
-    panel_count = len(panel_indices) + int(rgb_points is not None)
+    final_rgb = lite is not None and rgb_points is not None
+    q10 = lite is not None and lite.get("kind") == "q10_antipodal"
+    cone = lite is not None and lite.get("kind") == "q10_antipodal"
+    interactive_lite = lite is not None and (lite["debug"] or cone)
+    result_view_state = {}
+    inspector = None
+    pending_record = None
+
+    def inspect_candidate(record):
+        nonlocal pending_record
+        pending_record = record
+
+    panel_count = len(panel_indices) + int(rgb_points is not None and not final_rgb)
 
     def window_layout(index):
         if panel_count == 4:
@@ -1703,17 +1886,18 @@ def show_dense_score_heatmaps(
             "top": 45,
         }
 
-    def build_candidate_markers():
-        if not len(candidate_debug["indices"]):
+    def build_candidate_markers(debug=candidate_debug):
+        if not len(debug["indices"]):
             return None
         markers = o3d.geometry.TriangleMesh()
-        for position in candidate_debug["positions_mm"]:
+        colors = debug.get("marker_colors", np.tile([1.0, 0.05, 0.03], (len(debug["indices"]), 1)))
+        for position, color in zip(debug["positions_mm"], colors):
             marker = o3d.geometry.TriangleMesh.create_sphere(
                 radius=max(0.4, float(marker_radius_mm)),
                 resolution=6,
             )
             marker.translate(position)
-            marker.paint_uniform_color([1.0, 0.05, 0.03])
+            marker.paint_uniform_color(color)
             markers += marker
         markers.compute_vertex_normals()
         return markers
@@ -1749,7 +1933,7 @@ def show_dense_score_heatmaps(
                f"Turbo 0..{scale_text} ({range_label}) | ")
             + f"valid={np.count_nonzero(valid)}/{len(points)} | data={data_range}"
         )
-        if panel_index == 3:
+        if key == "pca_ratio_saturated":
             tau = score_result["pca_ratio_saturation_tau"]
             ratio_mode = "raw identity" if tau is None else f"saturated tau={tau}"
             title += (
@@ -1757,16 +1941,15 @@ def show_dense_score_heatmaps(
                 f"invalid={np.count_nonzero(score_result['invalid_support_mask'])} "
                 f"mode={ratio_mode} "
             )
+        elif key == "local_minimum_score":
+            title += f" | Normal PCA lambda1 | R={score_result['pca_radius_mm']:g} mm | tau={score_result['local_minimum_tau']:g}"
         if panel_index == 5:
-            extraction = score_result["candidate_extraction"]
-            title += (
-                f" | {extraction.get('fusion_threshold_mode', 'fixed')}:"
-                f"score>{extraction['fusion_score_threshold']:.4g} "
-                f"| NMS={candidate_debug['candidate_count']} | M: markers ON/OFF"
-            )
+            title = "6 NMS Corner Candidates | gate reasons | " + rejection_debug["legend"] + " | M: markers ON/OFF"
+            if interactive_lite:
+                title += " | Left click green marker: Lite debug"
         vis = (
             o3d.visualization.VisualizerWithKeyCallback()
-            if panel_index == 5
+            if panel_index == 5 or cone
             else o3d.visualization.Visualizer()
         )
         layout = window_layout(window_index)
@@ -1777,14 +1960,19 @@ def show_dense_score_heatmaps(
             for existing in windows:
                 existing.destroy_window()
             raise RuntimeError("Failed to create dense heatmap windows")
+        if cone:
+            from .query_ui import bind_safe_camera_keys
+            bind_safe_camera_keys(vis)
         cloud = o3d.geometry.PointCloud()
         cloud.points = o3d.utility.Vector3dVector(points)
         ratio_colors = None
-        if key is None:
+        if panel_index == 5:
+            cloud.colors = o3d.utility.Vector3dVector(rejection_debug["point_colors"])
+        elif key is None:
             cloud.colors = o3d.utility.Vector3dVector(
                 np.full((len(points), 3), 0.72, dtype=np.float64)
             )
-        elif panel_index == 3:
+        elif key == "pca_ratio_saturated":
             ratio_colors = pca_ratio_heatmap_colors(
                 score_result,
                 vmax=display_vmax[key],
@@ -1799,7 +1987,7 @@ def show_dense_score_heatmaps(
             )
         vis.add_geometry(cloud)
         if panel_index == 5:
-            markers = build_candidate_markers()
+            markers = build_candidate_markers(rejection_debug)
             if markers is not None:
                 vis.add_geometry(markers)
                 marker_state = {"visible": True}
@@ -1829,19 +2017,22 @@ def show_dense_score_heatmaps(
                     return False
 
                 vis.register_key_callback(ord("M"), toggle_markers)
+            if interactive_lite and lite_debug_callback is not None:
+                from .query_ui import bind_lite_validator_click
+                bind_lite_validator_click(vis, lite["records"], inspect_candidate)
         option = vis.get_render_option()
         if option is not None:
             option.background_color = np.array([0.025, 0.025, 0.025])
             option.point_size = 4.0
         windows.append(vis)
 
-    if rgb_points is not None:
+    if rgb_points is not None and not final_rgb:
         rgb_panel_index = len(panels)
         title = (
             "RealSense RGB + corner candidates (auxiliary, not a heatmap) | "
             f"points={len(rgb_points)} | candidates={len(candidate_debug['indices'])}"
         )
-        vis = o3d.visualization.Visualizer()
+        vis = o3d.visualization.VisualizerWithKeyCallback() if cone else o3d.visualization.Visualizer()
         if not vis.create_window(
             window_name=title,
             **window_layout(rgb_panel_index),
@@ -1849,6 +2040,9 @@ def show_dense_score_heatmaps(
             for existing in windows:
                 existing.destroy_window()
             raise RuntimeError("Failed to create RealSense RGB candidate window")
+        if cone:
+            from .query_ui import bind_safe_camera_keys
+            bind_safe_camera_keys(vis)
         cloud = o3d.geometry.PointCloud()
         cloud.points = o3d.utility.Vector3dVector(rgb_points)
         cloud.colors = o3d.utility.Vector3dVector(rgb_colors)
@@ -1862,28 +2056,52 @@ def show_dense_score_heatmaps(
             option.point_size = 3.0
         windows.append(vis)
 
-    active = [True] * len(windows)
-    camera_signatures, _master = synchronize_dense_camera_views(
-        windows,
-        active,
-        None,
-    )
-    while any(active):
-        for index, vis in enumerate(windows):
-            if active[index]:
-                active[index] = bool(vis.poll_events())
-        if not any(active):
-            break
-        camera_signatures, _master = synchronize_dense_camera_views(
-            windows,
-            active,
-            camera_signatures,
-        )
-        for index, vis in enumerate(windows):
-            if active[index]:
-                vis.update_renderer()
-    for vis in windows:
-        vis.destroy_window()
+    try:
+        if lite is not None:
+            if q10:
+                converged_view = open_q10_convergence_results(points, score_result, marker_radius_mm)
+                windows.append(converged_view)
+                if interactive_lite and lite_debug_callback is not None:
+                    from .query_ui import bind_lite_validator_click
+                    bind_lite_validator_click(converged_view, lite["records"], inspect_candidate,
+                                               position_key="refined_position_mm")
+            view_options = {"state": result_view_state} if cone else {}
+            if final_rgb:
+                view_options.update(rgb_points_mm=rgb_points, rgb_colors_rgb=rgb_colors)
+            windows.append(open_lite_validator_results(points, score_result, marker_radius_mm, **view_options))
+            if interactive_lite and lite_debug_callback is not None:
+                from .query_ui import bind_lite_validator_click
+                bind_lite_validator_click(windows[-1], lite["records"] if q10 and not final_rgb else
+                    [r for r in lite["records"] if r["status"] == "ACCEPT"], inspect_candidate,
+                    **({"position_key": "refined_position_mm"} if q10 else {}))
+                print("[LITE DEBUG] Ready: left-click an NMS marker in the NMS or Lite Validator window.", flush=True)
+        active = [True] * len(windows)
+        camera_signatures, _master = synchronize_dense_camera_views(windows, active, None)
+        while any(active):
+            for index, vis in enumerate(windows):
+                if active[index]:
+                    active[index] = bool(vis.poll_events())
+            # Construct/poll Tk after GLFW has finished dispatching mouse callbacks.
+            if pending_record is not None:
+                if inspector is not None:
+                    inspector["close"]()
+                inspector = lite_debug_callback(pending_record)
+                if cone and active[-1]:
+                    refresh_lite_markers(result_view_state, lite, marker_radius_mm)
+                pending_record = None
+            if inspector is not None and not inspector["poll"]():
+                inspector = None
+            if not any(active):
+                break
+            camera_signatures, _master = synchronize_dense_camera_views(windows, active, camera_signatures)
+            for index, vis in enumerate(windows):
+                if active[index]:
+                    vis.update_renderer()
+    finally:
+        if inspector is not None:
+            inspector["close"]()
+        for vis in windows:
+            vis.destroy_window()
 
 
 def open_cornervins_plane_views(
@@ -2151,9 +2369,9 @@ def open_total_result_views(points_mm, raw_points_mm, result, *, validator_voxel
     background = o3d.geometry.PointCloud()
     background.points = o3d.utility.Vector3dVector(raw)
     background.paint_uniform_color([.38, .38, .38])
-    meshes = {name: o3d.geometry.TriangleMesh() for name in ("boundary", "plane_intersection", "extension", "residual")}
+    meshes = {name: o3d.geometry.TriangleMesh() for name in ("boundary", "plane_intersection", "endpoint_gap")}
     colours = {"boundary": [.1, 1., .2], "plane_intersection": [0., .9, 1.],
-               "extension": [1., .8, .1], "residual": [.65, .65, .65]}
+               "endpoint_gap": [1., .8, .1]}
     edge_radius = max(.5, .15 * validator_voxel_mm)
     for edge in validation["final_edges"]:
         delta = edge["end_mm"] - edge["start_mm"]
@@ -2167,23 +2385,10 @@ def open_total_result_views(points_mm, raw_points_mm, result, *, validator_voxel
                                     edge_radius, colours[edge["edge_type"]])
             if bar is not None:
                 meshes[edge["edge_type"]] += bar
-        position = edge["corner_position_mm"]
-        parameter = float((position - edge["start_mm"]) @ direction)
-        extension = ((parameter, 0.) if parameter < -1e-8 else
-                     (length, parameter) if parameter > length + 1e-8 else None)
-        if extension is not None:
-            low, high = extension
-            dash = min(3., (high - low) / 5.)
-            for start in np.arange(low, high, 2 * dash):
-                bar = _segment_cylinder(edge["start_mm"] + start * direction,
-                                        edge["start_mm"] + min(start + dash, high) * direction,
-                                        .6 * edge_radius, colours["extension"])
-                if bar is not None:
-                    meshes["extension"] += bar
-            foot = edge["start_mm"] + parameter * direction
-            bar = _segment_cylinder(foot, position, .3 * edge_radius, colours["residual"])
-            if bar is not None:
-                meshes["residual"] += bar
+        endpoint = edge["start_mm" if edge["endpoint_id"] == 0 else "end_mm"]
+        bar = _segment_cylinder(endpoint, edge["corner_position_mm"], .6 * edge_radius, colours["endpoint_gap"])
+        if bar is not None:
+            meshes["endpoint_gap"] += bar
     corners = o3d.geometry.TriangleMesh()
     for corner in validation["final_corners"]:
         marker = o3d.geometry.TriangleMesh.create_sphere(radius=max(2., .8 * validator_voxel_mm), resolution=10)
@@ -2196,7 +2401,7 @@ def open_total_result_views(points_mm, raw_points_mm, result, *, validator_voxel
     titles = (
         f"TOTAL | 1. Detector Fusion heatmap 0..{upper:.4g} (Q99) | NMS={diagnostics['candidate_count']} | R: recapture Q/Esc: quit",
         f"TOTAL | 2. Final corners={len(validation['final_corners'])} edges={len(validation['final_edges'])} | "
-        "gray=raw red=corner green=boundary cyan=shared yellow=extension | R: recapture Q/Esc: quit",
+        "gray=raw red=unverified corner green=boundary cyan=shared yellow=endpoint gap | R: recapture Q/Esc: quit",
     )
     contents = ((heatmap, [seeds]), (background, [*meshes.values(), corners]))
     windows = []
@@ -2505,11 +2710,14 @@ __all__ = [
     "pca_ratio_heatmap_colors",
     "dense_heatmap_vmax",
     "corner_candidate_primitives",
+    "fusion_rejection_primitives",
     "cornervins_ahc_primitives",
     "cornervins_scene_roi_primitives",
     "synchronize_dense_camera_views",
     "dense_heatmap_panels",
     "show_dense_score_heatmaps",
+    "open_lite_validator_results", "pick_lite_validator_candidate",
+    "refresh_lite_markers",
     "open_total_result_views",
     "open_cornervins_plane_views",
     "plane_edge_refiner_primitives",
@@ -2517,3 +2725,307 @@ __all__ = [
     "open_plane_edge_graph_view",
     "open_plane_edge_refiner_view",
 ]
+
+
+def _lite_record_color(record):
+    return {"ACCEPT": [.1, .9, .25], "REJECT": [1., .08, .12]}.get(record["status"], [1., .65, .05])
+
+
+def _lite_marker_mesh(result, marker_radius_mm, *, accepted_only=False):
+    markers = o3d.geometry.TriangleMesh()
+    for record in result["records"]:
+        if accepted_only and record["status"] != "ACCEPT":
+            continue
+        marker = o3d.geometry.TriangleMesh.create_sphere(radius=max(.4, marker_radius_mm), resolution=6)
+        marker.translate(record["refined_position_mm"])
+        marker.paint_uniform_color([.1, .9, .25] if accepted_only else _lite_record_color(record))
+        markers += marker
+    if not markers.is_empty():
+        markers.compute_vertex_normals()
+    return markers
+
+
+def refresh_lite_markers(state, result, marker_radius_mm):
+    """Refresh only display geometry after an explicit numerical click evaluation."""
+    vis = state["view"]
+    vis.remove_geometry(state["markers"], reset_bounding_box=False)
+    state["markers"] = _lite_marker_mesh(result, marker_radius_mm, accepted_only=state.get("accepted_only", False))
+    if not state["markers"].is_empty():
+        vis.add_geometry(state["markers"], reset_bounding_box=False)
+    vis.update_renderer()
+
+
+def open_lite_validator_results(points_mm, score_result, marker_radius_mm, *, state=None,
+                                rgb_points_mm=None, rgb_colors_rgb=None):
+    """One extra full-scene window; existing NMS panels and positions are untouched."""
+    result = score_result["lite_validator"]
+    final_rgb = rgb_points_mm is not None
+    vis = o3d.visualization.VisualizerWithKeyCallback()
+    title = (f"3 Final CC + antipodal | green PASS={result['accept_count']} / red REJECT={result['reject_count']} "
+             f"/ amber UNKNOWN={result['indeterminate_count']} | click any marker")
+    if final_rgb:
+        title = (f"Final RealSense RGB point cloud | green PASS corners: {result['accept_count']} "
+                 f"/ {result['candidate_count']} | click: cached debug")
+    if not vis.create_window(window_name=title, width=650, height=500, left=640, top=45):
+        raise RuntimeError("Failed to create Lite Validator result window")
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(rgb_points_mm if final_rgb else points_mm)
+    cloud.colors = o3d.utility.Vector3dVector(rgb_colors_rgb if final_rgb else dense_heatmap_colors(
+        score_result["fusion_score"], score_result["fusion_valid_mask"],
+        vmax=dense_heatmap_vmax(score_result)["fusion_score"]))
+    vis.add_geometry(cloud)
+    markers = _lite_marker_mesh(result, marker_radius_mm, accepted_only=final_rgb)
+    if not markers.is_empty():
+        vis.add_geometry(markers, reset_bounding_box=False)
+    if state is not None:
+        state.update(view=vis, markers=markers, accepted_only=final_rgb)
+    option = vis.get_render_option()
+    option.background_color, option.point_size = np.array([.025, .025, .025]), 4.
+    return vis
+
+
+def open_q10_convergence_results(points_mm, score_result, marker_radius_mm):
+    """Intermediate positions in orange; final acceptance has its own window."""
+    result = score_result["lite_validator"]
+    vis = o3d.visualization.VisualizerWithKeyCallback()
+    title = ("2 Q10 convergence | orange: refined positions" if result.get("refine_enabled", True) else
+             "2 Q10 refine OFF | orange: original NMS positions")
+    if not vis.create_window(window_name=title + " | click: path + MaxGap",
+                             width=650, height=500, left=15, top=560):
+        raise RuntimeError("Failed to create Q10 convergence view")
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(points_mm)
+    cloud.paint_uniform_color([.45, .48, .52])
+    vis.add_geometry(cloud)
+    markers = o3d.geometry.TriangleMesh()
+    for record in result["records"]:
+        marker = o3d.geometry.TriangleMesh.create_sphere(radius=max(.4, marker_radius_mm), resolution=6)
+        marker.translate(record["refined_position_mm"])
+        marker.paint_uniform_color([1., .65, .05])
+        markers += marker
+    if not markers.is_empty():
+        markers.compute_vertex_normals()
+        vis.add_geometry(markers, reset_bounding_box=False)
+    option = vis.get_render_option()
+    option.background_color, option.point_size = np.array([.025, .025, .025]), 4.
+    return vis
+
+
+def q10_debug_voxel_primitives(record, step):
+    """One sample per analysis ID, colored by all cached plane memberships."""
+    all_ids = np.r_[record["step_analysis_indices"][step], record["roi_analysis_indices"]]
+    all_points = np.vstack((record["step_points_mm"][step], record["roi_analysis_points_mm"]))
+    ids, first = np.unique(all_ids, return_index=True)
+    points = all_points[first].copy()
+    classes = np.zeros(len(ids), dtype=np.int8)
+    colors = np.tile([.2, .45, .85], (len(ids), 1))
+    analysis = record.get("spherical_planes")
+    planes = analysis["planes"] if analysis is not None else ()
+    memberships = np.zeros((len(ids), len(planes)), dtype=bool)
+    retained = np.zeros_like(memberships)
+    vector_ids = np.asarray(record.get("vector_analysis_indices", []), dtype=np.int64)
+    if len(vector_ids):
+        rows = np.searchsorted(ids, vector_ids)
+        if np.any(rows >= len(ids)) or not np.array_equal(ids[rows], vector_ids):
+            raise ValueError("Scored voxel IDs must belong to the displayed analysis support")
+        classes[rows] = 1
+        colors[rows] = [.55, .55, .60]
+        validation = record.get("plane_antipodal")
+        tests = {test["plane_index"]: test for test in validation["tests"]} if validation else {}
+        for index, plane in enumerate(planes):
+            mask = np.asarray(plane["inlier_mask"], dtype=bool)
+            if mask.shape != vector_ids.shape:
+                raise ValueError("Plane membership masks must align with stored analysis IDs")
+            members = rows[mask]
+            memberships[members, index] = True
+            test = tests.get(index)
+            keep = np.asarray(test["kept_mask"], dtype=bool) if test is not None else np.ones(len(members), dtype=bool)
+            if keep.shape != members.shape:
+                raise ValueError("Kept angular masks must align with the plane's stored members")
+            retained[members[keep], index] = True
+            colors[members] = _Q10_PLANE_COLORS[index]
+        member_count = memberships.sum(axis=1)
+        colors[member_count > 1] = [1., 1., 1.]
+        kept = retained.any(axis=1)
+        discarded = (member_count > 0) & ~kept
+        colors[discarded] *= .3
+        classes[kept], classes[discarded] = 2, 3
+    return {"analysis_indices": ids, "points_mm": points, "point_colors": colors,
+            "plane_memberships": memberships, "retained_memberships": retained,
+            "point_classes": classes, "scored_mask": classes > 0,
+            "retained_count": int(np.count_nonzero(classes == 2)),
+            "discarded_count": int(np.count_nonzero(classes == 3))}
+
+
+def q10_direction_primitives(record, step):
+    """Read the cached selected axis; display a radius-long arrow in world mm."""
+    axis = np.asarray(record["trace"]["mean_axes"][step], dtype=float)
+    if not np.isfinite(axis).all():
+        return None
+    origin = record["trace"]["positions_mm"][step].copy()
+    return {"origin_mm": origin, "direction": axis.copy(),
+            "tip_mm": origin + record["radius_mm"] * axis,
+            "mode": record.get("direction_mode", "unit_mean")}
+
+
+def q10_spherical_plane_primitives(record):
+    """Display-only circles, cached kept arcs and per-plane projected directions."""
+    from ..spherical_antipodal import _sphere_plane_basis
+    analysis = record.get("spherical_planes")
+    if analysis is None:
+        return []
+    validation = record.get("plane_antipodal")
+    tests = {test["plane_index"]: test for test in validation["tests"]} if validation else {}
+    phi = np.linspace(0., 2*np.pi, 145)
+    planes = []
+    for index, plane in enumerate(analysis["planes"]):
+        u, v = _sphere_plane_basis(plane["normal"])
+        test = tests.get(index)
+        arc = np.empty((0, 3))
+        colors = np.tile(_Q10_PLANE_COLORS[index], (len(plane["angles_deg"]), 1))
+        if test is not None:
+            colors[~test["kept_mask"]] *= .3
+            if test["arc_start_deg"] is not None:
+                angles = np.radians(np.linspace(test["arc_start_deg"],
+                    test["arc_start_deg"] + test["observed_span_deg"],
+                    max(2, int(np.ceil(test["observed_span_deg"])) + 1)))
+                arc = np.cos(angles)[:, None]*u + np.sin(angles)[:, None]*v
+        planes.append({"plane_index": index, "color": _Q10_PLANE_COLORS[index].copy(),
+                       "circle": 1.08 * (np.cos(phi)[:, None]*u + np.sin(phi)[:, None]*v),
+                       "projected_points": (1.11 + .025*index) * plane["projected_directions"],
+                       "projected_colors": colors, "kept_arc": arc,
+                       "angles_deg": plane["angles_deg"].copy(),
+                       "residual_rms_deg": plane["residual_rms_deg"],
+                       "newly_explained_count": plane["newly_explained_count"],
+                       "test": test})
+    return planes
+
+
+def open_q10_debug_view(record):
+    """Native Q10 path and each cached plane's cleaned angular support arc."""
+    from .query_ui import bind_safe_camera_keys
+    vis = o3d.visualization.VisualizerWithKeyCallback()
+    if not vis.create_window(window_name=f"Q10 NMS {record['point_index']} | voxel {record['voxel_mm']:g} mm "
+                            f"| refine {'ON' if record.get('refine_enabled', True) else 'OFF'} "
+                            f"| cyan arrow: Q10 {record.get('direction_mode', 'unit_mean')} "
+                            "| P1 orange / P2 green / P3 purple | white overlap | dim discarded | Left/Right: step",
+                             width=1050, height=760, left=35, top=65):
+        raise RuntimeError("Cannot open Q10 path debug view")
+    bind_safe_camera_keys(vis)
+    closed, geometries = False, []
+    step = len(record["trace"]["positions_mm"]) - 1
+
+    def cloud(points, colors):
+        result = o3d.geometry.PointCloud()
+        result.points = o3d.utility.Vector3dVector(points)
+        result.colors = o3d.utility.Vector3dVector(colors)
+        return result
+
+    def line(points, pairs, color):
+        result = o3d.geometry.LineSet()
+        result.points = o3d.utility.Vector3dVector(points)
+        result.lines = o3d.utility.Vector2iVector(pairs)
+        result.paint_uniform_color(color)
+        return result
+
+    def set_step(value):
+        nonlocal step, geometries
+        step = int(np.clip(value, 0, len(record["trace"]["positions_mm"]) - 1))
+        for geometry in geometries:
+            vis.remove_geometry(geometry, reset_bounding_box=False)
+        data = q10_debug_voxel_primitives(record, step)
+        origin = record["trace"]["positions_mm"][step]
+        radius = record["radius_mm"]
+        geometries = [cloud(data["points_mm"], data["point_colors"])]
+        direction = q10_direction_primitives(record, step)
+        if direction is not None:
+            u, v, d = make_tangent_basis(direction["direction"])
+            arrow = o3d.geometry.TriangleMesh.create_arrow(
+                cylinder_radius=.018 * radius, cone_radius=.05 * radius,
+                cylinder_height=.78 * radius, cone_height=.22 * radius, resolution=16)
+            arrow.rotate(np.column_stack((u, v, d)), center=np.zeros(3))
+            arrow.translate(direction["origin_mm"])
+            arrow.paint_uniform_color([.05, 1., 1.])
+            arrow.compute_vertex_normals()
+            geometries.append(arrow)
+        path = np.vstack((record["position"], record["trace"]["positions_mm"]))
+        geometries.append(line(path, [(i, i+1) for i in range(len(path)-1)], [.95, .95, .95]))
+        for position, color in ((record["position"], [1., .05, .05]), (origin, [1., .65, .05]),
+                                 (record["refined_position_mm"], _lite_record_color(record))):
+            marker = o3d.geometry.TriangleMesh.create_sphere(radius=max(.35, radius * .025), resolution=8)
+            marker.translate(position)
+            marker.paint_uniform_color(color)
+            marker.compute_vertex_normals()
+            geometries.append(marker)
+        def cap(center, axis, cutoff, color, scale):
+            if not np.isfinite(axis).all() or not np.isfinite(cutoff):
+                return
+            u, v, d = make_tangent_basis(axis)
+            phi = np.linspace(0, 2*np.pi, 73)
+            rim = center + scale * (cutoff * d + np.sqrt(max(0., 1-cutoff*cutoff)) *
+                                   (np.cos(phi)[:, None]*u + np.sin(phi)[:, None]*v))
+            vertices = np.vstack((center, rim))
+            pairs = [(i, i+1) for i in range(1, len(vertices)-1)] + [(0, i) for i in range(1, len(vertices), 12)]
+            geometries.append(line(vertices, pairs, color))
+        cap(origin, record["trace"]["mean_axes"][step], record["trace"]["q10_values"][step], [.05, .85, .85], radius)
+        for plane in q10_spherical_plane_primitives(record):
+            center = record["refined_position_mm"]
+            arc = center + .8*radius*plane["kept_arc"]
+            if len(arc):
+                geometries.append(line(arc, [(i, i+1) for i in range(len(arc)-1)], plane["color"]))
+        for geometry in geometries:
+            vis.add_geometry(geometry, reset_bounding_box=False)
+        vis.update_renderer()
+    try:
+        set_step(step)
+        vis.reset_view_point(True)
+        direction = record["trace"]["mean_axes"][-1]
+        if np.isfinite(direction).all():
+            u, v, d = make_tangent_basis(direction)
+            control = vis.get_view_control()
+            control.set_lookat(.5 * (record["position"] + record["refined_position_mm"]))
+            control.set_front(normalize(1.2 * u + .8 * v + 1.5 * d))
+            control.set_up(v)
+            control.set_zoom(.7)
+        vis.get_render_option().background_color = np.array([.025, .025, .025])
+        vis.get_render_option().point_size = 5.
+        vis.register_key_callback(263, lambda _v: (set_step(step-1), False)[1])
+        vis.register_key_callback(262, lambda _v: (set_step(step+1), False)[1])
+    except Exception:
+        vis.destroy_window()
+        raise
+
+    def close():
+        nonlocal closed
+        if not closed:
+            closed = True
+            vis.destroy_window()
+
+    def poll():
+        if closed:
+            return False
+        if not vis.poll_events():
+            close()
+            return False
+        vis.update_renderer()
+        return True
+    return {"poll": poll, "close": close, "set_step": set_step}
+
+
+def pick_lite_validator_candidate(vis, records, pixel_x, pixel_y, radius_px=14., *, position_key="position"):
+    """Project unchanged candidate positions using the existing NMS-view camera."""
+    if not records:
+        return None
+    camera = vis.get_view_control().convert_to_pinhole_camera_parameters()
+    positions = np.asarray([record[position_key] for record in records])
+    xyz = np.column_stack((positions, np.ones(len(positions)))) @ np.asarray(camera.extrinsic).T
+    projected = xyz[:, :3] @ np.asarray(camera.intrinsic.intrinsic_matrix).T
+    valid = np.isfinite(projected).all(axis=1) & (xyz[:, 2] > 1e-10)
+    pixels = np.full((len(records), 2), np.inf)
+    pixels[valid] = projected[valid, :2] / projected[valid, 2:3]
+    distance2 = np.sum((pixels - [pixel_x, pixel_y]) ** 2, axis=1)
+    choices = np.flatnonzero(valid & (distance2 <= radius_px ** 2))
+    if not len(choices):
+        return None
+    index = min(choices, key=lambda i: (distance2[i], xyz[i, 2], i))
+    return records[index]

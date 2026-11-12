@@ -17,10 +17,35 @@ def _component_labels(points, radius):
     return connected_components(graph, directed=False)
 
 
-def reconstruct_plane_support(points_mm, query_mm, planes, cfg, *, point_tree=None):
+def projection_centroid_q10(points_uv):
+    """Unweighted cosine Q10 about the original-UV centroid direction from query (0,0)."""
+    uv = np.asarray(points_uv, dtype=np.float64)
+    if uv.ndim != 2 or uv.shape[1] != 2 or not np.isfinite(uv).all():
+        raise ValueError("Projection Q10 requires finite (N,2) UV coordinates")
+    lengths = np.linalg.norm(uv, axis=1)
+    nonzero = lengths > 1e-7
+    centroid = uv.mean(axis=0) if len(uv) else np.zeros(2)
+    result = {"centroid_uv_mm": centroid.copy(), "direction_uv": None, "q10": None,
+              "nonzero_mask": nonzero, "cosines": np.empty(0), "reason": None}
+    if np.count_nonzero(nonzero) < 3:
+        result["reason"] = "insufficient_nonzero_directions"
+        return result
+    norm = np.linalg.norm(centroid)
+    if not np.isfinite(norm) or norm < 1e-8:
+        result["reason"] = "undefined_centroid_direction"
+        return result
+    direction = centroid / norm
+    cosines = np.clip((uv[nonzero] / lengths[nonzero, None]) @ direction, -1., 1.)
+    result.update(direction_uv=direction, cosines=cosines, q10=float(np.quantile(cosines, .1)))
+    return result
+
+
+def reconstruct_plane_support(points_mm, query_mm, planes, cfg, *, point_tree=None, projection_only=False):
     """Recollect overlapping memberships, then hull one local connected patch per plane."""
     started = perf_counter()
     cfg.validate()
+    if not isinstance(projection_only, (bool, np.bool_)):
+        raise ValueError("projection_only must be boolean")
     points = np.asarray(points_mm, dtype=np.float64)
     query = np.asarray(query_mm, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all():
@@ -55,6 +80,7 @@ def reconstruct_plane_support(points_mm, query_mm, planes, cfg, *, point_tree=No
             "hull_vertices_mm": np.empty((0, 3)), "hull_equations": np.empty((0, 3)),
             "hull_area_mm2": 0., "valid": False, "status": "UNKNOWN",
             "failure_reason": None, "component_count": 0, "component_sizes": [],
+            "projection_uv": np.empty((0, 2)), "projection_computed": False,
             "component_core_counts": [], "selected_component": None,
             "connectivity_uncertain": False,
         }
@@ -72,9 +98,7 @@ def reconstruct_plane_support(points_mm, query_mm, planes, cfg, *, point_tree=No
         selected = min(anchored or range(count), key=lambda label: (
             distances[label], -overlap[label], -len(components[label]), label))
         ids = components[selected]
-        nearby = [label for label in range(count)
-                  if distances[label] <= cfg.corner_gate_radius_mm and overlap[label]]
-        uncertain = not anchored or len(nearby) > 1
+        uncertain = not anchored
         patch.update(component_count=count, component_sizes=[len(c) for c in components],
                      component_core_counts=overlap, selected_component=selected,
                      connectivity_uncertain=uncertain, support_ransac_indices=ids.copy(),
@@ -83,6 +107,11 @@ def reconstruct_plane_support(points_mm, query_mm, planes, cfg, *, point_tree=No
             patch["failure_reason"] = "insufficient_connected_support"
             continue
         uv = np.column_stack(((points[ids] - origin) @ u, (points[ids] - origin) @ v))
+        patch.update(projection_uv=uv.copy(), projection_computed=True)
+        if projection_only:
+            patch.update(valid=not uncertain, status="UNKNOWN" if uncertain else "VALID",
+                         failure_reason="ambiguous_local_connectivity" if uncertain else None)
+            continue
         singular = np.linalg.svd(uv - uv.mean(axis=0), compute_uv=False)
         if singular[1] <= 1e-8 * max(1., singular[0]):
             patch["failure_reason"] = "collinear_plane_support"

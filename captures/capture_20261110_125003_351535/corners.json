@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "corners": [
+    {
+      "id": "corner_001",
+      "point_index": 98552,
+      "refinement_path_xyz_mm": [
+        [
+          -29.643829345703125,
+          102.9127426147461,
+          766.0000610351562
+        ],
+        [
+          -29.759929656982422,
+          99.27839660644531,
+          769.0000610351562
+        ],
+        [
+          -33.836177825927734,
+          99.4074935913086,
+          770.0000610351562
+        ]
+      ],
+      "refined_xyz_mm": [
+        -33.836177825927734,
+        99.4074935913086,
+        770.0000610351562
+      ],
+      "refinement": {
+        "method": "discrete_q10_global_voxel_points",
+        "voxel_size_mm": 2.0,
+        "radius_mm": 30,
+        "search_radius_mm": 6,
+        "candidate_spacing_mm": 0,
+        "q10_before": -0.6235658216443187,
+        "q10_after": -0.5577810610782837,
+        "neighbors_before": 256,
+        "neighbors_after": 265,
+        "evaluated": 10,
+        "available_downsampled_candidates": 10,
+        "displacement_mm": 4.199102900183657,
+        "step_displacement_mm": 4.199102900183657,
+        "total_displacement_mm": 6.772189933540785,
+        "iteration": 2,
+        "boundary_hit": false,
+        "min_support_ratio": 0.8,
+        "converged": true
+      }
+    },
+    {
+      "id": "corner_002",
+      "point_index": 100282
+    }
+  ]
+}

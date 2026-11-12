@@ -10,13 +10,14 @@ from pointcloud_inputs import (
     load_kinect_point_cloud,
 )
 from pointcloud_inputs.visualization import require_open3d
+from pointcloud_inputs.demo import make_demo_cloud
 
 from .constants import BUILD
 from .dense_heatmap import run_dense_heatmap_mode
 from .ball_query import run_ced_extremity_mode
 from .validator_query import prepare_validator_queries
 from .total import run_total_mode
-from .preprocessing import apply_noise_to_frame, prepare_frozen_from_frame
+from .preprocessing import apply_noise_to_frame, prepare_frozen_from_frame, voxel_downsample_3d
 from .settings import configure, parse_args
 from .visualization.manager import close_query_views, show_total_results
 from .visualization.query_ui import run_validator_mode, tk
@@ -26,13 +27,28 @@ def main(argv=None, *, prog=None):
     args = parse_args(argv, prog=prog)
     cfg, noise = configure(args)
     print(f"[BUILD {BUILD}] {Path(__file__).resolve()}", flush=True)
+    if args.source == "demo":
+        raw, colors, _ = make_demo_cloud()
+        points = voxel_downsample_3d(raw, cfg.voxel_3d_mm)
+        if len(points) < cfg.min_neighbors:
+            raise SystemExit("[INPUT ERROR] Too few demo points after voxelization; reduce --voxel-3d-mm")
+        print(f"[DEMO] Lab three-plane corner | seed=7 | raw={len(raw):,} "
+              f"voxel={len(points):,} voxel-size={cfg.voxel_3d_mm:g} mm", flush=True)
+        return run_dense_heatmap_mode(points, cfg, raw_points_mm=raw,
+                                      rgb_points_mm=raw, rgb_colors_rgb=colors)
+    if args.source == "dataset":
+        from .dataset_input import run_dataset_detector
+        try:
+            return run_dataset_detector(args.input, cfg, region=args.dataset_region)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"[INPUT ERROR] {exc}") from None
     if args.mode in ("ball", "extremity256"):
         print(f"[MODE] {args.mode.upper()} | unchanged CED/PCA/NMS queries -> local padded 3-D "
               "extremity hypotheses (unverified)", flush=True)
-    elif args.mode == "validator":
-        print("[MODE] VALIDATOR | unchanged CED/PCA/NMS -> coarse query -> raw radius crop -> local voxel -> guided sequential planes", flush=True)
+    elif args.mode in ("validator", "new-validator"):
+        print(f"[MODE] {args.mode.upper()} | detector NMS -> {'Q10 kept/refined' if cfg.q10_validator is not None else 'original NMS'} seeds -> raw radius crop -> local voxel -> guided sequential planes", flush=True)
     elif args.mode == "total":
-        print("[MODE] TOTAL | detector NMS -> guided validator for every seed -> final scene corners / contributing edges", flush=True)
+        print(f"[MODE] TOTAL | detector NMS -> {'Q10 kept/refined' if cfg.q10_validator is not None else 'original NMS'} seeds -> guided validator -> final scene corners / contributing edges", flush=True)
     elif args.mode == "detector":
         print(
             "[MODE] DETECTOR | whole-cloud saliency + 3-D corner candidates | "
@@ -49,38 +65,45 @@ def main(argv=None, *, prog=None):
             flush=True,
         )
     require_open3d()
-    if (args.mode in ("fine", "ball", "validator") or args.mode == "extremity256" and cfg.show_3d) and tk is None:
+    if (args.mode in ("fine", "ball", "validator", "new-validator") or args.mode == "extremity256" and cfg.show_3d) and tk is None:
         raise RuntimeError("Tk is unavailable. Install Tk and Pillow in the active environment.")
     if args.mode in ("ball", "extremity256"):
         print(f"[extremity] {cfg.extremity} | voxel={cfg.voxel_3d_mm:g} mm")
         print("[connectivity] Components do not guarantee object instances; touching objects merge.")
-    elif args.mode == "validator":
+    elif args.mode in ("validator", "new-validator"):
         print(f"[guided planes] {cfg.validator} | voxel={cfg.voxel_3d_mm:g} mm")
     elif args.mode == "total":
         print(f"[total validator] {cfg.validator} | detector voxel={cfg.voxel_3d_mm:g} mm", flush=True)
         print("[total views] 1 Fusion heatmap / NMS | 2 raw scene + final corners / contributing edges", flush=True)
     elif args.mode == "detector":
+        factor_path = ("NORMAL PCA -> MIN-MAX LOCAL MINIMUM -> PRODUCT FUSION"
+                       if getattr(cfg, "fusion_mode", "pca_ratio") == "local_minimum" else
+                       "CED-WEIGHTED PCA -> OPTIONAL TANH SATURATION -> PRODUCT FUSION")
         print(
             "VOXEL POINTS -> RADIUS NEIGHBORHOOD -> "
-            "CED -> BILATERAL CED -> CED-WEIGHTED PCA -> "
-            "OPTIONAL TANH SATURATION -> PRODUCT FUSION -> 3-D NMS"
+            f"CED -> OPTIONAL BILATERAL CED -> {factor_path} -> OPTIONAL BILATERAL FUSION -> 3-D NMS"
             + (" | NMS HEATMAP ONLY" if getattr(cfg, "only", False) else "")
         )
         print(
             f"[detector] voxel={cfg.voxel_3d_mm:g} mm | "
             f"CED-radius={cfg.centroid_radius_mm:g} mm | "
-            f"bilateral-r={cfg.bilateral_radius_mm:g} mm "
+            f"bilateral={getattr(cfg, 'bilateral_mode', 'ced')} r={cfg.bilateral_radius_mm:g} mm "
             f"sigma-s={cfg.bilateral_sigma_spatial_mm:g} mm "
             f"sigma-CED={cfg.bilateral_sigma_ced:g} | "
-            f"PCA-radius={cfg.pca_radius_mm:g} mm "
-            f"({cfg.pca_radius_factor:g}x) | "
+            f"PCA-radius={cfg.pca_radius_mm:g} mm ({cfg.pca_radius_mm / cfg.centroid_radius_mm:g}x CED) | "
             f"PCA-tau={cfg.pca_ratio_saturation_tau} | "
+            f"PCA-CED-cutoff={getattr(cfg, 'pca_ced_cutoff', 0.0):g} | "
             f"min-neighbors={cfg.min_neighbors} | "
             f"NMS-radius={cfg.nms_radius_mm:g} mm | "
             f"threshold-mode={getattr(cfg, 'fusion_threshold_mode', 'fixed')} | "
             f"fixed-threshold={cfg.fusion_score_threshold:g} | "
+            f"fusion-mode={getattr(cfg, 'fusion_mode', 'pca_ratio')} | "
+            f"post-NMS-lambda1/R²-max={getattr(cfg, 'post_nms_lambda1_ratio_max', None)} | "
             "NMS=radius-local-maximum"
         )
+        if getattr(cfg, "q10_validator", None) is not None:
+            print(f"[Q10 + antipodal Lite] {cfg.q10_validator} | fixed NMS radius={cfg.nms_radius_mm:g} mm "
+                  "| CC only at convergence | final green=pass/red=reject/amber=indeterminate", flush=True)
         if getattr(cfg, "validator", None) is not None:
             validator = cfg.validator
             print(
@@ -201,7 +224,7 @@ def main(argv=None, *, prog=None):
                 max_depth_m=args.max_depth_m,
             )
             frozen, points = prepare_frozen_from_frame(
-                frame, cfg, **({"include_organized_context": False} if args.mode == "total" else {}))
+                frame, cfg, **({"include_organized_context": False} if args.mode in ("detector", "total", "new-validator") else {}))
             print(
                 f"[INPUT] source={frame.source} raw={len(frame.points_mm):,} "
                 f"voxel={len(points):,} voxel-size={cfg.voxel_3d_mm:g} mm",
@@ -219,10 +242,13 @@ def main(argv=None, *, prog=None):
                 if action == "recapture":
                     close_query_views(frozen)
                     continue
-            elif args.mode == "validator":
-                frozen["validator_ced_scores"] = prepare_validator_queries(points, cfg)
-                frozen["validator_query_indices"] = frozen["validator_ced_scores"][
-                    "candidate_extraction"]["candidate_indices"].copy()
+            elif args.mode in ("validator", "new-validator"):
+                frozen["validator_ced_scores"] = prepare_validator_queries(points, cfg, raw_points_mm=frozen["points_raw_mm"])
+                frozen["validator_projection_only"] = bool(getattr(cfg.validator, "projection_only", False))
+                seeds = frozen["validator_ced_scores"]["validator_seeds"]
+                frozen["validator_query_indices"] = seeds["candidate_indices"].copy()
+                frozen["validator_query_positions_mm"] = seeds["positions_mm"].copy()
+                print(f"[VALIDATOR seeds] {len(seeds['candidate_indices'])} | {seeds['source']}", flush=True)
                 action = run_validator_mode(frame, frozen, cfg)
                 if action == "recapture":
                     close_query_views(frozen)
@@ -246,6 +272,8 @@ def main(argv=None, *, prog=None):
                 organized_context = frozen.get("organized_plane_context")
                 if organized_context is not None:
                     heatmap_visualization["organized_context"] = organized_context
+                if getattr(cfg, "q10_validator", None) is not None:
+                    heatmap_visualization["raw_points_mm"] = frozen["points_raw_mm"]
                 run_dense_heatmap_mode(points, cfg, **heatmap_visualization)
             break
     finally:

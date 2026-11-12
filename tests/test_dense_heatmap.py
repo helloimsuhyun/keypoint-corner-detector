@@ -22,7 +22,7 @@ from corner_detector.edge_suppression import (
 )
 from corner_detector.visualization import manager
 from corner_detector.visualization import view3d
-from corner_detector.settings import DetectorConfig, configure, parse_args
+from corner_detector.settings import DEFAULTS, DetectorConfig, configure, parse_args
 from corner_detector.visualization.view3d import (
     corner_candidate_primitives,
     dense_heatmap_colors,
@@ -172,6 +172,61 @@ class CedWeightedPcaTest(unittest.TestCase):
             result["eigenvalues_mm2"][index], manual["eigenvalues_mm2"],
         )
 
+    def test_pca_ced_cutoff_is_inclusive_and_uses_raw_ced_in_every_bilateral_mode(self):
+        points = corner_points()
+        for mode in ("ced", "fusion", "off"):
+            options = dict(bilateral_mode=mode, bilateral_sigma_ced=1.)
+            baseline = dense_ced_weighted_pca_scores(points, 1.6, 4., 2, **options)
+            cutoff = baseline["ced_score"][3]
+            result = dense_ced_weighted_pca_scores(points, 1.6, 4., 2, pca_ced_cutoff=cutoff, **options)
+            self.assertEqual(result["pca_ced_cutoff"], cutoff)
+            for key in ("ced_score", "ced_valid_mask", "bilateral_ced_score", "pca_neighbor_count",
+                        "pca_query_mask", "original_point_indices", "query_position_mm"):
+                np.testing.assert_array_equal(result[key], baseline[key])
+            self.assertEqual(result["weighted_neighbor_count"][0], 3)
+            self.assertLess(result["ced_score"][1], cutoff)
+            self.assertTrue(result["pca_valid_mask"][1])
+            if mode == "ced":
+                self.assertLess(result["bilateral_ced_score"][3], cutoff)
+            for index in np.flatnonzero(result["pca_query_mask"]):
+                ids = np.flatnonzero((np.sum((points-points[index])**2, axis=1) <= 16.)
+                                    & result["ced_valid_mask"] & (result["ced_score"] > 0.)
+                                    & (result["ced_score"] >= cutoff))
+                self.assertEqual(result["weighted_neighbor_count"][index], len(ids))
+                if len(ids) < 2:
+                    self.assertFalse(result["pca_valid_mask"][index])
+                    continue
+                weights = result["ced_score"][ids]
+                mean = np.average(points[ids], axis=0, weights=weights)
+                delta = points[ids]-mean
+                covariance = (delta*weights[:, None]).T @ delta / weights.sum()
+                eigenvalues = np.maximum(np.linalg.eigvalsh(covariance)[::-1], 0.)
+                np.testing.assert_allclose(result["weighted_centroid_mm"][index], mean)
+                np.testing.assert_allclose(result["weighted_covariance_mm2"][index], covariance, atol=1e-15)
+                np.testing.assert_allclose(result["eigenvalues_mm2"][index], eigenvalues, atol=1e-15)
+            self.assertGreater(np.max(np.abs(result["pca_ratio_raw"]-baseline["pca_ratio_raw"])), .01)
+
+    def test_pca_ced_cutoff_empty_support_invalidates_fusion_and_zero_preserves_outputs(self):
+        points = np.vstack((corner_points(), [[100., 100., 100.]]*2))
+        baseline = dense_ced_weighted_pca_scores(points, 1.6, 4., 2, bilateral_mode="fusion")
+        zero = dense_ced_weighted_pca_scores(points, 1.6, 4., 2, bilateral_mode="fusion", pca_ced_cutoff=0.)
+        for key, value in baseline.items():
+            if isinstance(value, np.ndarray):
+                np.testing.assert_array_equal(zero[key], value)
+        self.assertTrue(zero["ced_valid_mask"][-1])
+        self.assertEqual(zero["weighted_neighbor_count"][-1], 0)
+        empty = dense_ced_weighted_pca_scores(points, 1.6, 4., 2, bilateral_mode="fusion", pca_ced_cutoff=1.)
+        np.testing.assert_array_equal(empty["ced_score"], baseline["ced_score"])
+        self.assertFalse(empty["weighted_neighbor_count"].any())
+        self.assertFalse(empty["pca_valid_mask"].any())
+        self.assertFalse(empty["fusion_valid_mask"].any())
+        self.assertFalse(empty["fusion_score"].any())
+
+    def test_pca_ced_cutoff_rejects_nonfinite_and_out_of_range_values(self):
+        for cutoff in (-.01, 1.01, np.nan, np.inf, -np.inf):
+            with self.subTest(cutoff=cutoff), self.assertRaisesRegex(ValueError, "pca_ced_cutoff"):
+                dense_ced_weighted_pca_scores(corner_points(), 1.6, 4., 2, pca_ced_cutoff=cutoff)
+
     def test_tau_none_fusion_is_exact_bilateral_ced_times_raw_pca_ratio(self):
         result = dense_ced_weighted_pca_scores(corner_points(), 1.6, 4.0, 2)
         valid = result["fusion_valid_mask"]
@@ -191,6 +246,69 @@ class CedWeightedPcaTest(unittest.TestCase):
             result["pca_valid_mask"] & result["bilateral_valid_mask"],
         )
         self.assertTrue(np.all(result["fusion_score"][~valid] == 0.0))
+
+    def test_bilateral_off_skips_filter_and_uses_original_ced_without_changing_pca(self):
+        points = np.vstack((corner_points(), [100., 100., 100.]))
+        for radius in (1., 5.):
+            for tau in (None, 0.6):
+                with self.subTest(radius=radius, tau=tau):
+                    options = dict(bilateral_radius_mm=radius, pca_ratio_saturation_tau=tau)
+                    enabled = dense_ced_weighted_pca_scores(points, 1.6, 4., 2, **options)
+                    self.assertEqual(enabled["bilateral_mode"], "ced")
+                    with patch("corner_detector.edge_suppression._bilateral_neighborhood",
+                               side_effect=AssertionError("bilateral must be skipped")):
+                        disabled = dense_ced_weighted_pca_scores(
+                            points, 1.6, 4., 2, bilateral_mode="off", **options)
+                    self.assertEqual(disabled["bilateral_mode"], "off")
+                    np.testing.assert_array_equal(disabled["bilateral_ced_score"], disabled["ced_score"])
+                    for key in ("ced_score", "ced_valid_mask", "pca_query_mask", "pca_valid_mask",
+                                "weighted_covariance_mm2", "pca_ratio_raw", "pca_ratio_saturated",
+                                "fusion_valid_mask", "original_point_indices", "query_position_mm"):
+                        np.testing.assert_array_equal(disabled[key], enabled[key])
+                    valid = disabled["fusion_valid_mask"]
+                    self.assertTrue(valid.any())
+                    np.testing.assert_array_equal(disabled["fusion_score"][valid],
+                                                  disabled["ced_score"][valid] * disabled["pca_ratio_saturated"][valid])
+                    self.assertTrue(np.all(disabled["fusion_score"][~valid] == 0.))
+                    self.assertFalse(disabled["bilateral_neighbor_count"].any())
+                    self.assertFalse(disabled["bilateral_weight_sum"].any())
+
+    def test_bilateral_mode_rejects_invalid_values(self):
+        for value in ("False", "invalid", "CED", "", 0, 1, None, True, False):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "bilateral_mode"):
+                dense_ced_weighted_pca_scores(corner_points(), 1.6, 4., 2, bilateral_mode=value)
+
+    def test_fusion_bilateral_filters_completed_product_and_excludes_invalid_support(self):
+        points = np.vstack((corner_points(), [[100., 100., 100.]]*2, [300., 300., 300.]))
+        for radius, spatial_sigma in ((2.5, .8), (200., 200.)):
+            for tau in (None, .6):
+                with self.subTest(radius=radius, tau=tau):
+                    options = dict(bilateral_radius_mm=radius, bilateral_sigma_spatial_mm=spatial_sigma,
+                                   bilateral_sigma_ced=.2, pca_ratio_saturation_tau=tau)
+                    raw = dense_ced_weighted_pca_scores(points, 1.6, 4., 2, bilateral_mode="off", **options)
+                    result = dense_ced_weighted_pca_scores(points, 1.6, 4., 2, bilateral_mode="fusion", **options)
+                    valid = raw["fusion_valid_mask"]
+                    self.assertTrue(raw["ced_valid_mask"][-2])
+                    self.assertFalse(valid[-2])
+                    values = raw["fusion_score"]
+                    delta = points[:, None, :] - points[None, :, :]
+                    distance2 = np.sum(delta**2, axis=2)
+                    support = (distance2 <= radius**2) & valid[:, None] & valid[None, :]
+                    weights = (np.exp(-distance2/(2*spatial_sigma**2))
+                               * np.exp(-(values[:, None]-values[None, :])**2/(2*.2**2)) * support)
+                    expected = np.zeros(len(points))
+                    expected[valid] = (weights @ values)[valid] / weights.sum(axis=1)[valid]
+                    np.testing.assert_allclose(result["fusion_score"], expected, rtol=0, atol=1e-15)
+                    self.assertGreater(np.max(np.abs(result["fusion_score"]-values)), 1e-4)
+                    np.testing.assert_array_equal(result["fusion_score_raw"], values)
+                    np.testing.assert_array_equal(result["bilateral_ced_score"], raw["ced_score"])
+                    np.testing.assert_array_equal(result["bilateral_neighbor_count"], support.sum(axis=1))
+                    np.testing.assert_allclose(result["bilateral_weight_sum"], weights.sum(axis=1), atol=1e-14)
+                    for key in ("ced_score", "ced_valid_mask", "pca_query_mask", "pca_valid_mask",
+                                "weighted_covariance_mm2", "pca_ratio_raw", "pca_ratio_saturated",
+                                "fusion_valid_mask", "original_point_indices", "query_position_mm"):
+                        np.testing.assert_array_equal(result[key], raw[key])
+                    self.assertTrue(np.all(result["fusion_score"][~valid] == 0.))
 
     def test_positive_tau_changes_only_saturated_ratio_and_fusion(self):
         raw = dense_ced_weighted_pca_scores(corner_points(), 1.6, 4.0, 2)
@@ -346,6 +464,105 @@ class CedWeightedPcaTest(unittest.TestCase):
 
 
 class DetectorOnlyTest(unittest.TestCase):
+    def test_pca_ced_cutoff_settings_cli_and_both_scoring_callers(self):
+        from corner_detector.extremity_synthetic import ced_candidates
+
+        self.assertEqual(DetectorConfig().pca_ced_cutoff, DEFAULTS.pca_ced_cutoff)
+        with patch("corner_detector.settings.DEFAULTS", replace(DEFAULTS, pca_ced_cutoff=.1)):
+            for mode in ("detector", "validator", "total", "new-validator", "ball", "extremity256"):
+                cfg, _ = configure(parse_args(["--source", "realsense", "--mode", mode, "--no-q10-validator"]))
+                self.assertEqual(cfg.pca_ced_cutoff, .1)
+                cfg, _ = configure(parse_args(["--source", "realsense", "--mode", mode,
+                                               "--no-q10-validator", "--pca-ced-cutoff", ".3125"]))
+                self.assertEqual(cfg.pca_ced_cutoff, .3125)
+        for value in ("-.1", "1.1", "nan", "inf"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                configure(parse_args(["--source", "realsense", "--mode", "detector", "--pca-ced-cutoff", value]))
+        cfg = DetectorConfig(centroid_radius_mm=1.6, pca_radius_mm=4., min_neighbors=2,
+                             bilateral_radius_mm=1.6, nms_radius_mm=1.5, pca_ced_cutoff=.3125,
+                             fusion_score_threshold=0., show_3d=False)
+        with redirect_stdout(StringIO()):
+            result = run_dense_heatmap_mode(corner_points(), cfg)
+            candidates, _ = ced_candidates(corner_points(), cfg)
+        self.assertEqual(result["pca_ced_cutoff"], .3125)
+        np.testing.assert_array_equal(candidates["candidate_indices"],
+                                      result["candidate_extraction"]["candidate_indices"])
+        self.assertGreater(candidates["candidate_count"], 0)
+        for candidate in candidates["candidates"]:
+            self.assertEqual(candidate["weighted_support_count"],
+                             result["weighted_neighbor_count"][candidate["point_index"]])
+
+    def test_bilateral_cli_modes_reach_shared_configs_and_fusion_scoring_callers(self):
+        from corner_detector.extremity_synthetic import ced_candidates
+
+        for target in ("ced", "fusion", "off"):
+            for mode in ("detector", "validator", "total", "new-validator", "ball", "extremity256"):
+                cfg, _ = configure(parse_args(["--source", "realsense", "--mode", mode,
+                                               "--bilateral-mode", target, "--no-q10-validator"]))
+                self.assertEqual(cfg.bilateral_mode, target)
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            parse_args(["--source", "realsense", "--mode", "detector", "--bilateral-mode", "invalid"])
+        cfg = DetectorConfig(centroid_radius_mm=1.6, pca_radius_mm=4., min_neighbors=2,
+                             bilateral_radius_mm=1.6, bilateral_mode="fusion", nms_radius_mm=1.5,
+                             fusion_score_threshold=0., show_3d=False)
+        with redirect_stdout(StringIO()), patch("corner_detector.edge_suppression.bilateral_filter_ced",
+                                                wraps=bilateral_filter_ced) as filtering:
+            scores = run_dense_heatmap_mode(corner_points(), cfg)
+            candidates, _ = ced_candidates(corner_points(), cfg)
+        self.assertEqual(filtering.call_count, 2)
+        self.assertEqual(scores["bilateral_mode"], "fusion")
+        np.testing.assert_array_equal(candidates["candidate_indices"],
+                                      scores["candidate_extraction"]["candidate_indices"])
+        for candidate in candidates["candidates"]:
+            self.assertEqual(candidate["score"], scores["fusion_score"][candidate["point_index"]])
+
+    def test_settings_bilateral_mode_reaches_shared_configs_and_scoring_callers(self):
+        from corner_detector.extremity_synthetic import ced_candidates
+
+        self.assertEqual(DetectorConfig().bilateral_mode, DEFAULTS.bilateral_mode)
+        self.assertFalse(hasattr(DetectorConfig(), "bilateral_enabled"))
+        with patch("corner_detector.settings.DEFAULTS", replace(DEFAULTS, bilateral_mode="off")):
+            for mode in ("detector", "validator", "total", "new-validator", "ball", "extremity256"):
+                with self.subTest(mode=mode):
+                    cfg, _ = configure(parse_args(["--source", "realsense", "--mode", mode,
+                                                   "--no-q10-validator", "--no-3d-view"]))
+                    self.assertEqual(cfg.bilateral_mode, "off")
+            cfg, _ = configure(parse_args(["--source", "realsense", "--mode", "detector",
+                                           "--no-q10-validator", "--no-3d-view"]))
+        cfg = replace(cfg, centroid_radius_mm=1.6, pca_radius_mm=4., min_neighbors=2,
+                      bilateral_radius_mm=1.6, nms_radius_mm=1.5, fusion_score_threshold=0.)
+        with redirect_stdout(StringIO()), patch(
+                "corner_detector.edge_suppression._bilateral_neighborhood",
+                side_effect=AssertionError("bilateral must be skipped")):
+            scores = run_dense_heatmap_mode(corner_points(), cfg)
+            candidates, _ = ced_candidates(corner_points(), cfg)
+        self.assertEqual(scores["bilateral_mode"], "off")
+        np.testing.assert_array_equal(scores["bilateral_ced_score"], scores["ced_score"])
+        self.assertGreater(candidates["candidate_count"], 0)
+        np.testing.assert_array_equal(candidates["candidate_indices"],
+                                      scores["candidate_extraction"]["candidate_indices"])
+
+    def test_radius_migration_preserves_numerical_scores_and_nms(self):
+        points = 10. * corner_points()
+        expected_fusion = [0.029417604493211368, 0.025057179024822452, 0.03195901633004414,
+                           0.054093700905800304, 0.025057179024822452, 0.03195901633004414,
+                           0.054093700905800304, 0.010002296525230417]
+        for voxel in (5., 10., 20.):
+            for scale in (.5, 1., 2.):
+                with self.subTest(voxel=voxel, scale=scale):
+                    cfg, _ = configure(parse_args([
+                        "--source", "realsense", "--mode", "detector", "--no-3d-view",
+                        "--voxel-3d-mm", str(voxel), "--min-neighbors", "3", "--fusion-score-threshold", "0",
+                        "--centroid-radius-mm", str(80. * scale), "--pca-radius-factor", "1.5",
+                        "--bilateral-radius-factor", "1", "--bilateral-sigma-spatial-factor", "0.5",
+                        "--nms-radius-factor", "0.375",
+                    ]))
+                    with redirect_stdout(StringIO()):
+                        result = run_dense_heatmap_mode(points * scale, cfg)
+                    np.testing.assert_allclose(result["pca_ratio_raw"], 0.20724107952479612, rtol=1e-12)
+                    np.testing.assert_allclose(result["fusion_score"], expected_fusion, rtol=1e-12)
+                    np.testing.assert_array_equal(result["candidate_extraction"]["candidate_indices"], [3, 6])
+
     def test_only_cli_is_detector_specific_and_skips_validator_config(self):
         args = parse_args(["--source", "realsense", "--mode", "detector", "--only"])
         cfg, _ = configure(args)
@@ -426,9 +643,8 @@ class DetectorOnlyTest(unittest.TestCase):
         view.create_window.assert_called_once()
         self.assertIn("NMS Corner Candidates", view.create_window.call_args.kwargs["window_name"])
         cloud = view.add_geometry.call_args_list[0].args[0]
-        np.testing.assert_array_equal(cloud.colors, dense_heatmap_colors(
-            scores["fusion_score"], scores["fusion_valid_mask"],
-            vmax=dense_heatmap_vmax(scores)["fusion_score"]))
+        np.testing.assert_array_equal(cloud.colors,
+            view3d.fusion_rejection_primitives(points, scores)["point_colors"])
         self.assertGreater(scores["candidate_extraction"]["candidate_count"], 0)
         self.assertEqual(view.add_geometry.call_count, 2)
         view.register_key_callback.assert_called_once()
@@ -436,6 +652,21 @@ class DetectorOnlyTest(unittest.TestCase):
 
 
 class DenseHeatmapVisualizationTest(unittest.TestCase):
+    def test_bilateral_panels_follow_mode_and_share_final_fusion_color_range(self):
+        for mode, key in (("ced", "bilateral_ced_score"), ("fusion", "fusion_score_raw"),
+                          ("off", "bilateral_ced_score")):
+            panels = dense_heatmap_panels(mode)
+            self.assertEqual(len(panels), 6)
+            self.assertEqual(panels[2][1], key)
+            self.assertEqual(panels[4][1], "fusion_score")
+            self.assertEqual(panels[5][1], "fusion_score")
+        scores = dense_ced_weighted_pca_scores(corner_points(), 1.6, 4., 2, bilateral_mode="fusion")
+        saved = {key: value.copy() for key, value in scores.items() if isinstance(value, np.ndarray)}
+        limits = dense_heatmap_vmax(scores)
+        self.assertEqual(limits["fusion_score_raw"], limits["fusion_score"])
+        for key, value in saved.items():
+            np.testing.assert_array_equal(scores[key], value)
+
     def test_whole_cloud_visualization_stops_at_nms_before_final_geometry(self):
         panels = dense_heatmap_panels()
 

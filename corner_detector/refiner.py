@@ -1,8 +1,10 @@
-"""Graph-local robust refinement of detected planes and Hough-derived edges.
+"""Graph-local robust geometry and discrete Q10 post-detection refinement.
 
-This module is a pure post-processor.  It consumes the immutable output of
+Graph refinement consumes the immutable output of
 ``analyze_plane_edge_graph`` and never recomputes clustering, boundary evidence,
-or Hough voting.  All distances are millimetres.
+or Hough voting. Q10 relocation separately supports optional spherical query CC on an
+immutable analysis cloud.
+All distances are millimetres.
 """
 from __future__ import annotations
 
@@ -12,6 +14,11 @@ import time
 
 import numpy as np
 from scipy.optimize import least_squares
+
+from .connectivity import radius_components as _components
+
+
+Q10_DIRECTION_MODES = ("unit_mean", "unit_median", "centroid")
 
 
 @dataclass(frozen=True)
@@ -602,4 +609,156 @@ def refine_hough_edge_graph(points_mm, detector_result, config=None):
     }
 
 
-__all__ = ["HoughEdgeRefinerConfig", "refine_hough_edge_graph"]
+def mean_direction_q10(query_mm, neighbors_mm, direction_mode="unit_mean"):
+    """Unweighted cosine Q10 around the selected normalized neighborhood direction.
+
+    Median means componentwise median of unit vectors. Centroid uses original
+    XYZ offsets, so distant observations affect the axis but not quantile weights.
+    """
+    if direction_mode not in Q10_DIRECTION_MODES:
+        raise ValueError(f"Q10 direction mode must be one of {Q10_DIRECTION_MODES}")
+    query, neighbors = np.asarray(query_mm, dtype=float), np.asarray(neighbors_mm, dtype=float)
+    if (query.shape != (3,) or neighbors.ndim != 2 or neighbors.shape[1] != 3
+            or not np.isfinite(query).all() or not np.isfinite(neighbors).all()):
+        raise ValueError("Q10 requires finite XYZ coordinates")
+    offsets = neighbors - query
+    lengths = np.linalg.norm(offsets, axis=1)
+    units = offsets[lengths > 1e-7] / lengths[lengths > 1e-7, None]
+    if len(units) < 3:
+        raise ValueError("Need at least three nonzero directions")
+    if direction_mode == "unit_mean":
+        mean = units.mean(axis=0)
+    elif direction_mode == "unit_median":
+        mean = np.median(units, axis=0)
+    else:
+        mean = offsets.mean(axis=0)
+    length = np.linalg.norm(mean)
+    if length < 1e-8:
+        raise ValueError("Undefined Q10 direction")
+    axis = mean / length
+    return float(np.quantile(np.clip(units @ axis, -1., 1.), .1)), axis
+
+
+class Q10PositionRefiner:
+    """One frame/radius/CC configuration owns Q10 support and response caches."""
+
+    def __init__(self, points_mm, radius_mm, step_mm, cc_factor=4., cc_enabled=True,
+                 direction_mode="unit_mean"):
+        from scipy.spatial import cKDTree
+        self.points = np.asarray(points_mm, dtype=float)
+        if (self.points.ndim != 2 or self.points.shape[1] != 3
+                or not np.isfinite(self.points).all()):
+            raise ValueError("Q10 analysis points must be finite (N,3)")
+        if not np.isfinite([radius_mm, step_mm, cc_factor]).all() or min(radius_mm, step_mm, cc_factor) <= 0:
+            raise ValueError("Q10 neighborhood, NMS radius and CC factor must be positive and finite")
+        if not isinstance(cc_enabled, (bool, np.bool_)):
+            raise ValueError("Q10 CC switch must be boolean")
+        if direction_mode not in Q10_DIRECTION_MODES:
+            raise ValueError(f"Q10 direction mode must be one of {Q10_DIRECTION_MODES}")
+        self.direction_mode = direction_mode
+        self.radius_mm, self.step_mm = float(radius_mm), float(step_mm)
+        self.cc_factor = float(cc_factor)
+        self.cc_enabled = bool(cc_enabled)
+        self.tree = cKDTree(self.points)
+        self.cache = {}
+        self.support_cache = {}
+        self.cache_hits = self.cache_misses = 0
+
+    def evaluate(self, index, *, minimum_support=10):
+        from scipy.spatial import cKDTree
+        if index in self.cache:
+            self.cache_hits += 1
+            return self.cache[index]
+        self.cache_misses += 1
+        value, axis = None, None
+        if index not in self.support_cache:
+            ids = np.sort(np.asarray(self.tree.query_ball_point(self.points[index], self.radius_mm + 1e-8), dtype=np.int64))
+            component = np.empty(0, dtype=np.int64)
+            median, epsilon = np.nan, np.nan
+            if not self.cc_enabled:
+                component = ids
+            elif len(ids) >= 10:
+                median = float(np.median(cKDTree(self.points[ids]).query(self.points[ids], k=2)[0][:, 1]))
+                epsilon = self.cc_factor * median
+                if np.isfinite(epsilon) and epsilon > 0:
+                    labels = _components(np.vstack((self.points[ids], self.points[index])), epsilon)
+                    component = ids[labels[:-1] == labels[-1]]
+            self.support_cache[index] = {"component_analysis_indices": component, "roi_count": len(ids),
+                                         "median_nn_mm": median, "cc_radius_mm": epsilon}
+        component = self.support_cache[index]["component_analysis_indices"]
+        if 10 <= len(component) < minimum_support:
+            # This seed's support gate is not an invalid Q10; a later seed may need the score.
+            return None, len(component), np.full(3, np.nan)
+        if len(component) >= 10:
+            try:
+                value, axis = mean_direction_q10(self.points[index], self.points[component], self.direction_mode)
+            except ValueError:
+                pass
+        if axis is None:
+            axis = np.full(3, np.nan)
+        self.cache[index] = value, len(component), axis
+        return self.cache[index]
+
+    def refine(self, initial_index, *, center_mm=None):
+        """Select once inside the original NMS ball; never recenter the search."""
+        if (isinstance(initial_index, (bool, np.bool_)) or not isinstance(initial_index, (int, np.integer))
+                or not 0 <= initial_index < len(self.points)):
+            raise ValueError("Q10 starting index must address the analysis cloud")
+        center = self.points[initial_index] if center_mm is None else np.asarray(center_mm, dtype=float)
+        if center.shape != (3,) or not np.isfinite(center).all():
+            raise ValueError("Q10 NMS center must be a finite XYZ coordinate")
+        candidates = sorted(self.tree.query_ball_point(center, self.step_mm + 1e-8))
+        if not candidates:
+            return {"analysis_indices": np.empty(0, dtype=np.int64), "positions_mm": center[None, :].copy(),
+                    "q10_values": np.array([np.nan]), "neighbor_counts": np.array([0], dtype=np.int64),
+                    "mean_axes": np.full((1, 3), np.nan), "tested_positions": np.array([0], dtype=np.int64),
+                    "support_analysis_indices": [np.empty(0, dtype=np.int64)], "roi_counts": np.array([0]),
+                    "cc_median_nn_mm": np.array([np.nan]), "cc_radii_mm": np.array([np.nan]),
+                    "converged": False, "stop_reason": "no_analysis_point_in_nms_ball"}
+        current = int(initial_index) if initial_index in candidates else min(
+            candidates, key=lambda i: (np.linalg.norm(self.points[i] - center), i))
+        path, values, counts, axes, tested = [], [], [], [], []
+        value, count, axis = self.evaluate(current)
+        path.append(current)
+        values.append(np.nan if value is None else value)
+        counts.append(count)
+        axes.append(axis.copy())
+        reason, converged = "invalid_initial_q10", False
+        if value is not None and len(candidates) > 3500:
+            reason = "too_many_step_candidates"
+        elif value is not None:
+            best, best_value = current, value
+            best_distance = float(np.linalg.norm(self.points[current] - center))
+            minimum = max(10, int(np.ceil(.8 * count)))
+            for candidate in candidates:
+                if candidate == current:
+                    continue
+                score, support_count, _ = self.evaluate(candidate, minimum_support=minimum)
+                if score is None or support_count < minimum:
+                    continue
+                distance = float(np.linalg.norm(self.points[candidate] - center))
+                if score > best_value + 1e-9 or (abs(score - best_value) <= 1e-9 and
+                        (distance < best_distance - 1e-9 or
+                         (abs(distance - best_distance) <= 1e-9 and candidate < best))):
+                    best, best_value, best_distance = candidate, score, distance
+            tested.append(len(candidates))
+            if best != current and best_value > value + 1e-9:
+                score, support_count, best_axis = self.evaluate(best)
+                path.append(best)
+                values.append(score)
+                counts.append(support_count)
+                axes.append(best_axis.copy())
+            reason, converged = "fixed_nms_maximum", True
+        supports = [self.support_cache.get(i, {}) for i in path]
+        return {"analysis_indices": np.asarray(path, dtype=np.int64),
+                "positions_mm": self.points[path].copy(), "q10_values": np.asarray(values),
+                "neighbor_counts": np.asarray(counts, dtype=np.int64), "mean_axes": np.asarray(axes),
+                "tested_positions": np.asarray(tested, dtype=np.int64),
+                "support_analysis_indices": [s.get("component_analysis_indices", np.empty(0, dtype=np.int64)).copy() for s in supports],
+                "roi_counts": np.asarray([s.get("roi_count", 0) for s in supports], dtype=np.int64),
+                "cc_median_nn_mm": np.asarray([s.get("median_nn_mm", np.nan) for s in supports]),
+                "cc_radii_mm": np.asarray([s.get("cc_radius_mm", np.nan) for s in supports]),
+                "converged": converged, "stop_reason": reason}
+
+
+__all__ = ["HoughEdgeRefinerConfig", "refine_hough_edge_graph", "Q10PositionRefiner", "mean_direction_q10"]

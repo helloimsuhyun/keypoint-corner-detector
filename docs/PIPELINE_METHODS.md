@@ -23,7 +23,7 @@ organized_context=...)` is the canonical numerical entry. CornerVINS plane
 extraction is unconditional for `ValidatorConfig` calls. CLI detector mode stops at NMS and does not construct this config. There is no backend selector and no FPS/SAH
 reference-plane clustering fallback.
 
-`--mode detector` stops after the unchanged dense CED/bilateral/PCA/fusion-threshold/3-D NMS composition. Both the CLI detector and default `DetectorConfig` use `validator=None`; no plane, edge or corner computation runs. Scores, thresholding, NMS and scene IDs are unchanged. Library callers can still explicitly supply `ValidatorConfig` to invoke the shared validator.
+`--mode detector` defaults to the unchanged dense CED/bilateral/PCA/fusion-threshold/3-D NMS composition. Optional Q10 validation refines within the fixed NMS ball and applies Q10/opposite-support gates. Both the CLI detector and default `DetectorConfig` use `validator=None`; no plane, edge or corner computation runs. Scores, thresholding, NMS and scene IDs are unchanged. Library callers can still explicitly supply `ValidatorConfig` to invoke the shared validator.
 
 `--mode detector --only` additionally limits visualization to the NMS heatmap. It resolves
 `DetectorConfig.only=True`, `validator=None` and omits all validator, plane,
@@ -40,22 +40,23 @@ with `--mode detector`; omitting it retains the existing dense diagnostic panels
 
 `--mode validator` reuses the detector's unchanged voxel-scene CED → bilateral
 CED → weighted PCA/Fusion → threshold → radius-local-maximum NMS. Selecting an
-existing Coarse NMS sample runs the entire following composition immediately:
+kept detector seed runs the entire following composition immediately:
 
 ```text
-Coarse NMS query q_c (unchanged scene coordinate)
+Coarse NMS -> optional Q10 keep/filter + relocation
+  -> selected seed center q_c (original NMS XYZ if Q10 OFF)
   -> inclusive radius crop from original raw XYZ
   -> query-local voxel downsampling
   -> first-point-guided sequential RANSAC (core voxels only)
   -> support recollection / hulls / finite edges / corner decision
 ```
 
-There is no validator Fine score, second threshold/NMS, Top-K, query movement,
+There is no validator Fine score, second threshold/NMS, Top-K, validator-side query movement,
 Fine picker, or fallback stage. `validator_fine.py`, `validator_fine_*` defaults
 and CLI options, and resolved `fine_*` fields were removed. The separate
 `--mode fine` organized AHC/Hough/refiner pipeline is unchanged.
 
-**Crop before voxel.** For raw input $X$ and the selected scene coordinate $q_c$,
+**Crop before voxel.** For raw input $X$ and the selected seed center $q_c$,
 let $X_c=\{x\in X:\|x-q_c\|\le R\}$. Apply the existing Open3D centroid voxel
 downsampler to $X_c$, using `validator_ransac_voxel_mm`, to obtain $P_c$.
 The downsampler's local grid origin follows that cropped input. Do not reuse
@@ -111,7 +112,7 @@ two points uniformly without replacement from $A\setminus\{a\}$.
 With $v_b=p_b-p_a$, $v_c=p_c-p_a$, reject any pair separation at or below
 $10^{-9}$ mm or cross-product norm at or below
 $10^{-12}\max(1,\|v_b\|\|v_c\|)$. Otherwise set
-$n=(v_b\times v_c)/\|v_b\times v_c\|$, $d=-n^Tp_a$. The unchanged Coarse query defines
+$n=(v_b\times v_c)/\|v_b\times v_c\|$, $d=-n^Tp_a$. The selected seed center defines
 only the ROI and first-point sampling probabilities; it is not constrained to
 lie on a plane.
 
@@ -129,15 +130,17 @@ same input order/configuration.
 cfg, raw_points_mm=...)` remains the canonical composition. Cached calls supply
 `voxel_context`. `ValidatorDetectorConfig` selects this guided path;
 `ValidatorConfig` retains the independent organized pipeline.
-`query_index` indexes the supplied Coarse scene. `query_position_mm` and
-`coarse_query_position_mm` both equal its unchanged coordinate.
+`query_index` indexes the supplied Coarse scene. `coarse_query_position_mm`
+is that original coordinate; `query_position_mm` is the actual start center,
+optionally supplied separately as the Q10 refinement result. Without an override
+the two coordinates remain equal. Support IDs still index the original scene.
 `roi_raw_point_indices` addresses the original raw input before local voxelization.
 `ransac_points_mm` stores $[P_c;P_h]$; native `roi_ransac_indices`, plane
 `inlier_ransac_indices`, and geometry support IDs address this query-local array.
 RANSAC masks address `roi_points_mm`, and accepted plane masks remain disjoint.
 `core_voxel_count` and `halo_voxel_count` record the concatenation boundary.
 Vertex `distance_to_query_mm` replaces the former Fine-distance name;
-all distance gates now use the unchanged Coarse query.
+the selected seed center (Q10 refined when enabled) centers the local input crop; Corner generation has no query-distance gate.
 
 `ransac_scene_indices` is the nearest-Coarse adapter for this local cloud.
 It supplies scene-domain `roi_point_indices`, plane `inlier_point_indices`, and
@@ -150,9 +153,9 @@ corner coordinates and incident finite edges, and voxel/RANSAC/geometry timers.
 
 **Visualization.** The main native window keeps three panels:
 
-1. Coarse Fusion heatmap and orange NMS queries, using the detector's valid mask,
+1. Coarse Fusion heatmap and orange kept detector seed markers, using the detector's valid mask,
    linear full-frame Q99 range and color function. Only this panel picks queries.
-2. Stored core voxel input in gray, the orange unchanged query, and its radius
+2. Stored core voxel input in gray, the orange selected seed center, and its radius
    sphere. Caption reports raw count → voxel count, voxel size and query radius;
    no second heatmap or candidate selection is calculated.
 3. Fitted-plane inliers/disks/normals, core points and the same orange query.
@@ -178,15 +181,16 @@ require adjustment for sparse observations. No device accuracy claim is made.
 The default guided pipeline now continues after RANSAC:
 
 ```text
-unchanged Coarse NMS -> raw query crop -> local voxel input
+unchanged Coarse NMS -> optional Q10 filtering/relocation -> raw seed crop -> local voxel input
   -> unchanged guided sequential RANSAC (core only)
   -> independent support recollection in core + halo
   -> connected per-plane tangent projection + convex hull
   -> hull/strip finite plane intersections
      + padded Hull segment clipping -> ACTIVE/INACTIVE Nodes -> TLS boundary lines
   -> intersection/boundary overlap masks + active finite-edge graph
-  -> anchored candidate grouping + constrained / multi-line least squares
-  -> Coarse-query-centred vertex gate -> ACCEPT / REJECT / INCONCLUSIVE
+  -> Edge-pair angle / 3-D line intersection / endpoint radius tests
+  -> shared Edge + same Endpoint + complete-diameter graph integration
+  -> all unverified Corner candidates (CANDIDATES / NO_CANDIDATES)
 ```
 
 Composition stays in `run_validator_pipeline`; the new numerical owners are
@@ -207,8 +211,10 @@ adds samples to RANSAC or changes its fitted models/core memberships.
 Build a Euclidean radius graph on each $I_j$. Prefer components that overlap the
 original plane's core inliers, then choose the nearest to the query (ties: core
 overlap count, component size, label). Never hull disconnected components
-together. Missing anchored support or multiple anchored components within the
-corner gate mark connectivity UNKNOWN. At least three noncollinear points are
+together. Only missing anchored support marks connectivity UNKNOWN; multiple
+nearby anchored components do not invalidate the selected component.
+The Corner radius does not participate in support selection or validity.
+At least three noncollinear points are
 still required to form a 2-D convex hull; this is a geometric requirement.
 All component sizes, original-core overlaps, selected component and all
 recollected IDs remain diagnostic output. Connectivity cannot guarantee object
@@ -231,23 +237,23 @@ that cross the core retain their interior interval.
 Retained original Hull Nodes keep stable plane-local IDs, source ORIGINAL and
 `corner_enabled=True`. New clipping Nodes have distinct per-source-edge IDs,
 source CLIPPED and `corner_enabled=False`. Retain inactive Nodes and their
-Edges; inactivity forbids endpoint Corner evidence, not interior line use.
+Edges as provenance. The endpoint Corner generator uses supplied Edge endpoints
+and does not apply the former Node-activity or same-plane adjacency gates.
 Each clipped Edge retains its Plane ID and original Hull Edge ID. TLS groups
 merge only through a shared Node ID, including true cyclic adjacency; separated
 open chains cannot reconnect. Merged Lines retain ordered support Node IDs,
 all source Hull Edge IDs, their original traversal start/end Node identities,
 source and enabled states independently of fitted coordinates. Store the fitted
-maximum TLS residual. The SVD formula, complete-direction checks, maximum-error
-threshold and greedy first-eligible merge policy are unchanged. Input clipping
+RMS and maximum TLS residuals; only RMS gates merging. The SVD formula,
+complete-direction checks and greedy first-eligible merge policy are unchanged. Input clipping
 can change fit values and merge outcomes.
 
 Reclip fitted TLS extrema to the core if needed before minimum-length checks.
 Any extra fit-created crop endpoint is CLIPPED/inactive with its parent Node ID;
-projection never promotes a clipped Node to active. Intersection segments retain
+projection never changes the stored clipped Node state. Intersection segments retain
 their existing hull/strip computation and core clipping. Preserve source endpoints,
 `roi_clipped_start/end`, pre-core support overlap and surviving core interval
-diagnostics. Final vertices require the core and unchanged query gate. No point
-support check is restored. `boundary_debug` stores original Hull Nodes/Edges,
+diagnostics. The Corner generator adds no core/query gate or point-support check. `boundary_debug` stores original Hull Nodes/Edges,
 clipped Nodes/Edges and final Lines; the UI only reads these snapshots.
 Finite padding does not prove physical boundary existence or resolve interior
 occlusion/hull bridges; a segment with inactive endpoints can still support a
@@ -291,7 +297,7 @@ the query-nearest line origin in mm; absent intervals are None.
 minimum length while the exact common interval does not. Point-support checks
 have been removed: `point_support_checked=False`, `support_passed=None`, and
 `support_rejection_reason=None`. These diagnostics are also attached to generated
-intersection candidates and retained representatives. Strip intervals remain
+intersection candidates and graph edges. Strip intervals remain
 geometric candidates and do not prove the existence of observed physical edges.
 
 Boundary candidates start as core-clipped successive padded Hull segments,
@@ -303,11 +309,19 @@ compute their mean $\mu$, and obtain the unit TLS direction $v$ from the leading
 right singular vector of the centered 2-D coordinates. Align its sign with hull
 traversal. Require the existing complete-direction agreement of original segments,
 plus agreement of both current group TLS directions and the proposed TLS direction,
-using `corner_min_edge_angle_deg` without absolute-dot reversal equivalence.
-Require $\max_i\|(I-vv^T)(p_i-\mu)\|\le\tau_{merge}$; RMS alone never accepts
-a merge. The independent absolute-mm `validator_boundary_merge_max_error_mm`
-(default 2.5, finite/nonnegative; CLI `--validator-boundary-merge-max-error-mm`)
-replaces the former RANSAC inlier tolerance for this boundary merge check only.
+using the independent `boundary_merge_angle_deg` (current CLI default 0.1 degrees) without
+absolute-dot reversal equivalence.
+For the $N$ unique vertices, require
+$\sqrt{\frac{1}{N}\sum_i\|(I-vv^T)(p_i-\mu)\|^2}\le\tau_{merge}$.
+Each unique vertex has equal weight; no segment-length or raw-support weighting
+is applied. The independent absolute-mm `validator_boundary_merge_rms_error_mm`
+(current CLI default 5.0, finite/nonnegative; CLI `--validator-boundary-merge-rms-error-mm`)
+replaces `validator_boundary_merge_max_error_mm` and its CLI option. Resolved
+configs likewise use `boundary_merge_rms_error_mm`. Maximum residual no longer
+rejects a merge: `tls_rms_error_mm` records the acceptance metric on Lines and
+Boundary Edges, while `tls_max_error_mm` remains diagnostic. Keeping the same
+threshold makes the residual gate more permissive and can absorb genuine bends;
+the number and placement of unique Hull vertices affect this averaging.
 Refit from all group vertices after every merge, retaining cyclic order and the
 cyclic adjacency across surviving groups. After convergence, refit each group and use
 $\mu+\min_i((p_i-\mu)^Tv)v$ and $\mu+\max_i((p_i-\mu)^Tv)v$ as finite endpoints.
@@ -329,22 +343,28 @@ component selection, hull validity, TLS, strip width and plane-angle gates remai
 Edge `support_ransac_indices`, `support_indices`, mapped `support_point_indices`
 and `support_by_plane` remain empty; `support_count=0` is an unmeasured
 compatibility slot, not a measured absence of support. `support_quality=1.0` is
-neutral for all edges, so deduplication falls back to length/source ID and it
+neutral for all edges, so edge ordering falls back to length/source ID and it
 provides no point-evidence ranking. Edge/result `point_support_checked=False`
 and terminal `point support=disabled` make the new semantics explicit.
 
-Finite-edge deduplication uses complete-link agreement of type/plane IDs,
-unoriented direction, symmetric line offset and strictly positive interval
-overlap. Keep the highest-ranked representative and all `source_edge_ids`; do not
-extend it or fill a gap. Different-direction edges are never merged. The
-original candidate records preserve other members' support/provenance.
+Every valid finite candidate becomes a graph Edge; there is no same-type
+finite-edge deduplication. Preserve the existing sort by descending
+`support_quality`, descending `length_mm`, then ascending `source_edge_id`, and
+assign consecutive query-local `edge_id` values in that order. Each Edge keeps
+its original geometry and provenance, with the compatibility `source_edge_ids`
+list containing only its own source ID. Plane-pair enumeration produces at most
+one intersection candidate per pair. Boundary Lines from distinct Hull chains
+remain separate, including thin Hulls whose opposite chains share endpoint
+Node IDs. Removing the former suppression can retain more Edges and change
+subsequent IDs and Corner results. `validator_edge_duplicate_angle_deg`, its
+resolved field and CLI option are removed.
 
-**Intersection–boundary masking.** After same-type finite-edge deduplication,
+**Intersection–boundary masking.** After finite-edge ordering and ID assignment,
 compare each valid intersection $I$ with each boundary $B$ that owns one of its
 planes. Require $\arccos(|u^Tv|)\le\theta_o$, both original boundary endpoints
 within $d_o$ of the infinite intersection line, and projected overlap
 $\max(0,\min(L_I,b_1)-\max(0,b_0))\ge\ell_o$ with sorted boundary projections.
-Defaults are 5 degrees, 5 mm and 2.5 mm. Map each qualifying overlap back to the
+Defaults are 25 degrees, 15 mm and 2.5 mm. Map each qualifying overlap back to the
 original boundary's own parameter, accounting for direction sign, and union all
 mask intervals from all intersections. Preserve original TLS start/end/direction
 and source IDs. Store `masked_intervals_mm`, complementary
@@ -353,81 +373,71 @@ is INACTIVE and absent from active `edges`, while `all_edges` retains it.
 `boundary_overlap_diagnostics` records masks. Intersections stay active.
 A nonparallel crossing boundary is not masked. Active pieces are parameter
 intervals of the original length-validated edge, not newly fitted segments;
-mask cut endpoints are never vertex evidence or extrapolation origins.
+mask cut endpoints are not materialized as new Edges or Corner endpoints.
+Partially masked Edges retain their original endpoint coordinates; the new Corner
+stage does not recheck masks or Node activity at those endpoints.
 
-**Vertex candidates and least squares.** Inspect active edge pairs. For two
-Boundaries on the same plane, require a shared original ACTIVE endpoint Node
-that survives overlap masking on both Lines. Absorbed intermediate Nodes and
-nonadjacent Boundaries are not Corner candidates. Retain the existing midpoint
-as the initial pair candidate after that topology gate. Cross-plane Boundary pairs and
-intersection/boundary or multiple-intersection pairs retain their existing
-closest-point/LS path; inactive endpoint provenance still forbids endpoint
-evidence and extrapolation without disabling valid interior line support. Exclude
-angles below the single `corner_min_edge_angle_deg` threshold. Solve closest
-points using the full-rank matrix $[u,-v]$ and a stable least-squares solve.
-Their gap must meet the single `vertex_line_distance_mm` threshold. Parameters
-must be active and within the original finite extents plus
-`vertex_endpoint_tolerance_mm`. Mask boundaries/interiors are excluded.
-The same line-distance and endpoint thresholds apply when validating refined
-vertices against each incident finite segment. There are no additional min/max
-caps from legacy corner endpoint or parallel-angle settings.
-When an intersection is present, its closest point $I(t)$ is the candidate,
-not the midpoint of the two closest points. Boundary–boundary pairs start at
-the midpoint, with the same active-interval and existing geometric gates;
-their final grouped position is refined using all unique incident Lines.
+**Independent endpoint Corner generation.**
+`validator_corner_graph.generate_corners(edges, min_angle_deg=20.0,
+corner_radius_mm=5.0)` reads existing finite Edges and returns a list. It has no
+query, scene cloud, plane, visualization or detector dependency. Pipeline config
+supplies the two Corner controls; current user-edited CLI defaults are 45 degrees
+and 15 mm, while the independent function keeps the requested 20-degree/5-mm
+experimental reference defaults. Neither set is an accuracy calibration.
 
-Group candidates on each anchor by sorted $t$, requiring the entire group
-span to be no more than `vertex_group_span_mm` (default 5 mm); proximity chains
-cannot merge distinct locations. For one intersection and incident boundaries,
-use unit weights and $Q_j=I_3-v_jv_j^T$:
-$t^*=\sum_j u^TQ_j(b_j-a)/\sum_j u^TQ_ju$, $p^*=a+t^*u$.
-Reject a denominator at or below $10^{-12}\max(1,N)$; clamp $t^*$ to the
-intersection's actual finite range and recheck residuals and active extents.
-This also resolves a single boundary's anchor point. For Boundary-only groups
-and groups with at least two intersection Edges, solve using every unique
-incident Line with equal weight:
-$(\sum Q_j)(p-r)=\sum Q_j(b_j-r)$ in local reference coordinates, rejecting
-rank deficiency by relative singular-value threshold $10^{-12}$.
-Boundary-only groups no longer retain the first pair's midpoint when further
-Lines join. Group merges refit all incident Lines with the same rank and
-post-fit active-extent/residual checks; the single-intersection constrained
-solution is unchanged.
+For each valid Edge pair, normalize the supplied endpoint difference to obtain
+unit directions $u,v$ and require $\arccos(|u^Tv|)\ge\theta_{min}$.
+Solve $[u,-v](t,s)^T=b-a$ for the two infinite Lines' closest points $p,q$.
+Reject rank-deficient pairs. Their intersection residual is $\epsilon=\|p-q\|$;
+require $\epsilon\le\max(\tau_i,\tau_j)+10^{-8}$ mm. The fixed $10^{-8}$ mm
+term is numerical roundoff, not another user control. Each existing Edge carries
+`fit_tolerance_mm`: Boundary Edges reuse the configured TLS RMS merge limit;
+plane-intersection Edges reuse the plane inlier distance limit. These are existing
+fitting bounds, not measured Corner uncertainty. External Edges without this
+metadata use zero, requiring intersection to numerical precision. Adding this
+metadata does not change any upstream Edge coordinates or acceptance.
 
-Combine groups only with shared incident edge IDs, complete compatibility of
-all member positions within the group span, successful refinement using all
-unique incident lines, and valid residual/active-extent checks after refinement.
-The refined point must also stay within the group span of every member.
-Different intersection locations remain distinct. `vertex_candidates`,
-`vertex_rejections`, per-vertex `refinement_method`, original member positions
-and final `ls_residuals_mm` retain provenance. No RANSAC plane, hull or TLS line
-is moved. The legacy vertex `supported` flag means geometric reachability only;
-point-support validation remains disabled as previously requested.
+Use $c=p+(q-p)/2$ for the pair position; for coplanar Lines this is their
+intersection up to roundoff. For each Edge's supplied finite endpoints, compute
+$g_i=\min(\|c-a_i\|,\|c-b_i\|)$ and retain the pair only when
+$\max(g_i,g_j)\le r$. This tests endpoint proximity, not distance to the segment
+interior or the minimum object size. Endpoint IDs are side indices 0=start,
+1=end, qualified by the query-local Edge ID, not Hull Node IDs or scene point IDs.
+Ties choose start deterministically. The candidate stores `position`, `edge_ids`,
+`endpoint_ids`, `intersection_residual` and `endpoint_gap=max(g_i,g_j)`.
+All positions/residuals/gaps are in mm.
 
-Keep geometrically reachable vertices inside the core and with $\|v-q\|\le r_{corner}$.
-For every refined vertex, store `intersection_edge_count`, perpendicular
-infinite-Line fitting RMS `line_fit_rms_mm`, and `total_extension_mm` summed
-over unique incident Edges. With `t = (p - start) dot direction`, an Edge's
-extension is `max(0, -t, t - length)`. This ranking RMS is distinct from the
-finite-segment distances in `ls_residuals_mm`, which still enforce the existing
-acceptance gate and include endpoint overrun. Among accepted vertices, rank
-lexicographically by: shared intersection present first, lower Line RMS,
-lower total extension, lower query distance, then stable vertex ID. Round only
-the ranking RMS and extension to eight decimal mm places so sub-1e-8 mm
-floating-point noise does not override extension/distance tie breaking; this
-adds no physical acceptance threshold. An intersection-free candidate remains
-eligible when no shared-intersection candidate passes all existing gates.
-Neutral legacy support quality and Fusion are not ranking terms. Defaults are
-restored from experimental 30/30/30/50 mm to 5/5/5/10 mm for Line distance,
-endpoint tolerance, full group span and query gate respectively. CLI overrides
-remain available. Distance is measured from the unchanged Coarse query.
-`corner_position_mm` is this reconstructed
-position, not a replacement query sample. `corner_edge_ids` and `corner_edges` directly
-provide its incident finite segments, endpoints, plane IDs and support records.
-`verified=True` occurs only with ACCEPT and at least two valid geometric directions.
-No planes, unreliable patches or insufficient local edge geometry yield
-INCONCLUSIVE; sufficient patches without a geometric gated junction yield
-REJECT. Disabled geometry yields NOT_COMPUTED while
-preserving `planes_computed` independently.
+Integrate candidate groups only when they share an Edge and use the same
+Endpoint of that Edge. Reject any shared-Edge Endpoint conflict, since one
+integrated Corner cannot assign two endpoints to one Edge. Require every
+cross-group pair of original candidate positions to be within $r$; together
+with the same condition already holding within groups this bounds the full
+maximum diameter and prevents proximity-chain growth. Traverse pairs in sorted
+Edge-ID order and greedily merge the first eligible groups until convergence.
+Input enumeration order does not change that deterministic traversal.
+
+Keep the candidate with the smallest `endpoint_gap` as the integrated position;
+ties use `intersection_residual`, then the source Edge pair IDs. Do not average,
+move, snap or refit this position. Union the member Edge IDs and consistent
+Endpoint maps. The output residual/gap belong to that representative pair,
+not a new fit or a recomputed maximum over every integrated Edge; a newly joined
+Edge endpoint can therefore lie farther than $r$ from the representative. No
+post-merge structural validation is performed.
+
+The generator has no same-plane shared-Node requirement, ACTIVE/CLIPPED Node
+gate, active-interval reachability test, endpoint extrapolation allowance,
+anchor constraint, multi-Line LS, query/core acceptance gate or selected-Corner
+ranking. All merged candidates are returned; a query may have zero, one or many.
+It reads the endpoints of the valid Edges passed to it, including crop-created
+or masked original endpoints; it does not establish physical endpoint existence.
+The upstream finite Edge clipping and overlap masks remain numerically unchanged.
+
+Pipeline output is `corners` plus `validation_status=CANDIDATES` or
+`NO_CANDIDATES`; `verified=False` in both cases because structural validation is
+deferred. Disabled geometry retains `NOT_COMPUTED` and an empty list. Remove
+`corner_position_mm`, `corner_distance_mm`, `selected_vertex_id`, `corner_edge_ids`,
+`corner_edges`, old vertex/LS fields and ACCEPT/REJECT/INCONCLUSIVE selection.
+The separate fine-mode graph/refiner is unchanged.
 
 **Initial settings.** Fields below live in `SettingsDefaults`; resolved fields
 omit the `validator_` prefix in `GuidedValidatorConfig`. CLI uses hyphens.
@@ -438,25 +448,23 @@ omit the `validator_` prefix in `GuidedValidatorConfig`. CLI uses hyphens.
 | `validator_edge_overlap_angle_deg` | 25.0 | maximum unoriented intersection/boundary angle |
 | `validator_edge_overlap_distance_mm` | 15.0 | both boundary endpoints to intersection line |
 | `validator_edge_overlap_min_length_mm` | 2.5 | minimum finite overlap along the intersection |
-| `validator_vertex_line_distance_mm` | 5.0 | sole closest-point gap / refined finite-segment distance gate; absolute mm |
-| `validator_vertex_endpoint_tolerance_mm` | 5.0 | sole original endpoint extrapolation allowance; absolute mm; cannot extend a mask cut |
-| `validator_vertex_group_span_mm` | 5.0 | full anchor-parameter span and complete spatial grouping gate |
 | `validator_roi_padding_mm` | 10.0 | sole padding setting; absolute mm, support radius = core + padding; 0 supports core-only comparison |
 | `validator_plane_connect_radius_x` | 4.0 | 20 mm at 5 mm RANSAC voxel; unchanged support component radius |
 | `validator_plane_parallel_angle_deg` | 20 | small-angle intersection exclusion, not an orthogonality gate |
 | `validator_intersection_strip_half_width_mm` | 15.0 | independent strip half-width in mm; 0 retains exact hull/line clipping |
-| `validator_boundary_merge_max_error_mm` | 2.5 | independent maximum 2-D TLS vertex residual for adjacent boundary merges; absolute mm |
-| `validator_edge_min_length_x` | 1.0 | 5 mm minimum finite edge length |
-| `validator_corner_min_edge_angle_deg` | 30 | sole vertex minimum angle; also used by boundary coalescing and same-type edge direction matching |
-| `validator_corner_gate_radius_mm` | 10 | absolute Coarse-query-centred mm gate |
+| `validator_boundary_merge_angle_deg` | 0.1 | maximum directed angle for original segments and group TLS directions during adjacent boundary merging |
+| `validator_boundary_merge_rms_error_mm` | 5.0 | RMS of unique 2-D TLS vertex residuals for adjacent boundary merges; absolute mm |
+| `validator_edge_min_length_x` | 3.0 | 15 mm minimum finite edge length at the current 5 mm voxel |
+| `validator_min_angle_deg` | 45.0 | current CLI Corner pair minimum angle; independent function reference default 20 degrees |
+| `validator_corner_radius_mm` | 15.0 | current CLI endpoint/merge radius; independent function reference default 5 mm |
 
-The duplicate `validator_vertex_parallel_angle_deg` and
-`validator_corner_endpoint_tolerance_x` defaults, resolved fields and CLI options
-are removed. Current effective angle/distance/extension/group/gate values remain
-30 degrees / 5 mm / 5 mm / 5 mm / 10 mm. Callers formerly using the removed
-options must select the corresponding surviving thresholds explicitly. Changing
-RANSAC voxel size no longer silently caps the absolute-mm vertex distances via
-an additional voxel-multiplied endpoint setting.
+Boundary merge and Corner pair angles are independent, finite and in `(0,90]`
+degrees. `validator_min_angle_deg` and `validator_corner_radius_mm` are the only
+Corner controls, exposed as `--validator-min-angle-deg` and
+`--validator-corner-radius-mm`. Removed controls are the former Corner minimum
+angle/query gate and all `validator_vertex_*` distances. The radius is an absolute
+positive mm distance; it does not scale with voxel size. Both validator and total
+use the same independent generator.
 
 All `*_x` geometry lengths multiply the RANSAC voxel; counts/angles do not scale.
 These are initial experimental values, not calibrated accuracy claims. Existing
@@ -465,199 +473,57 @@ query-local crop/voxel stage and its settings are described in section 1.1.
 Positive lengths, boolean enable and (0,90]-degree
 angle validation follow the existing config/CLI pattern.
 
-**Display and timing.** The original third panel retains only core observations,
-fitted-plane disks/normals and original query/core-ball markers, using alpha 0.60
-and the original core-radius camera framing. Manager-owned auxiliary native
-windows separate (4) padded Hull/ROI clipping/TLS and Before/After diagnostics,
-(5) plane-pair intersections, and (6) the final four-panel edge/mask/vertex/raw
-process. The former independent per-plane Boundary view is removed, its place
-taken by the former window 7; no window 7 remains. Window 5 filters by stored
-edge type, uses gray Hull rims for patch bounds and cyan finite shared Edges,
-and omits ROI spheres, query markers and Corner overlays. Window 4 deliberately
-shows core/padded ROI guides and Node provenance. Both read stored results;
-the detailed panel semantics are described below.
-Window 5 additionally draws the stored `intersection_line_origin_mm` and
-`intersection_line_direction` as a yellow infinite-line guide over the display
-span $[-R_s,R_s]$ around its query-nearest origin. On each owning plane, a
-translucent RGB rectangle spans the same line range and the stored strip
-half-width $\pm\delta$, with thin coloured strip boundaries and alpha 0.28.
-Zero width draws only the line. These guides also appear when hull overlap or
-minimum length fails, but not for pairs excluded as parallel.
-A display-only normal offset of $0.001\max(1,R_s)$ mm avoids coplanar hull/strip
-flicker; stored coordinates, clipping, support and acceptance are unchanged.
-The caption reports the strip width and distinguishes guides from cyan accepted
-finite edges. Main panel 3 retains its existing content.
-Window 6 displays original edges, removed intervals, extension/LS estimation and
-the selected Corner/incident Edges on raw XYZ in four panels as detailed below.
-Only panel 6-4 adds a background cloud; none of its panels adds ROI spheres.
-The disk remains an illustrative model/sphere intersection in panel 3; actual
-computed hulls remain in windows 4/5, with muted rims in panel 6-1.
-All windows live in the existing display-only worker. Auxiliary windows close
-independently; main-window close, recapture and quit clean up all windows.
-R/Q/Esc work in every view, including all process panels. Each auxiliary camera
-is retained when redisplaying the same Coarse query. Rendering reads
-stored results without model fitting, support reassignment or result mutation.
-Only Coarse picks queries; its heatmap and cached scores are unchanged.
-`stage_elapsed_s` reports local voxel preparation, RANSAC, support, edges,
-vertices and inclusive geometry duration; `elapsed_s` is the current pipeline
-call total. Geometry is an inclusive subtotal, not an additional disjoint stage.
-No performance claim or per-stage benchmark was measured in this task.
+**Display and timing.** The original main window retains unchanged Coarse
+heatmap/query selection, local voxel input and RANSAC planes. All diagnostics
+remain manager-owned, reading stored results without numerical mutation.
+Auxiliary windows are 4: padded Hull / ROI clipping / TLS provenance / core-only
+Before versus padded After, 5: finite plane-pair intersections and tolerance
+strips, and 6: four process panels. Window 6 panels show original Edges,
+unchanged overlap masks, endpoint Corner integration, and all merged Corner
+candidates with their contributing Edges over the original gray raw cloud.
+All Corners are green unverified hypotheses, contributing Boundaries green,
+shared intersections cyan, and links from the recorded Edge Endpoint to each
+Corner yellow. No selected-corner highlight, LS shifts, acceptance colour or
+extension allowance is displayed. Panel 6-3 reports the common endpoint/merge
+radius. Window 4 D panels show their stored Corner lists; only C adds TLS RMS
+Line/error labels. Cameras, R/Q/Esc, S-key PNG export and per-panel cleanup retain
+their existing lifecycle. No new scene query is created by visualization.
 
-**Reference and limits.** Inspected the official CornerVINS
-[`RunBorderDetection` / `ComputeIntersectionLine`](https://github.com/zydddd/CornerVINS/blob/main/src/plane_features/plane_detector.cpp)
-for plane-pair connectivity and finite hull-overlap intervals. The implementation
-here uses a general least-squares line point, overlapping core/halo memberships,
-observed boundary edges and two-edge corner acceptance; it does not copy the
-three-orthogonal-plane/SO(3) box refinement or the axis-fixed line solution.
-Tolerance-strip clipping reconstructs the geometric principle in Zhang et al.,
-CornerVINS, Section V-B / Algorithm 1 / Fig. 4(a–c),
-[IEEE TRO 2025](https://doi.org/10.1109/TRO.2025.3567532), using the local
-`ref_paper/` PDF. The public `ComputeEndPoints` call supplies a tolerance, but its
-definition is not reproduced here; this is not claimed to be an identical port.
-The existing fine-mode finite-segment matcher/refiner was reviewed but is not
-called with native RANSAC IDs or replaced by this path.
-Convex hulls cannot reconstruct concavity; occlusion boundaries, missing boundary
-samples, noise bridges and centroid discretization remain limitations. A centre
-gate reduces ROI-cut influence but does not prove physical boundary existence.
-Without edge/vertex point-support validation, hull bridges and tolerance-recovered
-segments may be accepted without nearby observations; ACCEPT now certifies the
-remaining geometric gates, not measured point support.
-**Selected-query execution and process display.** Validator runs only after
-selecting one existing Coarse NMS query. Automatic all-query traversal and its
-aggregate scene window are removed. Window 4 contains only the selected
-query's ROI debugging. The canonical per-query pipeline, native/scene
-index adapters, graph masks and LS equations remain unchanged. There is no
-cross-query result accumulation or new NMS.
-
-Window 6 has four panels in a 2-by-2 layout for that one stored query result:
-
-1. Original boundary/shared edges before masking, using `all_edges` including
-   fully masked sources. Boundary RGB follows plane IDs; shared edges are cyan.
-   Gray hull rims provide local plane context without background point clouds.
-2. Active retained intervals in gray/cyan and removed boundary intervals as
-   magenta dashes. Original TLS endpoints and numerical masks are never mutated.
-   A blue translucent cylinder (alpha 0.16) with radius
-   `edge_overlap_distance_mm` spans each finite shared edge, with blue end rings.
-   This illustrates the infinite-line perpendicular-distance gate over the finite
-   interval used for overlap, not a requirement that boundary endpoints lie
-   between cylinder caps. Plane membership, direction angle and minimum finite
-   overlap remain separate conditions. `edge_overlap_settings` snapshots the
-   actual distance/angle/minimum-length settings for the viewer; the caption
-   reports them without substituting the hull-intersection tolerance-strip width.
-3. Active geometry and the final vertex calculation. Yellow dashes show only
-   extrapolation actually needed by each stored refined vertex's incident Edges,
-   not the full configured endpoint allowance. For unit edge direction u and
-   stored vertex p, compute the display parameter `t = (p - start) dot u`.
-   Draw `[t, 0]` when t is negative, or `[length, t]` when t exceeds the length;
-   interior projections have no extension. Thin gray links distinguish a
-   nonzero refined-vertex/line residual from extension along the edge axis.
-   Short extensions use proportionally short dashes. Small filled vertex markers
-   with wire halos avoid hiding these intervals. No new intersections, numerical
-   endpoint changes or validation gates are introduced. White dots show stored pair candidates; gray links
-   show movement to each stored refined LS estimate. Accepted vertices are
-   green, gated-out vertices red, and the selected corner has a larger marker
-   and thicker green incident edges. These are diagnostics, not new intersections
-   or support evidence. Captions report candidate/vertex counts and final status.
-4. Only the final selected Corner and its contributing Edges over the original
-   unvoxelized input cloud in neutral gray. Draw contributing Boundary intervals
-   and the selected marker/halo in green, and contributing shared intersection
-   intervals in cyan, with the selected Corner's actually
-   used extrapolation in yellow dashes and any projection residual in thin gray.
-   Omit other vertices, candidates, Hulls and noncontributing Edges. Upload the
-   raw cloud once through the manager/display-worker startup path; later query
-   updates replace only overlay geometry. Initial camera framing stays local to
-   the selected query although the background contains the complete raw scene.
-   This display never validates additional NMS queries. Missing optional raw data
-   is labelled unavailable and is never replaced by Coarse voxels under a raw
-   label. A query without a selected Corner shows only the background and status.
-   `corner_edges` remains the sole contributor list. Report each type's count
-   and IDs; explicitly label a Boundary-only Corner when shared contributors
-   are absent. Do not add unrelated shared Edges or change numerical selection
-   to force an intersection into this display.
-
-The four panels share identical initial framing for direct comparison and keep
-independent cameras when redisplaying the same query. All read stored results
-through the existing manager/worker. R/Q/Esc and auxiliary-window cleanup remain.
-Main panel 3 and window 5 retain their roles. Window 4 replaces the old
-per-plane Boundary display with the former window 7's A: padded Hull, B: ROI
-clipping, C: TLS/endpoint inheritance with Line IDs and maximum fitting errors,
-and D: core-only Before versus padded/clipped After. A uses gray plane support,
-green Hull/Nodes, blue dashed core and orange dashed padded spheres. B uses blue
-retained Edges/active Nodes, orange inactive X marks, gray dashed original Hull
-and light-red dashed removed portions. C uses thin gray input, thick blue final
-Lines, blue active endpoints, orange inactive X marks and gray absorbed Nodes.
-D shares initial framing and synchronizes camera interaction between its two
-panels. Captions report clipped active/inactive Node counts, retained Edges,
-final Lines/endpoint states and post-mask Corner candidate counts. Only C draws
-3-D Line/error labels. Store the handles returned by SceneWidget.add_3d_label
-in each display panel and remove them individually with remove_3d_label on
-query updates, without requiring a SceneWidget.clear_3d_labels method. These
-display caches never mutate numerical results. The pipeline computes the core-only support/Hull/graph
-comparison once from identical stored models and core voxels; there is no second
-RANSAC, alternate query or influence on final selected Corner. This additional
-Hull/TLS/graph work is timed separately as `roi_debug_before` and contributes to
-total geometry time. The renderer never recomputes numerical geometry.
-S captures window 4's A/B/C PNGs and a paired `D_before_after.png` under
-`outputs/validator_roi/query_<id>_<timestamp>/`, including counts, legends and
-C's Line/error listing. No capture has been generated or actual GUI/device run
-performed during implementation; tests were explicitly excluded by the user.
-At the user's request, instruction-section-15 synthetic geometry experiments
-were not executed, and the existing unittest suite was not run during this task.
-A numerical one-plane/two-boundary-edge regression fixture was added but left
-unexecuted; the prior plane-only viewer fixture explicitly disables geometry.
-One-/two-/three-plane acceptance and measured edge/corner
-accuracy remain unverified; syntax/import/CLI checks do not establish these.
+The optional core-only Before comparison calls the same generator on the stored
+core-only Edge graph. It never affects the padded result; `roi_debug_before`
+retains its own `corners`, and `include_debug=False` skips this comparison.
+Stage timers retain voxel, RANSAC, support, Edge, Corner and debug work separately.
+Headless numeric/UI-mock tests cannot establish physical Corner accuracy or
+hardware/rendering behaviour. Device, GUI and accuracy calibration remain
+unverified.
 
 ### 1.3 Whole-scene total composition
 
-`--mode total` explicitly enables the whole-scene path without changing CLI
-`detector` (NMS only) or interactive `validator` (one selected query). Reuse the
-same detector settings, CED/bilateral/PCA/Fusion/threshold/3-D NMS equations,
-then invoke the canonical guided validator independently for every NMS scene ID.
-For each ACCEPT result retain exactly its existing selected Corner and incident
-`corner_edges`, including original Boundary/shared Edge types and active finite
-intervals. Return aggregate `final_corners` and `final_edges`, per-query compact
-status/provenance/timing records and detector scores. Query-local Edge and Corner
-IDs are qualified by `query_index`. Do not average, snap or merge different
-queries' results, add a final NMS, or force shared Edges into Boundary-only
-Corners. Nearby queries may therefore produce redundant geometry.
+`--mode total` composes the unchanged scene detector/NMS, shared optional Q10 seed policy and canonical
+guided query pipeline. Collect every generated `corners` entry, including
+`verified=False` hypotheses, without per-query selection, structural validation,
+cross-query merging or an additional NMS. Aggregate `final_corners` records use
+`position_mm`, query-local `corner_id`, qualified `query_index`, contributing
+`edge_ids`, `endpoint_ids`, representative residual and gap. `final_edges`
+contains one contributor record per Corner/Edge relationship, preserving its
+active intervals, source Edge ID and selected endpoint side. An Edge used by
+multiple Corners can occur more than once with different Corner provenance.
+Compact per-query records retain the full Corner list, status and stage timers,
+without raw/local clouds or diagnostic graphs.
 
-Total uses `ValidatorDetectorConfig(mode="total")` and the same resolved guided
-parameters. No new detection hyperparameters are added. Geometry must be enabled.
-All raw/Coarse lengths remain mm, and the crop-before-local-voxel, separate
-core/halo, source index and seeded RANSAC contracts are unchanged.
+Reuse the existing raw/Coarse trees, raw crop before local voxelization,
+independent core/halo grids and native/scene-ID adapters. The total path sets
+`include_debug=False`, retaining the normal computation and omitting only the
+core-only visual comparison. Geometry must be enabled. Progress and summary
+report candidate/empty query counts, total unverified Corners, errors and stage
+times. No detector, sampling, RANSAC, Hull, TLS or mask equation changes.
 
-Preparation builds raw/Coarse KD-trees once. The Coarse tree is shared by dense
-scoring/NMS and nearest-scene adapters; the raw tree is reused across all seed
-ROIs. Total preprocessing omits the unused organized pixel/scene map. The shared
-pipeline's optional `include_debug=False` skips core-only comparison support,
-Hull, TLS, graph and Corner work, setting `roi_debug_before=None` and
-`debug_comparison_computed=False`; its timer is zero because it did not run.
-Default interactive calls retain that comparison. Guided batch mode with debug
-disabled stores compact records rather than accumulating raw/local point clouds
-and intermediate graphs. Finite/shape/index validation remains; when arrays are
-the identical cached Coarse object, the redundant full equality comparison is
-omitted. Dense logs omit individual seed dumps in total mode. No numerical
-RANSAC, residual, connectivity, TLS, strip, mask, angle, LS or gate computation
-is approximated. Progress and prepare/detector/validator times are reported.
-
-The manager opens exactly two result windows together. The first is the detector
-Fusion heatmap with the unchanged full-scene Q99 normalization, invalid-gray
-mask and red NMS markers. The second shows original raw XYZ in gray (0.38),
-final Corners in red, Boundary contributors in green, shared contributors in cyan, actual
-extrapolation in yellow dashes and residual links in thin gray. Show only the
-existing selected Corner per accepted query, without intermediate geometry.
-Render Edge bars only over active intervals, using the existing segment-cylinder
-helper. Edge radius is max(0.5, 0.15 times validator voxel) mm and Corner radius
-max(2, 0.8 times validator voxel) mm: 0.75/4 mm at a 5 mm voxel. Combine meshes
-by colour before adding them to the scene to bound draw-call count. Both views
-remain interactive; R recaptures, Q/Esc closes both, and closing one leaves the
-other active. There are no intermediate validator/Tk/RGB windows. Headless
-mode computes the same results; existing source acquisition is unchanged.
-
-Only Python syntax was checked. No test suite, synthetic data, device/GUI run,
-benchmark or speedup measurement was performed; the optimization claims concern
-removed/reused work, not a measured runtime multiplier.
+Manager still opens exactly two result windows: unchanged detector Fusion/NMS,
+and original gray raw XYZ with every generated Corner in red, Boundary
+contributors green, shared intersections cyan and endpoint-to-Corner links
+yellow. Existing batched meshes, active-interval rendering, marker sizes and
+R/Q/Esc/close lifecycle remain. There are no intermediate query windows in total
+mode. These are candidate displays, not accepted physical Corners.
 
 ## 2. Scene and organized-image indexing
 
@@ -725,7 +591,7 @@ every merge the combined samples pass through the same RANSAC/refit procedure.
 Final inliers are projected into a plane basis, a 2-D convex hull is computed,
 and the hull is lifted back to 3-D.
 
-The mutable organized context caches extraction by `(query_index,
+The mutable organized context caches extraction by `(query_index, actual query XYZ,
 CornerVINSPlaneConfig, query_radius_mm)`.
 
 ## 5. Padded per-plane projection and boundary
@@ -848,6 +714,28 @@ $$
 C_i^w=\frac{\sum_jw_j(p_j-\bar p_i^w)(p_j-\bar p_i^w)^\top}{\sum_jw_j}.
 $$
 
+PCA support now has a configurable original-CED cutoff
+`pca_ced_cutoff` / `--pca-ced-cutoff`, finite in [0,1]. For query i, retain
+
+J_i = {j: ||p_j-p_i|| <= R_PCA, CED_valid_j, s_j>0,
+          s_j>=pca_ced_cutoff},       w_j=s_j.
+
+Default 0.0 preserves the previous positive-original-CED support and all
+numerical outputs. A value of .10 excludes raw CED below .10, including when
+bilateral filtering targets CED or Fusion. Equality is included; zero weights
+remain excluded at cutoff zero. The query's own CED is not thresholded, so a
+low-CED query can still have a valid weighted neighborhood. Original CED,
+CED validity, bilateral-CED scores, coordinates and scene IDs are unchanged.
+`pca_neighbor_count` remains the geometric radius count;
+`weighted_neighbor_count`, PCA weight sum, effective sample size, weighted
+centroid/covariance/eigenvalues and ratio describe only retained support.
+The existing min-neighbor/eigenvalue gates still apply; no new effective-count
+gate is introduced. Insufficient retained support invalidates PCA/Fusion and
+sets Fusion to zero, rather than falling back to the excluded samples.
+Positive cutoffs can therefore change Fusion, threshold eligibility and NMS.
+All shared detector/validator/total/new-validator/ball/extremity Coarse consumers
+and comparison callers use this setting; results/logs record `pca_ced_cutoff`.
+
 For $\lambda_1\ge\lambda_2\ge\lambda_3\ge0$,
 
 $$
@@ -855,6 +743,55 @@ r_i=\operatorname{clip}(\lambda_2/\lambda_1,0,1),\qquad
 \widetilde r_i=\tau\tanh(r_i/\tau),\qquad
 F_i=\operatorname{clip}(s_i^B\widetilde r_i,0,1).
 $$
+
+`SettingsDefaults.bilateral_mode` selects exactly one target:
+
+- `"ced"`: filter original CED, then multiply by the configured PCA
+  ratio: F_i=clip(Bilateral(s)_i * r_tilde_i,0,1). This preserves the previous
+  boolean-True numerical outputs.
+- `"fusion"`: form F_i_raw=clip(s_i * r_tilde_i,0,1), then
+  F_i=Bilateral(F_raw)_i. All raw products exist before any filtered output is
+  written; never filter in place or filter CED first in this mode.
+- `"off"`: F_i=clip(s_i * r_tilde_i,0,1), preserving previous boolean-False
+  outputs and skipping filter arithmetic.
+
+For the selected source field z, the existing normalized bilateral kernel is
+
+w_ij = exp(-||p_j-p_i||^2/(2*sigma_spatial^2))
+       * exp(-(z_j-z_i)^2/(2*sigma_score^2)),
+Bilateral(z)_i = clip(sum_j(w_ij*z_j)/sum_j(w_ij),0,1).
+
+Use the inclusive configured spatial radius. CED-stage support contains only
+CED-valid samples; Fusion-stage support contains only fusion-valid samples.
+Invalid queries remain zero and never acquire validity through filtering.
+The range sigma retains its historical `bilateral_sigma_ced` / CLI name but
+measures selected CED or Fusion score differences, with no new sigma parameter.
+Radius, spatial sigma and range validation applies to all three modes.
+
+Settings/config/`--bilateral-mode {ced,fusion,off}` propagate through detector,
+validator, total, new-validator and ball/extremity Coarse consumers, including
+comparison callers. The boolean `bilateral_enabled` is removed. PCA always uses
+the same original CED weights, support, traversal order and validity masks;
+coordinates and scene IDs remain unchanged. Threshold eligibility and NMS use
+the final `fusion_score`, so their results can change with the selected mode.
+
+Results record `bilateral_mode` and `fusion_score_raw` (the product before the
+optional Fusion-stage bilateral pass). `fusion_score_raw` and `fusion_score`
+can reference the same array in ced/off modes; diagnostics never mutate either.
+`bilateral_ced_score` copies original CED in fusion/off modes. Its historical
+`bilateral_valid_mask` remains CED validity in every mode; final validity remains
+`fusion_valid_mask`. Generic bilateral neighbor counts/weight sums describe
+whichever field was filtered, and are zero for off. Fusion filtering reuses the
+existing normalized-field helper and tree in one additional scalar-query pass;
+the ced/off PCA neighborhood lookup/order stays unchanged. Shared lookup time
+and Fusion filtering time are included in the bilateral timer, which can be
+nonzero even in off mode because shared preparation still runs.
+
+Logs show the selected mode. The third heatmap panel shows filtered CED for
+ced mode, original CED/bypass for off, and pre-filter product `fusion_score_raw`
+for fusion mode; the final panel explicitly labels Bilateral Fusion. Raw and
+final Fusion share the final Fusion Q99 color scale. CED/filtered CED keep the
+original CED Q99 scale. Display reads never recompute or change numerical data.
 
 Omitting $\tau$ uses $\widetilde r_i=r_i$. Fusion thresholding is fixed or the
 global mean over finite valid scores. Eligibility is strict, $F_i>T$.
@@ -866,6 +803,16 @@ larger score; equal scores favor the smaller scene index. CLI detector output st
 | Setting | Meaning | Default |
 |---|---|---:|
 | `voxel_3d_mm` | scene voxel | 10 mm |
+| `centroid_radius_mm` | detector CED support, independent of voxel | user-tuned in `settings.py` (mm) |
+| `pca_radius_factor` | detector PCA support / CED support | 1.5 |
+| `pca_ced_cutoff` | inclusive original-CED cutoff for positive PCA support weights | 0.0 |
+| `bilateral_mode` | filter CED before product, Fusion after product, or skip | `"ced"` (`"fusion"` / `"off"`) |
+| `bilateral_radius_factor` | bilateral spatial radius / CED support | 1.0 |
+| `bilateral_sigma_spatial_factor` | bilateral spatial sigma / CED support | 0.5 |
+| `bilateral_sigma_ced` | dimensionless range sigma for the selected CED/Fusion field | 0.05 |
+| resolved `pca_radius_mm` | `pca_radius_factor * centroid_radius_mm` | derived from configured CED (mm) |
+| `nms_radius_factor` | Local Maximum NMS radius / CED support | user-tuned in `settings.py` |
+| resolved `nms_radius_mm` | `nms_radius_factor * centroid_radius_mm` | derived from configured CED (mm) |
 | `voxel_2d_mm` | 2-D scale base | 10 mm |
 | `query_radius_x * voxel_2d_mm` | exact plane ROI $R_q$ | 100 mm |
 | `cornervins_ahc_block_size` | AHC block side | 3 pixels |
@@ -888,16 +835,125 @@ its Fine stage is distinct from `--mode fine`. The fine section retains the
 existing `ValidatorConfig` and resolver names for API compatibility and follows
 query geometry, CornerVINS extraction, padded projection/boundary, weighted
 Hough, continuous 2-D line refinement, 3-D line restoration/merging, and
-graph-local refinement. Shared CED support settings (`min_neighbors` and
-`centroid_radius_x`) are listed under detector and remain consumed by fine;
-validator and ball reuse them for their Coarse detector queries. Only declaration
-and help-group order changed; field names, defaults, validation, CLI options and
-unit conversions are preserved. The former multiscale-Harris,
+graph-local refinement. `min_neighbors` remains shared with fine. Fine retains
+its own `centroid_radius_x`, while validator/total/ball/extremity Coarse queries
+reuse the CED-based detector radii above. The former multiscale-Harris,
 SAH-graph, and independent Edge3D diagnostic settings have been removed.
 Detector settings end at dense NMS and default to `validator=None`. An explicitly supplied shared `ValidatorConfig` validates every retained candidate. The superseded detector-only K-subspaces
 plane-verifier implementation and its private diagnostics have been removed.
 
 ## 10. Visualization semantics
+
+### Dataset Ahmed Python baseline (2026-11-09)
+
+The dataset runner now resolves `--preset dataset` by default; `--preset author`
+retains the earlier values described below. `baselines.config` owns the
+sets and all overrides are recorded in the result. Dataset Sommer uses normal
+radius 10 mm, dmin/dmax 5/100 mm, minimum votes 3 and refinement stride 5;
+author uses 20 mm, 100/1000 mm, 5 and 10. Optional Sommer input voxel sampling
+is off in both presets. When explicitly enabled, it selects the actual input
+point nearest each voxel centroid (ties: smaller original order), preserving
+sample-to-raw IDs and mapping normal IDs through that sample map. No new scene
+coordinate is inserted, and visualization uses the complete saved input.
+
+Dataset Ahmed uses 5 mm initial/edge grid, 2.5 mm analysis grid, edge K=100,
+threshold multiplier 2, thinning K=30, corner K=20 and exported L=10. Author
+values remain 10/5 mm, 400, 4.5, 150, 20 and 10. In both presets PCA uses
+10-NN, patch span is 5 mm and strict angle bounds are 50/150 degrees.
+Python overrides expose PCA K (both edge direction and cloud normal), patch
+span and angle bounds, preserving the source formulas and strict comparisons.
+Clustering, the size gate and L-loop RNG ownership are unchanged. Direct library/standalone port
+defaults and the original MATLAB backend keep author parameters; numeric
+Ahmed CLI overrides apply only to the Python port. No adaptive K, NMS,
+prediction merging or GT-dependent run-time filtering is introduced.
+
+Explicit `--preset scene2` (2026-11-10) uses the dataset Sommer parameters
+unchanged. Ahmed Python uses voxel 5 mm / analysis voxel 2.5 mm, edge K=100,
+multiplier 2, thinning K=5, corner K=27, PCA K=5, span=8 mm,
+strict angles 53.3 < theta < 116 degrees and exported L=1, seed 1.
+All ten passes still execute and are retained. Individual options override
+the preset; the MATLAB backend rejects this Ahmed preset. On the same
+scene_0002 ROI used for tuning, Sommer produces one prediction 8.803 mm from
+GT #1; Ahmed produces four, with one-to-one GT #1..#4 errors
+5.495/3.883/7.278/3.110 mm. These are in-sample results, with a sensitive
+angle lower bound; no generalization or full-scene accuracy is established.
+See `BASELINE_TUNING.md` for the search and saved reproduction command.
+Dataset and author defaults, raw input/annotations and detector numerics
+remain unchanged. No count target, GT snapping or postprocessing is applied.
+
+The small ROI-only setting selection used five scenes and separate confirmation
+on five scenes, seed 1 and maximum-cardinality one-to-one GT matching at
+15 mm, with 10/20 mm sensitivity. Selection/confirmation counts, the 12+12
+tested configurations, preset values, reproducibility artifacts and the very
+low observed precision/recall are recorded in `BASELINE_TUNING.md`. This is
+parameter selection, not a complete paper benchmark or independent-object test.
+Sommer did not improve on confirmation scenes. Detector/Q10/validator and
+Harris calculations are unchanged; source dataset/annotations are read-only.
+
+`--method ahmed` now defaults to a NumPy/SciPy port of author commit
+`e8aa7a4254cf67c3bdd6a82a7efb67d51c47994c`; `--ahmed-backend matlab`
+still directly runs the author functions. The port is separate from active
+CED/Q10/validator code and does not change their outputs or support IDs.
+Input/output adapters retain the mm/m conversion and saved ROI/full-scene
+selection. No GT enters computation. The original example's workpiece-specific
+passthrough bounds and X=0 deletion remain replaced by that input selection.
+
+Port stages: 10 mm grid centroids, 400-NN centroid displacement
+`||x-mean(N400(x))|| > 4.5*d_NN2(x)` (self included), 150-NN edge averaging,
+deletion of every member of each equal-position group, edge 10 mm/cloud 5 mm
+grid averaging, nearest-cloud edge mapping, 10-NN PCA first/third components,
+20-NN edge patches and a k=2/3 cluster count given by the number of coordinate
+spans strictly greater than 5 mm. Grid origin is each input's bounding-box
+minimum, cells are half-open and X varies fastest; KNN ties prefer smaller input
+IDs. PCA centers twice as in the source and forces each loading's largest
+absolute coordinate positive. K-means++ uses squared distances, one replicate,
+100 iterations maximum and singleton empty-cluster repair.
+
+For every L=1..10, rerun clustering for every eligible patch. Require every
+pair angle `atan2(||u cross v||,u dot v)*180/3.142` strictly between configured
+bounds (author defaults 50 and 150)
+degrees. Require `|n1-n2|<L` for k=2; for k=3 keep the source's OR across all
+three pairwise size differences. Store all ten masks/prediction lists and export
+only `--ahmed-level` (default 10, scene2 preset 1) to the shared result. Do not assume monotone
+counts across L, because clustering is rerun. No extra NMS or corner merging.
+
+The Python seed uses RandomState/MT19937; MATLAB toolbox RNG consumption,
+voxel ordering/boundaries and SVD degeneracies are not certified equivalent.
+Results carry `implementation=python_port`, the port file hash and
+`matlab_parity_verified=false`; comparison titles also identify the port.
+`ahmed_stages.npz` stores diagnostic arrays without recomputation: initial IDs
+address `initial_cloud_m`, mapped edge IDs address the separate `cloud_m`, not
+raw/scene points. Common prediction coordinates remain unsnapped with separately
+reported nearest raw IDs. Empty edge sets return empty predictions; other
+fixed-K support shortages fail explicitly. Author MATLAB execution parity is
+unverified; numerical tests cover formulas, ties, duplicate deletion, PCA signs,
+cluster gates, L-loop ownership and a known straight-line result.
+
+### Dataset baseline comparison
+
+Dataset baseline comparisons (2026-11-09) read the run's stored input raw IDs,
+GT and per-method predictions in mm. They do not read subsequently edited
+annotations or recompute a detector. `--visualize` opens one manager-owned
+window per completed scene, with GT first and method panels in CLI order;
+`view_baselines.py` reopens saved runs through the same manager. Every panel
+shows the identical input ROI/full-scene cloud. GT markers are green and each
+method's predictions red, at their original stored coordinates without snapping,
+merging, clipping or score filtering. Zero detections are labelled `0 corners`;
+failed/prepared runs retain distinct status labels. Camera view and projection
+are synchronized from any manipulated panel. Each scene owns a fresh spawned
+GUI process; closing its window advances to the next saved scene. Existing
+detector/validator equations, output coordinates, IDs and support are unchanged.
+
+As of 2026-11-10, the shared baseline method list defaults to Sommer / Ahmed /
+PCL Harris3D. Omitting `--method` runs all three. `--visualize` always appends
+any missing baseline names before runtime checks and computation, preserving
+the explicitly requested panel order. Nonvisual runs still allow a method
+subset. Saved-result comparison also always adds missing method panels;
+an absent record has status `NOT_SAVED`, empty marker geometry and a rerun
+instruction, never a fabricated zero-detection result or implicit recomputation.
+All three use the same stored input/GT and existing manager-owned camera sync.
+Backend parameters, detection coordinates, seed/order within each method and
+unit/index contracts are unchanged.
 
 Fine mode (`--mode fine`) enters the frozen, aligned RGB/depth Tk window directly. A
 left-click selects the query and another click recomputes it in the same
@@ -934,6 +990,7 @@ results and never recomputes or mutates numerical output.
 | Dense CED/bilateral/PCA | `corner_detector/edge_suppression.py` |
 | Fusion threshold and NMS | `corner_detector/candidate_extraction.py` |
 | Detector composition | `corner_detector/dense_heatmap.py` |
+| Optional Q10 refinement / antipodal validation | `corner_detector/refiner.py`, `corner_detector/q10_validator.py`, `corner_detector/spherical_antipodal.py` |
 | Query-local extremity/vertex peak NMS | `corner_detector/extremity.py` |
 | CED/click extremity adapters | `corner_detector/ball_query.py` |
 | Shared validator entry | `corner_detector/validator_pipeline.py` |
@@ -1279,10 +1336,943 @@ comparison. `paired_comparisons.csv` compares only the same GT/scene/noise/
 seed/source across modes and precisions. Cross-gate conclusions and measured
 trade-offs are in `outputs/soft_voting_20261029/CONCLUSION.md`.
 
+## Q10 relocation and final antipodal Lite
+
+### Active Lite bidirectionality: cleaned per-plane MaxGap (2026-11-11)
+
+The sole active final test now reproduces the current standalone lab's cleaned
+angular span, replacing N+/N-/B and per-plane axis scanning. Stage order is
+unchanged dense CED/PCA/Fusion -> threshold/NMS -> unchanged fixed-NMS-ball
+Q10 relocation and cached quality gate -> unit-sphere great-circle RANSAC ->
+angular connected group selection -> sparse end-bin trimming -> cleaned span
+verdict. `spherical_antipodal.py` owns angular models and MaxGap kernels;
+`q10_validator._final_evidence` composes them without importing the lab GUI.
+Physical mm plane extraction remains in its independent validator layer.
+
+At final refined p, collect the full inclusive R analysis-voxel ROI, exclude
+lengths <=1e-7 mm, and normalize u_i=(x_i-p)/||x_i-p||. Use all nonzero R samples
+regardless of Q10 CC. There is no radial weighting, expanded Tube ROI, final
+spatial CC or NN-spacing gate. Fewer than three directions gives unavailable
+evidence. Existing RANSAC configuration is retained, including the user-tuned
+detector tolerance in settings.py; lab function defaults may differ.
+
+Fit up to K origin-constrained planes n.u=0, ||n||=1. RANSAC samples two
+unexplained directions; reject cross-product magnitude <.16. Angular residual
+is asin(|n.u|) in degrees, inclusive at the configured tolerance. Each round
+scores at most 4000 randomly selected unexplained directions, preferring larger
+inlier count then smaller sum of truncated squared dot residuals. Refit against
+all directions with Huber IRLS origin-TLS scatter sum(w*u*u^T), without centroid
+subtraction: up to 8 iterations, Huber transition max(.5 degrees,.5*tolerance),
+convergence <1e-5 degrees. Reject near-duplicate models at absolute normal
+cosine >cos(max(12 degrees,1.5*tolerance)). Require
+max(min_support,ceil(min_fraction*N)) newly explained directions; stop when
+unsupported, never force K. Final refit/classification tests each direction
+against every plane independently, retaining overlaps. Fix normal sign by
+making its largest-magnitude coordinate positive. These RANSAC numerics are
+unchanged by the MaxGap replacement.
+
+Project each plane's inliers onto its great circle, renormalize, and measure
+azimuth theta_i in [0,360) in the deterministic least-normal-aligned coordinate
+basis. Sort circularly, including the last-to-first gap through 360/0. Connect
+neighbors within `gap_link_deg` (20 degrees); choose the group with greatest
+point count, then smallest angular span, then smallest start angle. This is
+angular connectivity, independent of physical distance/3-D connectivity.
+
+`trim_sparse_arc_ends` optionally cleans this dominant group. Unwrap at its
+largest empty gap and bin on a fixed angular grid of width h=10 degrees. The
+last endpoint is clamped inside the observed arc by 1e-8 degrees to avoid a
+phantom endpoint bin. With occupied-bin counts c_b, define
+
+T_density = max(gap_tail_min_bin_count,
+                ceil(gap_tail_density_fraction * median(c_b for c_b>0))).
+
+Defaults are minimum 2 and fraction .5. Remove bins with counts <T_density only
+from the two ends until a supported bin is reached; never delete sparse
+interior bins. Disabled trimming or a single-bin arc keeps the original group.
+A fully trimmed group has no retained samples. Disconnected groups and trimmed
+end samples both count as discarded; masks preserve the original plane order.
+The filter does not guarantee density at every angle inside the kept arc.
+
+For sorted retained azimuths phi_1,...,phi_m, define circular gaps between
+successive angles, including phi_1+360-phi_m, and compute
+
+G_k = max(circular gaps),       S_k = 360 - G_k.
+
+With no retained points use G_k=360, S_k=0 and no arc endpoints. A plane is
+measurable (the stored `reliable` field) iff kept_count>0. No retained-count or
+retained-fraction threshold is applied; even a single retained point has S_k=0.
+Any measurable plane with S_k>=gap_edge_span_deg (equality rejects) makes the aggregate
+REJECT, even if another plane has an empty arc. Otherwise no fitted planes or
+any empty cleaned arc yields UNKNOWN; all fitted planes nonempty and below the span gate gives
+CORNER. The removed count/fraction gates no longer produce UNKNOWN, so small
+or minority arcs can now pass. This is experimental edge-versus-corner angular evidence, not proof of
+a physical corner. The PCL-style boundary flag compares the dominant group's
+pre-trim maximum gap to 90 degrees; it is diagnostic only, never the veto.
+Unassigned directions do not introduce a new failure condition.
+
+When refinement is ON, read converged trace Q10 before collecting final evidence. Finite Q10 below
+`q10_min_q10` immediately REJECTs with `q10_below_threshold`; equality passes.
+Undefined Q10 stays INDETERMINATE. Both cases skip final ROI, RANSAC and MaxGap.
+Only a finite passing Q10 reaches the final angular gate. Cache final evidence
+once per reached analysis ID, without recalculating Q10. MaxGap REJECT produces
+`angular_span`; CORNER produces ACCEPT / `compact_angular_span`; UNKNOWN keeps
+the candidate INDETERMINATE. Existing ACCEPT-only refined-seed handoff to the
+canonical plane validator remains unchanged.
+
+Established container keys `spherical_planes`, `plane_antipodal`, `antipodal`,
+`antipodal_reject` and `antipodal_evaluated`, and kind `q10_antipodal`, remain
+for the existing UI/callers. Fixed `antipodal_mode="sphere_max_gap"` identifies
+the new semantics; there is no method selector. `plane_antipodal` now contains
+all `PlaneGapTest` records: raw/kept/discarded counts, kept masks, group count,
+max gap, cleaned span/endpoints, PCL-style flag, reliability, edge-like verdict,
+pre-trim span, tail-removed count/bin count and density reference/threshold.
+The summary `antipodal` selects by rejecting first, reliable first, widest
+cleaned span, greatest kept count, then lowest plane ID. Its retained/discarded
+masks align with all `vector_analysis_indices` and are false outside that plane.
+Old axis, B score and positive/negative counts/masks are removed. Original scene
+NMS IDs/positions, Fusion, Q10 trace/support and analysis IDs remain immutable.
+`geometry_analysis_indices` stays the union of plane memberships. Full-ROI
+component IDs/all-true masks, `cc_evaluated=False`, NN/epsilon=None assert no
+final spatial graph. Excluded angular samples remain in stored models/ROI.
+
+Settings are centralized in `SettingsDefaults` / `Q10ValidatorConfig`. Existing
+Q10/RANSAC controls remain. `q10_gap_min_points` and
+`q10_gap_min_retained_fraction`, their resolved config/result metadata and CLI
+flags are removed. RANSAC minimum new support/fraction and end-bin density
+filtering remain unchanged. This detector change does not alter the standalone
+lab's retained-count/fraction gates; angular grouping, tail masks and span
+equations still match it. The old `q10_beta_deg`, `q10_antipodal_threshold`,
+`q10_min_side_points`, `q10_sphere_axis_step_deg`, their CLI flags and the
+`--q10-threshold` alias are removed rather than reinterpreted. New settings
+resolve through matching `--q10-gap-*` CLI flags (tail toggle uses
+`--[no-]q10-gap-tail`):
+
+| Setting (`q10_...`) | Default / constraint | Meaning |
+|---|---|---|
+| gap_link_deg | 20; (0,180) degrees | neighboring azimuth connection gap |
+| gap_edge_span_deg | 160; (0,360] degrees | cleaned span rejection, inclusive |
+| gap_tail_enabled | True; boolean | trim sparse end bins |
+| gap_tail_bin_width_deg | 10; (0,90] degrees | fixed-grid bin width |
+| gap_tail_density_fraction | .5; [0,1] | occupied-bin median multiplier |
+| gap_tail_min_bin_count | 2; integer >=1 | minimum supported end-bin count |
+
+Manager-owned diagnostics read stored evidence only. Six Q10/path/support/
+history overview panels and per-plane rose histograms remain. Raw cached
+azimuths populate 36 ten-degree histogram bins; arcs use the corresponding
+plane color and dim crosses mark discarded angles. Cards show cached
+span, maximum gap, kept/raw counts, discarded/tail counts, reliability, RMS and
+new support. Empty-arc evidence shows UNKNOWN; the removed count/fraction gate
+text is omitted from the footer. Early Q10 rejection shows
+RANSAC SKIPPED. No signed axes or antipodal cap shading remain. Plot basis,
+circle colors and overlap memberships match the lab; projected display radii
+remain 1.11+.025*k, circles 1.08. Display thinning affects only rendering.
+`q10_spherical_plane_primitives` reconstructs arcs from cached endpoints in the
+stored model basis. The native mm view retains one analysis cloud and .8R arcs
+at the final origin. As of 2026-11-11, voxel display reads all cached plane
+inlier/kept masks, independent of the selected summary: P1 orange (255,130,62),
+P2 green (81,218,129), P3 purple (159,130,255), normalized by 255. A point with
+multiple fitted memberships is white; a point discarded by all its member
+planes uses 30% brightness. Retention in any member plane keeps it bright.
+Blue denotes unscored context and gray denotes final directions without a
+fitted plane. Display-only membership/retention matrices align to unique
+analysis IDs; points are not moved or duplicated. Projected points/cleaned arcs
+share the plane palette, with discarded projections/crosses dimmed per plane.
+The Q10 arrow stays cyan; native/Tk titles and legends describe MaxGap and
+these color meanings. Summary evidence and per-plane numerical masks/counts
+remain unchanged.
+Physical panels use equal mm scales; step navigation leaves final evidence
+fixed. No diagnostics mutate results or rerun fitting, Q10 or MaxGap.
+
+### Q10 relocation and cache contract
+
+Dense threshold/NMS feeds the original seeds into `run_q10_validator`; the
+public `lite_validator` result alias is retained. The canonical plane-validator
+seed handoff is unchanged. The final angular check is described above.
+`--q10-validator` follows shared settings in detector, validator, total and
+new-validator; library configs retain their explicit optional Q10 field.
+
+As of 2026-11-11, `q10_refine_enabled=True` / `--[no-]q10-refine` independently
+controls relocation and the min-Q10 gate while `q10_validator_enabled` remains
+the overall validator master. ON reproduces the previous path; the current initial switch follows settings.py. OFF
+skips all nearest-analysis snapping, `refine`/`evaluate`, Q10 direction/quantile
+computation, spherical Q10 CC, support-search gates and `q10_min_q10` comparison.
+Keep final origin exactly at the original supplied NMS scene XYZ, even if no
+analysis sample exists inside the NMS search ball. Use the unchanged global
+analysis voxelization and radius-R full support for RANSAC/MaxGap. Its CORNER
+means ACCEPT, REJECT means REJECT, UNKNOWN means INDETERMINATE; changing the
+configured min-Q10 value has no effect in this mode. Configuration values still
+undergo their normal type/range validation. No additional CC or physical-plane
+stage is introduced.
+
+OFF stores `refine_enabled=False` on each record and result, with effective
+`refine_cc_enabled=False`, `q10_value=None`, `q10_reject=None`, and
+`refined_analysis_index=None`; `refined_position_mm` equals original scene XYZ.
+For the existing inspector, store a one-position trace, empty analysis IDs and
+Q10 support, NaN Q10/axis/CC arrays, zero support/tested counts, actual angular
+ROI count, `converged=False` and `stop_reason="refine_disabled"`. This does not
+claim a successful Q10 search. Cache angular evidence by the exact XYZ tuple,
+so different origins cannot alias through a missing analysis ID; equal origins
+can reuse evidence. Q10 caches remain unused, early-reject count is zero, and
+`antipodal_evaluated` describes the reached angular stage as before. Diagnostics
+label refinement/min gate OFF, draw no min-Q10 line/arrow, and keep existing
+cached MaxGap panels/colors. The configured threshold is retained in metadata
+but is inactive. Master OFF still removes the whole validator stage.
+
+With refinement ON, globally voxelize raw XYZ once at the configured
+`q10_voxel_mm`. Preserve each original
+scene NMS coordinate p0 and restrict all selectable analysis voxel centroids
+to |p-p0|<=`nms_radius_mm` (+1e-8 mm boundary tolerance). Snap the baseline to
+the nearest analysis centroid within that fixed ball. If none exists, keep
+p0 as INDETERMINATE with `refined_analysis_index=None`, no analysis IDs in
+the trace, and no CC/antipodal evaluation. `refiner.Q10PositionRefiner` owns relocation.
+At each uncached analysis point p, query the full inclusive R-neighborhood
+(`q10_radius_mm`, tolerance +1e-8 mm). Compute non-self median NN using all of
+those analysis voxels and epsilon=`q10_cc_factor` times that median. Run one
+epsilon graph inside the sphere, appending the exact query vertex and retaining
+its component. Both NN and graph edges use voxel XYZ in mm. The query-anchored graph stays inside the spherical R region. The graph uses the shared
+`connectivity.radius_components` implementation, moved without changing graph arithmetic. No halo or path outside R is admitted.
+
+Only query-connected samples supply directions
+u_i=(q_i-p)/|q_i-p| for distances >1e-7 mm. With >=10 connected samples,
+>=3 nonzero directions and a defined selected axis, the unit_mean mode sets
+
+$$m=\frac{\operatorname{mean}(u_i)}{|\operatorname{mean}(u_i)|},\qquad
+Q(p)=\operatorname{quantile}_{0.1}(\operatorname{clip}(u_i^T m,-1,1)).$$
+
+Use ordinary NumPy quantile/interpolation after spherical CC; no radial/density weights,
+CED-axis sampling or antipodal objective enters Q. Cache Q, neighbor count
+(including the query itself) and m by analysis ID for the frame's immutable
+cloud, R, CC factor and direction mode. Cache the spherical component IDs, full ROI count,
+median NN and epsilon too. Invalid responses are cached; degenerate spacing,
+fewer than ten connected points or an undefined selected direction leaves Q invalid.
+A new frame/cloud/R/CC-factor/direction-mode creates a new instance/cache; no approximate or
+stale reuse is allowed. Existing three-argument `Q10PositionRefiner` calls remain
+accepted, with a 4.0 CC-factor default; detector calls pass the configured factor.
+`q10_refine_cc_enabled` follows current user tuning in settings.py. OFF skips both NN spacing and graph
+construction, and uses the full-R support for the same mean/Q10 formula and
+80% support guard. Cache scope additionally includes that fixed switch. Trace
+support IDs then refer to full-R support and NN/epsilon are NaN; no connectedness
+is asserted. The constructor accepts a trailing boolean `cc_enabled=True`.
+
+Perform one search over that fixed original-NMS ball, recalculating each
+candidate's spherical CC and Q10 when uncached. Require connected
+count>=max(10,ceil(.8*initial count)). Select greatest Q, with reference 1e-9
+tie tolerance, then smaller distance to p0 and analysis ID. Replace the baseline
+only for strict improvement >1e-9. Never recenter or repeat the search around
+the selected point. A valid completed search sets `converged=True` to mean
+the fixed-ball selection is complete; it is not a moving-window local maximum.
+More than 3500 fixed-ball candidates is INDETERMINATE, without silent thinning.
+The trace stores the initial analysis position and at most one selected
+replacement, along with their IDs, Q, connected counts and mean axes; tested-position
+counts describe the single search. The retained `step_mm` field now denotes
+this fixed NMS search radius. Total displacement from p0 is bounded by that
+radius (+1e-8 mm), including the initial snap. `support_analysis_indices` stores
+the spherical CC IDs per trace position. `neighbor_counts` now means connected
+count including the query, `roi_counts` means full-R count, and trace arrays
+`cc_median_nn_mm` / `cc_radii_mm` store the spherical CC spacing and epsilon.
+
+The final angular evidence is evaluated once per distinct Q10-passing converged
+analysis ID and cached. The first quality gate reuses trace Q10, never a Q1 or
+post-final recalculation. `antipodal_evaluated` is false on Q10 early exits and
+true when final evidence is requested/reused, even if that stage later reports
+insufficient support. On early exits, `antipodal`/`antipodal_reject` stay None;
+there are no fabricated plane masks or second failure reason. The sole known
+failure is `q10_below_threshold`. `q10_early_reject_count` counts rejected seeds,
+and `final_evaluation_count` counts distinct origins that reached evidence.
+Q10 formulas, traces, passing-point RANSAC equations and scene/analysis IDs stay
+unchanged. Original NMS coordinates are immutable; refined positions are separate.
+The retained `raw_tree` argument is accepted but not consulted by Q10 evidence.
+Debug is read-only: manager-owned plots/native views use stored Q10 support,
+models, axes and masks, without rerunning gates or mutating numerical results.
+
+### Selectable Q10 direction (2026-11-09)
+
+`q10_direction_mode` / `Q10ValidatorConfig.direction_mode` / CLI
+`--q10-direction-mode {unit_mean,unit_median,centroid}` selects the axis used
+both during relocation and for the cached final Q10 quality gate. The default
+`unit_mean` exactly preserves the existing unit-direction mean. On the same
+Q10 support S (query-connected R sphere when its CC is ON, full R sphere when OFF),
+let v_i=x_i-p and u_i=v_i/||v_i|| for ||v_i||>1e-7 mm. Choose a as:
+
+- `unit_mean`: arithmetic mean of the u_i;
+- `unit_median`: coordinatewise median of the u_i (not a geometric median);
+- `centroid`: arithmetic XYZ centroid of S minus p, retaining original distances.
+
+Normalize m=a/||a||, then use the unchanged ordinary NumPy lower-10% cosine
+quantile Q=quantile_0.1(clip(u_i dot m,-1,1)). All quantile observations have equal
+weight. The centroid mode changes only the axis; it introduces no quantile weights
+and does not reuse the differently sampled dense CED centroid. Fewer than three
+nonzero directions or ||a||<1e-8 makes Q undefined with existing INDETERMINATE
+handling. Each refiner instance/cache owns one immutable direction mode. Keep
+the `mean_axes` trace field for callers; it now stores the selected normalized
+Q10 axes. Records and result metadata identify `direction_mode` explicitly.
+
+The physical 3-D debug cloud shows a solid cyan arrow from each selected trace
+position p to p+R*m, with shaft/head radii .018R/.05R and lengths .78R/.22R.
+It follows cached step selection; its display length is R, not the magnitude
+of the mean/median/centroid vector. Physical-mm trajectory/final-support plots
+show the same arrow in teal. Unit-sphere/histogram labels name the selected
+mode. These diagnostics only read stored axes and positions; they never
+recompute directions, supports or acceptance. The antipodal axis remains an
+independent search and keeps orange/violet support colors.
+
+## Removed detector experiments (2026-11-09)
+
+The independent `--mode heatmap` multiscale experiment and Weighted Local Cone
+backend are removed, including their configuration fields/CLI flags, exclusive
+numerical helpers, rendering functions and tests. Shared inclusive Local Maximum
+NMS, dense CED/bilateral/PCA/Fusion computations and heatmap screens,
+Q10 relocation/spherical-RANSAC support and the standalone lab remain.
+The Euclidean CC helper remains in `connectivity.py` for the Q10 refiner;
+final spherical support does not use a graph. The native-view worker remains Q10-only, with its
+existing spawned-process isolation, step messages and bounded shutdown.
+
+The Scale/PCA Lite experiment was also removed on 2026-11-09: delete all eight
+`lite_validator_*` defaults, `LiteValidatorConfig`, its `DetectorConfig` field,
+CLI flags and composition branch, `lite_validator.py`, exclusive
+`StableRadiusPCA`, scale plots/sliders/status styling and feature-only tests.
+Retain dense `ced_weighted_pca`, Q10 refinement/CC/direction code and spherical
+RANSAC final support. The Q10 result alias `lite_validator`, clicked inspector, status colors,
+refined-coordinate markers and registered-RGB ACCEPT-only display remain.
+`--no-q10-validator` now selects the unchanged dense/NMS detector without any
+Lite validator. Fine/validator/total/ball pipelines keep their existing owners.
+
+## Detector computation reuse and pruning (2026-11-09)
+
+These optimizations preserve numeric scores, NMS IDs, refinement positions,
+support masks, CC rules and all tie keys; configured radii, thresholds, voxel
+sizes and Q10 direction modes are not changed.
+
+1. Runtime detector mode omits `build_organized_plane_context`: it has no plane
+   consumer for raw organized XYZ or pixel-to-scene nearest-voxel mapping. Total
+   already omits it; fine, validator and ball modes retain their original input.
+2. `edge_suppression` batches CED lookups in groups of 64. Once all original CED
+   values exist, bilateral and PCA share a lookup at the larger of their radii
+   and the same squared distances for each valid query, with at most 64 queries
+   per batch. Keep unsorted scalar KD-tree traversal order with
+   `return_sorted=False`; filter strict CED and inclusive bilateral/PCA supports
+   exactly as before. Near a smaller sphere boundary (absolute difference from
+   radius squared <= 64*float64 epsilon*radius squared), repeat the original
+   smaller-radius scalar lookup before filtering: cKDTree/NumPy rounding can
+   otherwise disagree at the boundary. Do not cache a whole-scene neighborhood
+   graph. The bilateral timer includes the shared query/distance preparation;
+   PCA time measures its kernel. Array/result/index contracts stay unchanged.
+3. Q10 candidate evaluation first applies the existing required support count
+   max(10,ceil(.8*initial count)). Reuse stored support/CC data when available;
+   defer the quantile for insufficient support. Deferred does not mean invalid:
+   keep that candidate out of the numerical response cache so another seed with
+   a lower count requirement can calculate it, reusing the same support/CC.
+   Normal cached scores and intrinsically invalid responses keep their semantics.
+   Cache misses count uncached requests, including deferred requests.
+Verification covers dense numeric fields against the prior three-pass
+implementation and exhaustive Q10 evaluation across both Q10 CC settings and
+all three direction modes, including floating-point sphere boundaries,
+support-cache deferral and source dispatch. The removed projection-axis
+pruning no longer runs. Saved-capture kernel timing is not a live sensor or GUI
+test and excludes acquisition, Open3D voxelization and rendering.
+
+Historical pre-removal benchmark (2026-11-09): the Projection rows below describe
+the implementation that has since been deleted; they do not describe an active
+Lite option or current spherical-RANSAC runtime.
+
+Kernel benchmark on `captures/capture_20261107_083438_550378/cloud.npz`, using
+`points_mm[::16]` converted to float64 (10,000 fixed raw samples), compares the
+saved pre-change implementation with the optimized implementation. Timings are
+medians of five alternating old/new executions. Dense uses CED/bilateral=45 mm,
+PCA=67.5 mm, min-neighbors=5 and PCA saturation tau=.6. Projection uses R=45 mm,
+Tube=10 mm, gap-factor=2.5 and 642 signed directions on 23 non-sparse ROIs.
+Refinement uses 24 fixed seeds, R=45 mm, NMS=11.25 mm, centroid direction and CC OFF.
+
+| Kernel | Before | After |
+|---|---:|---:|
+| Dense scores, all 10,000 samples | 1.516 s | 1.257 s |
+| Projection, per candidate (batch average) | 7.874 ms | 3.243 ms |
+| Refinement, per seed (batch average) | 1.281 ms | 1.265 ms |
+
+All dense numeric fields, full Projection results/masks and refinement traces
+match the saved implementation on these inputs. Refinement's support-gate
+benefit is small on this input; gains depend on how many candidates fail that
+gate. These are kernel timings on a fixed subsample, not whole-frame latency or
+sensor FPS. Fifty-five focused numeric/dispatch/architecture tests pass.
+The full suite runs 244 tests with 23 failures and 38 errors in the current
+environment/configuration; no newly failing test names appear versus the
+pre-change run. Open3D/device paths are not exercised here.
+
+## Detector seed handoff to validator and total (2026-11-09)
+
+Detector, interactive validator, new-validator and total share the same `q10_validator_enabled`
+default and `--[no-]q10-validator` switch and all Q10 options. Fine/ball/extremity
+keep their existing paths and do not run Q10. Dense CED/PCA/Fusion/NMS values and
+the original candidate extraction are unchanged. `prepare_validator_seeds` in
+`validator_pipeline.py` composes NMS provenance with Q10 results once:
+
+- Validator master OFF: all NMS scene IDs, with their original scene XYZ.
+- Validator master ON: `accepted_indices` (status ACCEPT only), with each record's stored
+  `refined_position_mm`. REJECT and INDETERMINATE are excluded. No accepted
+  seed means no validator queries; there is no fallback to original NMS points.
+  Q10's own records/kept_indices still retain INDETERMINATE for diagnostics;
+  this stricter rule applies only to downstream validator seeds.
+
+`scores.validator_seeds` stores aligned candidate_indices, positions_mm,
+original_positions_mm and source (`detector_nms` without the validator,
+`q10_refined` with refinement ON, or `maxgap_nms` with refinement OFF). Refinement
+OFF still selects only angular-ACCEPT IDs at their exact NMS centers. It does not
+overwrite the scene, NMS arrays, Fusion scores or Q10 records. Distinct original
+NMS IDs remain distinct even if they converge to the same coordinate.
+
+The canonical `run_validator_pipeline` still receives a scene `query_index`;
+its optional `query_position_mm` supplies an independent finite XYZ center.
+`run_validator_candidates` accepts aligned `query_positions_mm`. Without these
+arguments both retain the original index-based behavior. With them, raw core/
+halo crop, voxelization, guided RANSAC, plane support and edge/corner geometry
+use that center. The organized AHC adapter similarly centers its pixel mask,
+ROI and projection support there. No synthetic point is appended and no scene
+point is moved. Support IDs remain in the original scene space, with raw,
+query-local RANSAC and Q10-analysis IDs still distinct.
+
+Result `query_position_mm` is the center actually used; `coarse_query_position_mm`
+is the original `points_mm[query_index]`. Voxel and organized extraction caches
+include both original ID and actual center, so ON/OFF or a changed refinement
+cannot reuse a crop from a different center. Q10 equations, support gates,
+refinement bounds and validator equations/radii are otherwise unchanged.
+
+Interactive preparation receives the raw cloud required by Q10. Kept IDs and
+positions are frozen together and passed to the spawned view. Marker placement,
+3-D and RGB picking, ROI markers and the numerical query all use these same
+cached positions while returning original scene IDs. Display does not run Q10
+or mutate scene data. Total uses the same seed bundle and canonical batch
+pipeline without debug comparisons. Library detector-to-validator composition
+also forwards Q10 positions when its explicit validator is enabled.
+
+## Independent projection-only validator (2026-11-09)
+
+`--mode new-validator` adds a separate interactive path. It shares detector
+scoring/NMS and the configured Q10 policy (ACCEPT-only refined seeds when ON;
+original NMS seeds when OFF). It calls the same canonical
+`run_validator_pipeline`, query-local raw crop/independent core-halo voxelization,
+`extract_guided_planes` and `reconstruct_plane_support` as `validator`. There is
+no copied RANSAC, support recollection, connectivity or projection algorithm.
+The original `validator` and `total` stage order remains unchanged.
+
+`NewValidatorConfig` contains the independent plane/projection controls and common 2-D Q10 lower bound and is resolved
+from independent `new_validator_*` defaults/CLI fields in `settings.py`:
+
+| Setting suffix (`new_validator_…`) | Initial value | Units / meaning |
+|---|---:|---|
+| ransac_voxel_mm | 5 | local voxel mm |
+| ransac_radius_x | 15 | core radius / local voxel (75 mm initially) |
+| max_planes | 3 | maximum sequential planes |
+| ransac_iterations | 256 | iterations per plane |
+| inlier_threshold_x | 1 | strict residual threshold / local voxel |
+| guided_sigma_x | 1.5 | existing guided first-point sigma / local voxel |
+| min_inliers | 35 | absolute inlier minimum |
+| min_inlier_ratio | .08 | unchanged ROI-relative minimum |
+| random_seed | 42 | existing per-query RNG seed |
+| roi_padding_mm | 10 | additional support shell, independent of voxel |
+| plane_connect_radius_x | 4 | existing 3-D support CC radius / local voxel |
+| min_q10 | .10 | shared lower bound for every plane cosine Q10 |
+
+These values were copied from the active validator at creation, then made
+independent. Existing `--validator-*` controls do not affect the new path;
+`--new-validator-*` controls do not affect the old path. New mode always runs
+projection, without an exposed geometry/hull/edge/corner switch. Shared plane
+input validation retains the original validator's arithmetic and errors.
+
+The support path retains strict plane residual membership over the padded ROI,
+the same query-near connected component selection with core overlap, plane
+normal/offset normalization, tangent basis and projected query origin. For
+selected native support IDs i, cache ordinary mm coordinates
+`UV_i=[(x_i-origin) dot u, (x_i-origin) dot v]` in `projection_uv` before any
+rank check/hull. The existing minimum of three connected samples still applies;
+sparse support has an empty `(0,2)` projection and its existing failure reason.
+In new mode only, compute the centroid-direction Q10 gate described below, then stop: no SVD/rank rejection, ConvexHull, finite edges,
+overlap/TLS or Corner generation runs. Thus a collinear projected set can be
+shown, without asserting that it forms a hull. Projection patch validity means
+anchored connected support, not hull/edge/Corner validity. Old mode continues
+its original rank/hull checks with unchanged numerical results.
+
+Results explicitly report `projection_only=True`, `projection_computed=True`,
+`geometry_computed=False`. `validation_status` is now ACCEPT/REJECT/INDETERMINATE for the all-plane 2-D Q10 gate, while `verified=False` still disclaims structural Corner verification. Plane patch
+UV/support/native/scene IDs remain available even in non-debug batch output.
+Hull arrays stay empty and areas zero; Edge/Corner lists are not computed.
+Raw IDs, query-local RANSAC IDs, original scene IDs and separate query centers
+retain the existing contracts. Display never reconstructs or modifies UVs.
+
+The managed UI retains seed, query-voxel and fitted-plane views. Its only extra
+window shows per-plane cached UV scatter plots (U/V in mm, projected query at
+zero), rendered by `visualization.plots` and displayed through the manager-owned
+Open3D image widget. Hull/edge/Corner windows are not created. The existing
+spawned-view isolation, cached seed coordinates and close/recapture flow remain.
+
+### Per-plane centroid cosine Q10 gate (2026-11-09)
+
+The projected query is UV origin (0,0). For each fitted plane, use the same
+cached selected-support `projection_uv` coordinates. Compute the arithmetic
+centroid c=mean(UV), then normalize d=c/||c||. This uses original UV distances,
+not the mean of unit directions. Exclude projected zero offsets (length <=1e-7
+mm) only from cosine observations. For the remaining v_i, compute
+cos_i=clip((v_i/||v_i||) dot d,-1,1), then ordinary unweighted NumPy Q10 at .1
+with its existing linear interpolation. UV basis rotation/reflection changes
+coordinate components but not these cosines. No external axis, radial weighting,
+histogram or axis search is introduced.
+
+Use one independent setting `new_validator_min_q10` / `NewValidatorConfig.min_q10`
+/ `--new-validator-min-q10`, initially .10 and finite in [-1,1]. Equality passes.
+With one, two or three fitted planes, every plane must have a defined Q10 >=
+that same threshold. One known failure makes the result REJECT. Otherwise any
+undefined score, or zero fitted planes, is INDETERMINATE and never ACCEPT.
+Fewer than three nonzero UV directions or centroid norm <1e-8 mm leaves its
+score undefined; no fallback direction is invented. This Q10 gate adds no
+additional connectivity/rank/hull condition beyond the existing UV support
+selection. Existing plane-component uncertainty remains separate metadata.
+
+`plane_q10` stores each plane_id, centroid_uv_mm, normalized direction_uv,
+nonzero_mask, cosines, nullable q10/passed and reason. Results also store the
+common q10_threshold, passed_plane_count, boolean accept, validation_status and
+failure_reason. The `projection_q10` stage timer and total elapsed include this
+calculation. Existing RANSAC, CC, UVs, IDs, detector/Q10 seed policy and old
+validator equations remain unchanged; Hull/Edge/Corner are still not computed.
+The gate classifies projected direction distributions, not physical Corners.
+
+The projection plot reads stored evidence only: a teal arrow from query to
+centroid, per-plane Q10/threshold/PASS-REJECT-UNKNOWN and the combined result.
+It never recalculates the axis or quantile while rendering.
+
+
+## Saved dataset execution (2026-11-10)
+
+`--source dataset --mode detector --input PATH` resolves a single saved
+`points.npz` scene, a dataset root, or `corner_dataset_tool/dataset` beneath
+the supplied tool directory. The existing `SceneData.load` validates XYZ/RGB,
+pixel indices and saved annotation structure; `scene_sort_key` orders scenes
+numerically. `dataset_input.run_dataset_detector` owns this input composition,
+not any copied detector/Q10/validator algorithm.
+
+`dataset_region` / `--dataset-region` is `roi` initially. It requires the saved
+annotation AABB and uses its inclusive original raw-row selection. `scene`
+retains all raw rows without requiring an ROI. Empty/missing/insufficient input
+fails explicitly. Coordinates remain mm, RGB follows the same selected raw rows,
+and GT corners do not affect scores, Q10, RANSAC or parameter choice. Pass the
+selected original raw XYZ through the existing Open3D scene voxelization and
+also as `raw_points_mm` for Q10's independently configured analysis voxelization.
+Algorithms keep their native scene and analysis IDs; ROI-local IDs are not
+original full-capture IDs, and virtual voxel centroids are never relabeled GT.
+
+Every scene calls `run_dense_heatmap_mode` with the same configured detector/Lite
+and manager-owned RGB/marker/inspector views. `--no-3d-view` suppresses display;
+root execution processes every saved scene sequentially and releases its result
+before proceeding. No results export, GT evaluation or automatic retuning is
+introduced. Input points/ROI/labels/images are never rewritten. Synthetic depth
+perturbation is rejected for this saved-XYZ source instead of reconstructing or
+faking organized depth. Existing camera/STL/Kinect paths retain their behavior.
+
+## Shared lab demo execution (2026-11-11)
+
+`--source demo --mode detector` uses the exact standalone lab generator now
+shared in `pointcloud_inputs.demo.make_demo_cloud`. NumPy `default_rng(7)`
+creates 4,200 samples on each positive-octant coordinate plane: the two in-plane
+coordinates are uniform in [0,85) mm, the perpendicular coordinate has Gaussian
+noise with sigma 0.25 mm, and all samples are translated by (0,0,700) mm.
+The original per-plane RGB is retained. Append the white known corner at
+(0,0,700) as raw row 12,600, returning 12,601 float32 XYZ / uint8 RGB rows in
+the unchanged order. The known corner ID is ignored by detection; it is not
+inserted as an NMS seed or used for score/validator decisions.
+
+The generator now accepts keyword-only `noise_sigma_mm=0.25`,
+`roughness_amplitude_mm=0`, `roughness_wavelength_mm=20` and `seed=7`.
+These defaults preserve every original float32 XYZ/uint8 RGB row byte-for-byte.
+For each plane's sampled in-plane coordinates u,v, its normal offset is
+
+\[
+h(u,v)=\epsilon+A\sin(2\pi u/w)\sin(2\pi v/w),\quad
+\epsilon\sim\mathcal N(0,\sigma^2).
+\]
+
+Sigma and A are finite nonnegative mm values; w is finite positive mm; seed
+is a nonnegative integer. Normal draws are still consumed when sigma=0, and
+the sinusoid consumes no RNG values, preserving same-seed sampling and noise
+realizations when strengths change. A=0 skips the bump addition entirely.
+The appended white corner stays at (0,0,700) mm. The smooth product sinusoid
+is zero on the two ideal origin edges; it models surface waviness, not a
+calibrated sensor noise process or arbitrary stochastic roughness. Wavelengths
+below the chosen analysis voxel spacing can be undersampled.
+
+The lab Input tab exposes sigma 0--5 mm, amplitude 0--10 mm, wavelength
+2--100 mm and editable integer seed, with an explicit Generate/apply button.
+Controls do not regenerate or recompute on every slider update. Both Generate
+and the existing top Demo button use the selected values. Exact defaults keep
+the old demo_corner path/labels; all nondefault generations get fresh
+demo_corner_* folders containing cloud.npz/cloud.ply, params in metadata.json
+and the known corner label. Repeated variants do not overwrite prior labels.
+Raw camera/saved dataset inputs and all score/NMS/Q10/MaxGap algorithms are
+unchanged. Detector --source demo continues to generate its original defaults;
+no new detector CLI perturbation path is introduced.
+
+Runner calls the existing scene voxelizer with configured `voxel_3d_mm`, then
+the canonical dense detector with original raw XYZ for independently voxelized
+Q10 support and aligned raw XYZ/RGB for managed visualization. Scoring, NMS,
+thresholds, bilateral mode and Q10/MaxGap use current detector settings/CLI,
+without adopting lab defaults. Generated data are in memory only; no camera,
+depth reconstruction, label loading or captures-directory writes occur. Existing
+default lab Demo saving remains unchanged. Unsupported non-detector modes, supplied
+input files, organized depth-noise settings and insufficient voxel support fail
+explicitly. `--only` and `--no-3d-view` keep their existing detector behavior.
+
+## Standalone lab saved-scene input (2026-11-10)
+
+`corner_lab_open3d_cone.py --scene N [--dataset ROOT]` opens the saved
+scene_NNNN/points.npz by numeric ID, defaulting to the dataset beside the script.
+The tool root containing dataset/ is also accepted. Invalid/missing scene IDs
+and conflicts with --demo/--open fail before creating a GUI. --camera remains
+the live RealSense entry point. --open also accepts dataset points.npz or its
+scene directory; existing cloud.npz loading remains compatible.
+
+The adapter loads every original raw row in mm and its aligned RGB; no saved
+ROI crop or reprojection is applied, so original annotation point IDs remain
+valid. When a lab corners.json does not exist, validated dataset annotations
+are imported as gt_NNN labels with the original raw point index. Otherwise the
+lab file's existing label/refinement semantics take precedence. Loading is
+read-only; later explicit lab interactions retain the existing separate
+corners.json saving path, leaving points.npz/annotations.json unchanged. Invalid
+GT fails before replacing the current cloud. The existing geometry-only
+Open3D importer is reused; no optional ML dependency or new fitting algorithm
+is introduced. This changes standalone input/selection only, preserving all
+Q10, voxelization, spherical fitting and coverage equations/thresholds.
+
+### Standalone lab heatmap/NMS presentation (2026-11-11)
+
+The lab additionally accepts `--dataset-region {scene,roi}` (default scene),
+also controlled by `Dataset: saved ROI only` in the common header. Dataset ROI
+uses the existing validated, inclusive saved AABB. Require annotations and at
+least one selected raw sample. Raw XYZ/RGB storage and label IDs still index
+the complete original capture; a separate selected-raw-ID map limits the cloud
+display, picking KD-tree, shared analysis voxelization and whole-scene score
+input. Picked tree rows map back through that array. Labels whose original raw
+anchor lies outside the ROI are hidden and preserved on explicit lab saves.
+Toggle/reload invalidates existing workers/caches through the existing scene
+reload path. Failed ROI validation leaves the prior scene and checkbox state
+intact. This does not modify points.npz, annotations.json or the saved ROI.
+Legacy cloud/demo input remains complete. ROI-only scores use only ROI support,
+so cropping can change neighborhoods and create extrema at the crop boundary;
+there is no new boundary suppression or retained outside-ROI context.
+
+The default `Heatmap/NMS` workspace associates each scalar field with the
+extrema already computed for that field, using the existing full-scene or
+local comparison result:
+
+| Criterion | Cached scalar | Cached NMS indices |
+|---|---|---|
+| Fusion | `fusion_scores` | `fusion_maxima` (MAX) |
+| Bilateral CED | `ced_scores` | `ced_maxima` (MAX) |
+| CED-weighted PCA ratio | `ced_weighted_ratio` | `ratio_maxima` (MAX) |
+| CED-weighted lambda1 | `ced_weighted_lambda1_mm2` | `weighted_lambda1_minima` (MIN) |
+| Normal PCA lambda1 | `normal_lambda1_mm2` | `lambda1_minima` (MIN) |
+| CED × local lambda1 minimum | `ced_local_min_scores` | `ced_local_min_maxima` (MAX) |
+| Local lambda1 minimum | `local_minimum_scores` (L itself) | none (heatmap only) |
+| CED × Median lambda1 minimum | `ced_median_min_scores` | `ced_median_min_maxima` (MAX) |
+| Median lambda1 minimum | `median_minimum_scores` | none (heatmap only) |
+
+The sixth field is a separate contrast-regularized alternative to original
+Fusion; it does not replace the five existing fields. Let lambda1(p) be the
+largest eigenvalue of the existing unweighted Normal-PCA covariance in mm².
+Use R=`pca_radius_mm` for both the inclusive spatial min/max neighborhood and
+the scale regularizer. Among finite lambda1 values at evaluated voxel positions
+q within R of p (including p), define m(p)=min lambda1(q), M(p)=max lambda1(q).
+Then compute
+
+\[
+L(p)=\frac{M(p)-\lambda_1(p)}{M(p)-m(p)+\tau_c R^2},\qquad
+S_{\min}(p)=\operatorname{CED}_{bilateral}(p)L(p).
+\]
+
+`contrast_tau` (GUI `Local minimum contrast tau`) is dimensionless, finite and
+strictly positive, initially 0.005. It is independent of the original Fusion
+tanh saturation parameter `tau`. Increasing contrast_tau lowers nonzero
+responses. Geometric scaling by a multiplies covariance eigenvalues and R²
+by a², preserving L and S when normalized CED is unchanged. No minimum absolute
+variance gate is added: a zero-valued local minimum can still score positively
+if its neighbors differ. Constant eigenvalue neighborhoods give L=0; local
+maxima give L=0. Invalid query lambda1 or CED yields invalid S, and invalid
+neighbor eigenvalues are excluded. All arithmetic uses native mm/mm² values,
+with no percentile or min-max preprocessing of eigenvalues or CED.
+
+`compute_local_minimum_fusion` owns this equation; `with_local_minimum_fusion`
+attaches new arrays and independent MAX NMS while preserving all original
+arrays/indices/matches. NMS retains the existing full-scene or local support,
+tie-breaking, local interior margin and local 25-extrema cap; remove zero-score
+peaks after NMS. Full-scene computation remains cancellable. Min/max support
+is the evaluated field: the selected dataset region for scene mode and the
+evaluated local view in corner mode. These boundaries truncate neighborhoods;
+no additional eigenvalue halo, boundary correction or interpolation is added.
+Changing contrast_tau changes the cache key and requires recomputation.
+
+By default the new heatmap uses fixed [0,1] Viridis limits instead of data percentiles, so
+small absolute responses stay dark rather than being stretched to high colors.
+This is a display scale, not an additional score normalization. All invalid
+new-score samples remain grey. Existing heatmaps retain their original scales.
+The optional `Auto Contrast` checkbox, initially OFF and enabled for CED*L and
+L itself, selects the existing finite-value P2--P98 display scale. Constant
+values use the existing nonzero display-range fallback; all-invalid values
+retain grey with [0,1] limits. The legend reports the scale and actual limits.
+This changes only cached heatmap colors: no score normalization/recomputation
+or changes to NMS/gates/matches, workers or the comparison key occur.
+
+`Local lambda1 minimum | HEATMAP` shows the existing cached L(p) array without
+CED multiplication. It uses the same fixed [0,1] / optional Auto Contrast
+display scale. Selection redraws measured positions only, skips NMS gating
+and disables NMS controls. No independent L extrema, threshold or pairings are
+added; all six existing scored/NMS criteria and their results remain intact.
+
+### Additional Median-based local minimum (2026-11-11)
+
+Keep the Min-Max score unchanged and additionally use the ordinary NumPy
+median d(p) of the same finite lambda1 samples in the inclusive radius-R ball:
+
+\[
+L_{med}(p)=\max\left(0,\frac{d(p)-\lambda_1(p)}
+ {d(p)-m(p)+\tau_{med}R^2}\right),\qquad
+S_{med}(p)=\operatorname{CED}_{bilateral}(p)L_{med}(p).
+\]
+
+For even sample counts d is the average of the two middle values. Above-median
+queries and constant neighborhoods have zero response. Invalid query lambda1
+remains invalid; invalid neighbors are excluded. L can be valid where query CED
+is invalid, but S remains invalid there. No absolute minimum-variance gate,
+ratio factor, tanh or other weighting is added to this equation.
+
+`compute_local_minimum_fusion(..., statistic='median')` shares the original
+validation, radius support and cancellation, taking an explicit Median tau
+from `with_local_minimum_fusion`. `median_contrast_tau` / GUI `Median contrast
+tau` is finite, strictly positive and initially 0.005; it is independent of
+Min-Max's `contrast_tau` (also initially 0.005). Both join comparison cache keys and are
+snapshotted for full/ROI and local workers. Changing either requires recompute.
+Derived results cache Median L/S, positive-only MAX NMS and its tau in separate
+fields, preserving every previous scalar array/extremum/match. The Median NMS
+uses the same existing radius, finite-support, tie-breaking, local interior
+margin and local top-25 rules, with zero peaks removed after NMS.
+
+Median L is a standalone heatmap-only criterion; Median CED*L has independent
+MAX NMS and an inclusive lower score threshold. Both use fixed [0,1] colors by
+default and optional display-only Auto Contrast. They retain measured XYZ,
+region/analysis IDs, ROI support truncation and invalid grey colors. Existing
+ratio diagnostics, paired comparisons and Q10/MaxGap are unchanged. This
+implementation/test work establishes the equation and its outlier response;
+it does not establish RGB-D localization accuracy or resolve line-like Edge
+minima versus point-like Corner minima.
+
+`NMS score thresholds` provides an independent optional limit for each NMS row.
+Blank disables the gate; finite nonnegative values use inclusive `score >= t`
+for the five MAX fields and `score <= t` for the two MIN fields. Lambda1
+thresholds are mm²; the other thresholds are dimensionless. Apply validates all
+seven inputs before committing, filters existing extrema into a new result and
+reruns the existing nearest-first, one-to-one matching on the surviving lists.
+Thus another eligible pair can replace a removed match. Base scalar arrays,
+unthresholded extrema, positions, workers and heatmap scales remain unchanged.
+Changing thresholds is a post-NMS gate with no new NMS or top-K pass. Counts
+show selected-field kept/original NMS and filtered comparison/pair totals.
+
+The five original heatmaps retain the existing Viridis 2nd--98th percentile display scale,
+grey invalid samples and original positions; lambda1 units remain mm².
+Registry lookup uses `colormaps['viridis']` for compatibility with the installed
+Matplotlib. Cyan markers show the selected criterion's extrema. Independent
+heatmap/NMS visibility toggles change geometry only; cached values, NMS indices
+and reported counts remain intact. The collapsed paired-method option retains
+the original Fusion-only or CED-plus-PCA comparisons, pink secondary extrema
+and green matched pairs with unchanged distance matching.
+Matched pairs use a 28-pixel lime midpoint marker, larger than the 15/13-pixel
+primary/secondary markers, and a 6-pixel green link (all scaled by window DPI).
+The midpoint remains visible when both extrema share a position and the link
+has zero length. Marker centers, pair endpoints, distances and counts stay
+unchanged; the enlarged marker footprint is a display cue, not a match radius.
+Full-scene heatmaps hide the underlying RGB cloud while visible, restoring it
+when cleared/hidden; local views retain RGB context for raw-point depth picking.
+The shared CED radius stays editable in unweighted PCA refinement mode because
+it still controls the independent CED/Fusion comparison fields. Dynamic summary
+updates request layout again to prevent text overlap.
+
+`Corner` shows the existing cloud/unit-sphere/histogram inspection layout and
+Q10, spherical-plane and cleaned MaxGap controls. `PCA` retains optional
+eigen-field refinement, while `Input` holds camera/capture controls. Switching
+tabs only changes layout/inspection visibility. Successful Ctrl+click selects
+the Corner tab after the existing label/inspection operation. Score equations,
+extrema computation and thresholds, Q10 refinement, spherical RANSAC, MaxGap,
+worker/cache behavior, raw/analysis IDs and saved-label semantics are unchanged.
+Optional unit-sphere/histogram widgets are registered after permanent controls,
+keeping the tab panel's Open3D/ImGui window ID stable when their visibility
+changes. Registering them first changes visible-child numbering and resets tab
+selection. The tab callback does not reassign an already selected native tab;
+programmatic navigation assigns the index only when it differs. Tab switching
+does not cancel/restart an active computation or replace its cached result.
+
+## Detector Min-Max Local Minimum Fusion and post-NMS edge gate (2026-11-11)
+
+`fusion_mode={pca_ratio,local_minimum}` selects a dense product, independently
+of the existing bilateral stage. `pca_ratio` preserves the original CED ×
+optional-tanh weighted-PCA ratio, support rules and NMS; the current user
+setting selects `local_minimum`.
+For `local_minimum`, compute ordinary Normal-PCA covariance at each voxel p:
+
+\[
+C_N(p)=\frac1{n}\sum_{q\in B_R(p)}(q-\bar q)(q-\bar q)^T,
+\quad a(p)=\lambda_{\max}(C_N(p)),\quad R=R_{PCA}.
+\]
+
+Require configured min_neighbors geometric samples in the inclusive ball;
+otherwise a(p) is undefined. Normal eigenvalues are evaluated even where query
+CED/weighted PCA is invalid, since they can support a neighboring query's local
+range. Among finite a(q) at scene voxels within inclusive R of p, let m and M
+be the minimum and maximum. Then
+
+\[
+L(p)=\frac{M(p)-a(p)}{M(p)-m(p)+\tau_LR^2},\quad
+S_{raw}(p)=CED_{selected}(p)L(p),\quad \tau_L=0.005.
+\]
+
+This is the lab's **maximum-based** equation, not its Median variant. R serves
+both covariance/local-range support and the mm² regularizer. No tanh, weighted
+lambda ratio, minimum absolute variance or effective-support condition is
+added to L. Constant neighborhoods and maxima have L=0. Invalid Normal lambda1
+neighbors are ignored. Fusion requires valid query CED and finite L; weighted
+PCA need not be valid unless the optional later gate is enabled. Dense fields
+store zero for invalid L/S with separate masks; raw Normal lambda1 retains NaN
+for invalid support. Scaling all geometry/radii by k scales a and R² by k²,
+preserving L, Fusion and normalized gate decisions apart from floating error.
+
+The dense scorer owns Normal PCA/local min-max, reusing the bounded shared
+neighborhood pass and adding a bounded radius pass after eigenvalues exist.
+Original CED, weighted covariance/cutoff, ratio diagnostics, coordinates and
+scene IDs are preserved. `bilateral_mode=ced` uses existing filtered CED;
+off uses original CED; fusion filters the selected complete product with the
+existing valid-support/range/spatial rules. `fusion_score_raw` is that selected
+pre-filter product, `fusion_score` is the final score consumed downstream.
+
+Settings/CLI expose `fusion_mode`, `local_minimum_tau` and
+`local_minimum_fusion_threshold` (0.2). Legacy `fusion_score_threshold` remains
+its own setting. Configuration resolves the appropriate active threshold into
+DetectorConfig; strict score>threshold and existing fixed/global-mean selection
+remain unchanged. Thus 0.2 is the new mode's configured fixed default, not a
+new lower bound for the optional adaptive threshold. Shared detector/validator/
+total/new-validator/ball and comparison callers propagate the same mode/tau.
+
+After unchanged thresholding/local-max NMS, optional
+`post_nms_lambda1_ratio_max=t` (None=OFF; current user setting 0.20) applies
+
+\[
+\lambda_{1,W}(p)/R_{PCA}^2\le t
+\]
+
+only at NMS survivors, using the **CED-weighted** largest covariance eigenvalue
+already cached by the existing PCA kernel. Values are dimensionless; configured
+t must be finite in [0,1]. Equality passes. Invalid weighted PCA/nonfinite or
+negative lambda1 rejects when enabled, never passing as an artificial zero.
+No NMS rerun, neighbor promotion, new covariance, position change or rescoring
+occurs. This gate applies to either Fusion mode and is independent of both
+Fusion thresholds and Q10/MaxGap. It is an experimental edge-response filter,
+not proof that an accepted point is a Corner.
+
+`nms_candidate_indices/mask` retain original NMS scene IDs. The existing
+`candidate_indices/mask/candidates/count` refer to gate survivors in unchanged
+NMS order. `post_nms_lambda1_gate` records enable state, threshold, raw NMS IDs,
+aligned normalized lambda1, pass/invalid masks and rejected IDs. Kept candidate
+records carry the mode and, when gated, the normalized value/threshold.
+Q10 and canonical validator seed handoff consume only these gate survivors.
+Gate OFF preserves previous candidates and requires no extra eigenvalue data.
+
+Managed visualization retains six panels, substituting cached L for the
+ratio-used panel in local_minimum mode. Existing linear Q99 display scales and
+raw scene-indexed positions remain; color maps do not alter score/gate values.
+Console logs distinguish mode, actual threshold, raw NMS and retained counts.
+No real sensor performance or optimal gate threshold is established here.
+
 ## 14. Revision record
 
 | Date | Revision |
 |---|---|
+| 2026-11-11 | Removed detector Q10 MaxGap minimum retained-count and retained-fraction gates, their settings/config/CLI/result fields and debug footer. Every nonempty cleaned arc now uses span alone; no-plane/empty-arc UNKNOWN and rejecting-plane precedence remain. Preserve RANSAC support gates, grouping, tail trimming, span equality, Q10 refinement, scores/NMS and scene IDs. Add small/minority/single-point/empty-arc numeric and cached-display/removed-option regressions; standalone lab gates remain unchanged. |
+| 2026-11-11 | Added selectable detector pca_ratio/local_minimum Fusion with Lab Min-Max Normal-PCA L, tau 0.005 and separate new-mode fixed threshold 0.2. Added optional post-NMS CED-weighted lambda1/R_PCA² upper gate (None=OFF), preserving raw NMS IDs and filtering before Q10/seed handoff without neighbor promotion. Retain user-selected local_minimum mode and gate 0.20. Propagate shared config/CLI/callers, cached managed panels/logs, and test equation/covariance/scaling/gate equality/order/validity/legacy regressions. |
+| 2026-11-11 | Set both lab Min-Max and Median contrast tau defaults to 0.005 across GUI, result metadata and numeric entry points. Preserve independent overrides and all equations; add exact default-score and GUI-default assertions. Only default Min-Max responses/NMS may change; Median defaults stay unchanged. |
+| 2026-11-11 | Added GUI Demo surface controls for normal Gaussian sigma, sinusoidal bump amplitude/wavelength and seed through the shared generator. Preserve exact no-argument XYZ/RGB/corner-ID defaults and detector demo behavior; apply only on Generate/Demo, save modified generations separately with parameter metadata and fresh labels, and leave camera/scoring/validator paths unchanged. Add numeric shape/noise/wave/seed/validation and save-isolation/UI regressions. |
+| 2026-11-11 | Added Median local-minimum L=max(0,(median-lambda1)/(median-min+tau_med*R²)) and bilateral CED×L as independent lab criteria, with Median tau=0.005 separate from unchanged Min-Max tau=0.01. Add Median L heatmap, CED×Median MAX NMS/gate, Auto Contrast and worker/cache propagation. Preserve existing scores/NMS/ROI/indices/Q10/ratio/matching; test exact/clamped/even/flat/invalid/scaled/outlier behavior, independent taus, NMS and GUI controls without accuracy claims. |
+| 2026-11-11 | Exposed cached Local lambda1 minimum L(p) as a standalone heatmap-only view with fixed [0,1] and optional Auto Contrast. Disable NMS controls and bypass unrelated score gates in this view; preserve all score/NMS/matching/worker/cache behavior. Add cached-field/color/no-recompute/no-gating display regressions. |
+| 2026-11-11 | Added display-only Auto Contrast for the standalone lab CED × local lambda1 minimum heatmap. Default OFF preserves [0,1]; ON uses existing P2--P98 colors with invalid/constant handling and a scale-aware legend. Preserve all scores, NMS/gates/matches and cache/worker state; add cached-color, unchanged-NMS/state and invalid-field regressions. |
+| 2026-11-11 | Added standalone lab CED × contrast-regularized Normal-PCA lambda1 local-minimum field with separate positive-response MAX NMS, fixed [0,1] heatmap and per-field gate. Use PCA radius R for finite-neighbor min/max and tau_c*R², expose contrast_tau=0.01 separately from Fusion saturation, and include it in cache/worker inputs. Preserve original five fields/NMS, ROI/raw IDs, matching and Q10/MaxGap; test exact formula, flat/max/invalid behavior, scale invariance, cancellation, NMS and GUI integration. |
+| 2026-11-11 | Added standalone lab saved-ROI input selection with full raw-ID preservation, ROI-only display/scoring/analysis/picking and excluded-label preservation. Added five independent inclusive post-NMS score gates and rematching of surviving extrema, with blank/OFF preserving cached numerical behavior. Validate ROI/thresholds before state changes; add boundary, indexing, save-safety, MAX/MIN equality, cache and rematching regressions. |
+| 2026-11-11 | Fixed standalone lab mouse tab switching by registering optional inspection widgets after permanent controls, preserving the tab panel's Open3D/ImGui window ID as views appear/disappear. Also avoid redundant native tab-index assignment. Preserve programmatic Corner navigation, layout, active worker/cache state and all numerical behavior; add child-order/native-callback regressions and verify native tab changes during computation and with cached results. |
+| 2026-11-11 | Added detector `--source demo` using a shared extraction of the unchanged lab three-plane generator. Preserve exact seed-7 raw XYZ/RGB/known-corner ID, current detector settings, scene/Q10 voxel spaces and all detector/Lite algorithms. Add exact geometry regression, input/config/dispatch checks and unsupported-input validation; no GUI import or file writes in generation. |
+| 2026-11-11 | Enlarged standalone lab matched-pair midpoint markers from 9 to 28 pixels and links from 3 to 6 pixels, with explicit legend text. Preserve match selection, endpoints, midpoint coordinates, distances and counts; verify marker prominence and zero-distance pairs without mutating cached results. |
+| 2026-11-11 | Reorganized the standalone lab into Heatmap/NMS, Corner, PCA and Input tabs. Associate each of five cached scalar heatmaps with its own MAX/MIN NMS; retain optional paired-method comparison and add independent display toggles. Preserve all score/extrema/Q10/RANSAC/MaxGap calculations, defaults, caches and saved indices; add cached association, layout, visibility and raw-ID interaction tests. Use compatible Viridis registry lookup without changing colors or scaling. |
+| 2026-11-11 | Added `pca_ced_cutoff` / `--pca-ced-cutoff` to shared dense PCA and comparison callers. Default zero preserves positive-original-CED support; positive values retain only CED-valid weights at or above the cutoff, never thresholding query CED or substituting bilateral CED. Keep geometric counts/coordinates/IDs and existing support gates; record cutoff and add inclusive-boundary, weighted-covariance, invalid-support, propagation and default-output regressions. |
+| 2026-11-11 | Added independent `q10_refine_enabled` / `--[no-]q10-refine` under the existing validator master. OFF skips relocation, snapping, Q10/CC and min-Q10 gating, evaluates unchanged RANSAC/MaxGap at exact NMS XYZ and caches by coordinate. Preserve refinement-ON numerics and dense/NMS output; add explicit skipped trace/metadata/UI state and `maxgap_nms` seed provenance, with numerical, gate/cache/config and read-only display regressions. |
+| 2026-11-11 | Replaced `bilateral_enabled` with `bilateral_mode={ced,fusion,off}` in settings/config/CLI and shared scoring/comparison callers. Preserve ced/off numerics; fusion filters the completed original-CED × PCA product using fusion-valid support and the existing radius/sigmas. Add pre-filter Fusion diagnostics and mode-aware managed panels; retain original CED/PCA/validity/IDs and verify weighting, invalid-support exclusion, propagation and final-score consumption. |
+| 2026-11-11 | Changed Q10 diagnostics from selected-summary coloring to all-plane membership coloring: P1 orange, P2 green, P3 purple, overlap white and all-member exclusions dimmed. Matched arc/projection/rose colors and corrected stale Tk/native legends. Preserve one voxel per analysis ID, cached numerical evidence, detector/Q10/MaxGap decisions and all coordinates; added headless color/overlap/mask/no-mutation checks. |
+| 2026-11-11 | Replaced final per-plane antipodal axis scanning/N+/N-/B with the current standalone lab MaxGap logic: dominant circular group, optional sparse end-bin trimming, retained-support reliability and inclusive cleaned-span veto. Removed obsolete cap/axis/side/B settings and CLI; added gap/tail controls and cached masks/diagnostics. Kept detector RANSAC tuning, Q10 refinement/early gate, dense scores/NMS and index contracts; updated managed plots/native views and numerical/reference/config/cache tests. |
+| 2026-11-11 | Added settings-only `bilateral_enabled=True` switch to shared dense scoring and comparison callers. OFF skips the filter and uses original CED in Fusion, preserving PCA, validity, coordinates and scene IDs; default ON retains existing numerical behavior. Added switch/result/bypass diagnostics and numerical/configuration propagation regressions. |
+| 2026-11-10 | Added standalone lab --scene/--dataset selection and points.npz loading, full raw-ID-preserving GT import with separate lab sidecar precedence, and geometry-only Open3D startup. Kept live-camera/demo/legacy-cloud behavior and every numerical function unchanged; validated input before replacing scenes and documented read-only loading. |
+| 2026-11-10 | Moved the cached converged Q10 gate before final unit-sphere evidence: early reject below threshold, skip undefined Q10, retain equality and passing-point numerics, record evaluated/skipped semantics and actual final-evaluation counts. Added read-only dataset detector input for single scenes or numeric-order roots, saved ROI/full-scene selection, aligned RGB and the existing Lite views with shared settings/algorithms. |
+| 2026-11-10 | Improved cached Lite diagnostics using the standalone spherical lab conventions: matching plane circles/projected dots/rose plots, exact per-plane score cards, signed axes/cap shading, overlap counts and explicit unknown states. Retained Q10 path/history, added equal mm display scales and screen-fitting layout, and preserved every numerical result and index without recomputation. |
+| 2026-11-10 | Removed the remaining Cone/Tube/projection-continuity implementations, axis-grid module, mode selector and related settings/CLI/result parameters and display branches. Retained only spherical RANSAC final support, with unchanged Q10 relocation, angular equations, masks, decisions and scene/analysis IDs; replaced obsolete mode tests with removal guards. |
+| 2026-11-10 | Replaced default Lite bidirectionality with reference unit-sphere origin-plane RANSAC and per-plane angular antipodal tests; centralized sphere controls, set B threshold to .08, preserved Q10/NMS/voxel/index contracts and explicit older methods, and added cached model/axis diagnostics and numerical parity tests. |
+| 2026-11-09 | Added new-validator per-plane 2-D centroid-direction cosine Q10 and independent common min_q10=.10. Require all fitted planes to pass (1/1, 2/2, 3/3); reject known failures, never accept undefined/no-plane cases. Cache vectors/cosines/quantiles for plot/log diagnostics; retain prior RANSAC/support/UVs and all old validator behavior, with no Hull/Edge/Corner computation. |
+| 2026-11-10 | Made Sommer / Ahmed / PCL Harris3D the default baseline set and mandatory in visual comparisons, appending omitted methods while preserving requested order. Saved views show missing records as NOT_SAVED without recomputation; preserved backend parameters, numeric outputs, scene IDs, units and manager-owned visualization. |
+| 2026-11-10 | Added explicit scene2 ROI baseline preset after in-sample parameter selection: unchanged dataset Sommer yields one GT-near corner; Ahmed Python yields four. Exposed PCA K, patch span and strict angle bounds, preserving author/dataset defaults, original equations/order, all L passes, raw-ID/unit contracts and GT-free runtime. Recorded distances, sensitivity and lack of held-out validation in BASELINE_TUNING.md. |
+| 2026-11-09 | Added dataset/author baseline presets after an ROI-only 5-scene selection and separate 5-scene confirmation. Exposed Ahmed K/space/threshold overrides and optional Sommer observed-point voxel sampling with raw-ID mapping. Changed dataset CLI defaults while preserving author/library defaults, original algorithms, equations, unit/index contracts and GT-free run-time computation; recorded tuning outcomes and non-generalization in BASELINE_TUNING.md. |
+| 2026-11-09 | Added independent new-validator mode and new_validator_* plane/projection settings. Reused canonical raw crop, guided RANSAC, support CC and mm UV projection, then stopped before rank/Hull/Edge/Corner computation. Preserved original validator numerics/stages, scene/native indexing and Q10 ACCEPT-only seed policy; added cached 2-D projection views and equivalence/configuration/no-later-stage regressions. |
+| 2026-11-09 | Added explicit Ahmed MATLAB-to-Python baseline and made it the default `ahmed` backend, retaining original MATLAB execution by option. Preserved author stage constants/order, strict gates, PCA convention and all ten stochastic L passes; recorded port identity/parity limits and separate analysis-index namespaces. Existing detector, Harris and Sommer computations remain unchanged. |
+| 2026-11-09 | Added read-only dataset baseline comparison through the visualization manager: GT plus ordered method panels, shared saved input and synchronized cameras, explicit zero/failed/prepared statuses, saved-result reopening and a separate GUI process per scene. Detector/validator and author-baseline numerical behavior is unchanged. |
+| 2026-11-09 | Restricted downstream Q10 validator/total seeds to accepted_indices (ACCEPT only). Excluded INDETERMINATE even when Q10 keeps it for diagnostics; preserved Q10 scores/statuses/refinement, original scene IDs, refined centers and Q10-OFF NMS behavior. Added mixed-status and all-INDETERMINATE/no-fallback regressions. |
+| 2026-11-09 | Connected detector Q10 ON/OFF to interactive validator and total: original NMS seeds when OFF, kept ACCEPT/INDETERMINATE scene IDs and stored refined centers when ON. Added shared seed bundles and explicit canonical query-center arguments, propagated through raw/organized crop caches and GUI/RGB picking without moving scene points or changing support-ID spaces. Preserved detector/Q10/validator equations; enabled shared Q10 CLI/config in all three modes and added numeric crop/index/cache/dispatch/view regressions. |
+| 2026-11-09 | Removed Scale/PCA Lite defaults/config/CLI/runtime, its exclusive selected-radius PCA class and debug views/tests. Q10 remains the optional detector Lite path; retained its result alias, numerical calculations, cached inspectors, refined-position status markers and final green RGB overlay. Dense scoring/NMS and other mode pipelines are unchanged. |
+| 2026-11-09 | Optimized detector computation without changing scores or decisions: omit unused organized mapping; batch CED and share bounded bilateral/PCA neighborhoods with scalar sphere-boundary fallback; defer Q10 quantiles below the existing support gate without poisoning caches; prune Projection sorts using strict support-length bounds and preserve all ties. Added numeric/ordering/cache/dispatch regressions; stage timing now assigns shared lookup preparation to bilateral. |
+| 2026-11-09 | Removed separate multiscale heatmap mode and Weighted Local Cone backend/settings/exclusive code/views/tests; moved shared radius-graph CC unchanged. Added unit_mean (unchanged default), coordinatewise unit_median and original-XYZ centroid Q10 axes via settings/CLI, propagated through cached refinement/final quality and physical 3-D cyan arrows. Dense scoring/NMS, CC rules, antipodal objectives and thresholds remain unchanged; nondefault Q10 axes may change relocation/acceptance. |
+| 2026-11-09 | Corrected final quality rejection to use the converged cached Q10 (10th-percentile cosine), matching the refinement objective. Removed separate Q1 computation, renamed its lower-bound setting/CLI to q10_min_q10 / --q10-min-q10 while preserving .01, and changed result fields/rejection/debug labels to Q10. Kept B threshold .65, projection continuity, CC switches, axes and NMS unchanged. Added negative-1%-outlier/high-Q10 acceptance and final-Q10 boundary/cause regressions; diagnoses reuse stored values without recomputation. |
+| 2026-11-09 | Renamed the detector's B threshold setting to q10_antipodal_threshold, the Q10 config/result/debug field to antipodal_threshold and the canonical CLI to --q10-antipodal-threshold. Kept --q10-threshold as a same-destination CLI alias and preserved the tuned value and all numerical predicates, including the independent Q1 lower bound. Updated callers, debug captions, tests and method references. |
+| 2026-11-09 | Added optional projection_continuity antipodal support on the existing unique-axis grid: finite Tube projections, query-origin gap prefixes, full-R positive 3-D median NN with default gap factor 2.5, and max min(L+,L−)/R. Expand spatial lookup to hypot(R,tau), retain analysis IDs through diagnostics, and expose settings/CLI plus lab mode/gap GUI controls. Preserve original Cone/Tube counts, Q10/Q1, NMS and final gate composition; the old final 3-D CC applies to count modes while new mode uses only its specified 1-D continuity. Added exact numerical, full-signed reference, end-coverage, cache, configuration and headless GUI/debug regressions. |
+| 2026-11-09 | Added independent default-ON switches for Q10 spherical CC and final selected Cone/Tube CC, including settings/CLI and cached debug state. Disabled stages skip NN/graph work; final CC OFF preserves pre-CC support exactly. Added final Q1=lower-1% cosine on the active Q10 support/mean, with user-selected lower bound .15, without changing Q10 relocation. Final rejection is Q1 failure OR opposite support; store all causes and show gate results/cause labels in debug. Added numerical OFF/ON-combination, Q1 boundary/cache and reason-display regressions. Existing tuned mode/radii/B thresholds remain unchanged; decisions can change with Q1 or CC disabled. |
+| 2026-11-07 | Added spherical query CC before every uncached Q10 evaluation on the analysis voxels, using full-R median NN times the existing CC factor and the same query-anchor/graph rules as final Cone/Tube CC. Q10 mean/quantile and the 80% support guard now use the connected component. Cache component IDs/counts/NN/epsilon with responses; record step supports and display CC-only Q10 directions/histograms with connected/full-R counts. Final axis sampling, full-R denominator N, selected-region CC and decision thresholds are unchanged. Localization/decisions and cache-miss cost can change; old weighted Cone and standalone diagnostics are unchanged. |
+| 2026-11-07 | Moved Q10 Lite median-NN spacing and selected-axis query CC from raw observations to the post-voxel analysis cloud for both Cone and Tube. Removed nearest-raw membership transfer; ROI/geometry/component IDs now explicitly index analysis voxels. Keep physical mm distances, full-R median, fixed pre-CC axis, one graph per final point, fixed denominator N, Q10 refinement and existing configuration values. Display voxel NN/epsilon and add raw-density/bridge-invariance regressions; changed spacing/connectivity can change final decisions. The separate weighted Cone raw CC is unchanged. |
+| 2026-11-07 | Moved final detector CC after antipodal axis selection. Median NN still uses all raw Q10-radius neighbors; run one query-anchored graph inside the selected double Cone/Tube intersected with R, with no halo detours. Filter side masks by transferred raw connectivity while retaining all nonzero R voxels in N and keeping the pre-CC axis/ties. Store pre/post evidence, show side-count changes and update numerical/order/cache regressions. Q10, candidate grids, thresholds and standalone raw antipodal diagnostics remain unchanged; post-CC global optimality is not guaranteed. |
+| 2026-11-07 | Made local Q10 diagnostics display exact analysis voxels, with one native point cloud keyed by analysis ID and shared final-support plot colors from immutable support masks. Removed dense raw/duplicate gray overlays, distinguished unscored context from scored non-support and retained the independent RGB final view. Restored the implemented Q10 settings block/4 mm Tube radius while preserving detector/user scales; classifier equations, Q10/CC and scene/raw/analysis index spaces remain unchanged. |
+| 2026-11-07 | Shared Cone/Tube antipodal grids between the detector and standalone lab; preserved 42/64 and added nested 162/642/2562 icospheres, default 642. Evaluate only earliest +/- representatives in bounded batches, preserving min-side/total/first-signed-index ties, masks and score normalization. Added detector Cone/Tube and tube-radius controls, expanded standalone GUI choices and Tube cylinder diagnostics. Kept Q10, voxelization, final-only CC, existing rejection thresholds and RGB markers unchanged; denser default sampling can change final decisions. |
+| 2026-11-07 | Display final accepted corners in green over the registered RealSense RGB point cloud, using Q10 refined XYZ and cached ACCEPT decisions. Reuse the final Lite view, including under --only; omit duplicate RGB/NMS auxiliary output and retain ACCEPT-only refresh/picking. Preserve scoring, fixed-NMS refinement, CC/antipodal decisions, source RGB and index spaces. |
+| 2026-11-07 | Bounded Q10 refinement to one search in the original scene NMS ball, including voxel-snap displacement. Removed moving-window iteration; retained frame/radius Q10 caching, initial-relative 80% support, final-only CC/antipodal equations and original scene IDs/scores. Empty fixed balls keep the original NMS position as INDETERMINATE without CC. Updated traces, debug/log/help terminology and regression checks for outward drift, unsnapped centers and missing local support. |
+| 2026-11-07 | Added default detector Q10 relocation with NMS-radius steps and frame/cloud/radius response caching; final-origin-only raw CC followed by the reference antipodal cap decision, with shared final evidence for duplicate convergence points. Kept independent OFF-by-default weighted Cone and Scale/PCA switches and immutable upstream scores/scene IDs. Added stage/status markers, cached step/sphere/histogram/CC/opposite-support inspector and isolated native path view. The .08/3/25-degree antipodal defaults are experimental; local Q10 convergence does not certify corner accuracy. |
+| 2026-11-06 | Made Density ON + Local ON use the cached Local weighted optimum for public score/direction/cosines/angle/coverage, threshold decisions, accepted/kept scene IDs and blue NMS markers. Retained CED, Plane comparison records, unchanged upstream Fusion/NMS/CC/query positions and all three other option combinations. Updated debug decision labels and tests, including Local-pass/Plane-fail, inclusive threshold, rejection, diagnostic mode and original-coordinate blue marker checks. Preserved the user's ON/ON and threshold settings; pinned legacy numerical fixtures to explicit Density OFF. All 107 related tests passed; full suite 289 tests retained 3 previous failures/15 errors. No actual GUI/sensor run. |
+| 2026-11-06 | Added default-OFF optional direction-density weighted inverse-CDF quantiles, bounded angular-neighbor blocks and once-per-query cached weights. Preserved OFF NumPy behavior and unchanged CED/PCA/Fusion/NMS/CC/query contracts; ON fixes the origin and skips legacy Back retry. Reused axis searches, Plane decision ownership and cached views; added same-axis raw/weighted Q and separate raw/weighted coverage. Controlled comparisons expose sparse-face exclusion and an edge false positive. All 106 related checks passed; full suite 288 tests retained the same existing 3 failures/15 errors. No new device/GUI run; see the comparison report. |
+| 2026-11-06 | Limited Lite Cone and legacy Lite result markers and picking to final ACCEPT NMS records, with ACCEPT/total titles and empty-marker refresh handling. Preserved scene heatmaps, original NMS diagnostic panels, numerical results, index spaces and fail-open forwarding. |
+| 2026-11-06 | Removed Global/icosphere settings, computation and mode switching; Local-only is enabled by default, with unchanged Local arithmetic and Plane-baseline acceptance. Added a single-window spawned Open3D inspector to isolate native GPU/GLFW lifetime from detector/Tk, bounded worker cleanup, camera clipboard-paste interception, numeric roll and invalid-camera sync guards. Passed 63 targeted tests and four actual Tk/parent/child open-close cycles across system/laser_handeye Python. Native sensor segfault cause remains unconfirmed; no shape simulation, full suite or live sensor test was run. |
+| 2026-11-06 | Added fixed-NMS minimum enclosing Cone comparisons: raw-quantile Global icosphere search and independent Local cap, centroid/CED initialization and an identical-support Plane baseline. Preserve default legacy behavior; comparison modes bypass Back movement and retain baseline acceptance. Add batched/cached geometry, raw-negative ranking, angle/coverage/rotation/reduction metrics, comparison table and Open3D 1/2/3 switching with fixed camera/apex. Existing user threshold 0.25 and disabled Back default are preserved. Nine new plus 46 existing targeted tests passed (55 total), plus imports/CLI/syntax and actual Open3D three-mode render/switch checks. Shape simulations, full suite and sensor tests excluded. |
+| 2026-11-06 | Added click-owned Open3D visualization of the stored raw quantile angular boundary, actual coverage and inside/outside points at the final evaluation origin. Handle negative quantiles and finite-sample/tie coverage without score clipping; align Matplotlib cone ring with raw Q rather than decision threshold. Added nonblocking window polling/cleanup and oblique startup camera. Passed 46 numerical/UI/architecture checks plus imports/CLI and actual hidden Open3D positive/negative render inspection. Numerical detector/validator results are unchanged; no scene simulations or sensor run. |
+| 2026-11-06 | Added one conditional Plane retry at the deepest strict-back raw point. Preserve NMS IDs/positions, first-pass results, original CC/core/CED and normal cap/spacing; no extra NN tree or repeated connectivity. Adopt feasible retry Cone results, otherwise keep the first pass. Add a default-ON retry toggle inside default-OFF Plane mode, explicit evaluation origin/shift/retry records and existing-window geometry/score comparison. Passed 38 numerical/configuration/headless/architecture checks plus syntax/import/CLI checks; no shape simulations, full suite or device GUI run. Synced descriptions to the existing user-set 0.20 threshold and 45-degree comparison-B cap without changing them. |
+| 2026-11-06 | Added default-OFF Plane-based CED direction refinement: minimize Gaussian contact subject to a back-ratio bound over a bounded spherical cap. Planes always pass through the unchanged NMS query; remove the prior minimum-projection display translation. Preserve A and comparison-only B, with C precedence, unchanged CC/CED/Fusion/PCA/NMS and final Cone formula. Add unique-support NN thickness/floor, feasibility fallback, plane/cone diagnostics and existing-window plane-side visualization. Passed 29 arithmetic/configuration/UI/architecture checks plus syntax/import/CLI checks. Shape simulations, full-suite and hardware/GUI execution excluded. |
+| 2026-11-06 | Moved refinement debug panel 2's green arrow/cone to the selected core CC minimum-projection height and added its perpendicular display plane. Keep initial arrow/query at NMS, and keep all numerical results, cosine colors and score origins unchanged. Nine Cone and four architecture tests passed, including headless anchor/CC exclusion/no-mutation and OFF-display checks. Synchronized descriptions with the user's existing 40 mm radius/0.15 threshold without changing settings. No scene simulation, full-suite or device GUI run. |
+| 2026-11-06 | Removed neighboring-CED direction averaging and restored the candidate's raw CED d0. Added optional finite spherical-cap direction refinement (OFF, 20/5/15 degrees), vectorized unchanged Cone quantile maximization with deterministic ties and no rotation penalty. Preserved CC/support, raw CED, Fusion/PCA/NMS and threshold/fail-open policy. Added before/after directions/scores/angle/count and extended existing cached debug. Seven refinement, eight Lite wiring/UI and four architecture tests passed, plus syntax/import/CLI checks. Scene simulations, full-suite and sensor/GUI runs excluded. |
+| 2026-11-06 | Changed the Cone axis to the normalized, unweighted arithmetic mean of valid neighboring raw CED unit directions in the seed component. Each local CED uses its complete same-component radius-R support from the existing 2R halo. Added direction count/coherence and debug provenance; insufficient/cancelled directions remain Indeterminate. Preserved query coordinates, CC policy, Fusion/NMS, Cone quantile/threshold and old Lite backend. Three direction arithmetic checks and eight wiring/UI contract tests passed; scene simulations, full suite and sensor/GUI runs were skipped. |
+| 2026-11-06 | Made `lite_validator_enabled` the detector Lite master switch with Cone as its default backend, experimental threshold 0.5 and debug enabled. GUI/headless runs evaluate every NMS candidate before display; clicking only inspects cached evidence. Preserve the old Scale/PCA backend through `--no-cone-extremality`, explicit library deferral, all scoring formulas and upstream NMS. Scope implicit defaults to detector mode. Eight configuration/delegation/UI contract tests and syntax/import/CLI checks passed; no numerical simulation or sensor/GUI run. |
+| 2026-11-06 | Replaced the unfinished directional-length experiment with opt-in Cone Extremality after unchanged detector NMS. Added raw halo-aware seed-component selection, signed-cosine lower-quantile scoring, None-threshold diagnostics and fail-open Indeterminate states, with click caching and CC/cone/histogram debug views. Preserved old Lite and upstream numeric stages. Simulation/test execution and sensor/GUI validation were skipped at the user's request; syntax/import/CLI only. |
+| 2026-11-06 | Added three representative raw single-radius Heatmap references at configured minimum/geometric midpoint/maximum (30/51.9615/90 mm for 30–90 mm), reusing raw CED × saturated weighted-PCA without bilateral, Local Support or Window scoring. Store independent scores/NMS; retain four multiscale results and primary selection. Show all seven with red NMS markers, shared max-Q99 colors/cameras and a three-column layout. |
+| 2026-11-06 | Show each Local Support comparison's stored NMS candidates as red sphere markers in its own Heatmap, with dense-detector sizing, per-mode counts and empty-set handling. Keep shared max-Q99 colors/cameras and all score/support/window/NMS calculations unchanged. Add headless marker position/provenance/color and no-mutation coverage across four distinct candidate sets. |
+| 2026-11-06 | Audited four-mode Heatmap scoring on recorded Kinect redkitchen/seq-03 frame 740 (46,080 voxel points): arrays are independent, Local Support has real neighbors, scores and zero-gate NMS results differ. Replaced independent per-window Q99 normalization with shared max-Q99 colors so equal scores map equally and magnitude differences are preserved; added raw-score/delta logs and a proportional-score rendering regression. Preserved all numerical scores, windows and NMS; no live RealSense/GUI test was performed. |
+| 2026-11-06 | Replaced fixed 10 mm Local Support with a scale-relative factor, default 1/3: ced/fusion use each CED radius, multiscale uses each query's existing selected representative radius. Added scalar/per-query helper radii and stored resolved radius arrays; replaced the fixed-mm CLI/config and updated labels/tests. Preserve baseline scores, raw CED/PCA/directions, RMS/window formulas, final-stage Window selection and NMS configuration. |
+| 2026-11-06 | Added independent spatial Local Support G(X)=sqrt(X*valid-neighbor mean), 10 mm support, and none/ced/fusion/multiscale primary-result selection. Reuse unchanged raw CED/PCA, directions, saturation, RMS windows and NMS; honor supplied scene component labels. Store four comparison results and NMS coordinates/scores, display four synchronized pre-NMS Heatmaps, and remove NMS markers as requested. Preserve user-tuned voxel/threshold defaults and all other detector modes. |
+| 2026-11-06 | Show stored Local Maximum NMS candidates as red sphere markers over the multiscale pre-NMS Heatmap, using existing dense-detector marker sizing. Preserve Raw CED/PCA/Fusion, stability scores, thresholds, NMS results, Q99 colors and scene coordinates; update labels and headless renderer tests, including empty NMS. |
+| 2026-11-06 | Added independent `--mode heatmap`: raw CED × existing saturated weighted-PCA ratio without bilateral calls, 1.2 log scales and best contiguous five-scale mean-magnitude minus RMS vector deviation. Added chosen-window radius metadata, independent final threshold/18 mm Local Maximum NMS and one pre-NMS-only Heatmap view without markers. Preserved existing mode numerics and scene IDs; reused shared NMS and retained the old HeatmapConfig alias. |
+| 2026-11-05 | Simplified Lite to a CED prefix anchored at the detector radius: running-peak loss and all-pairs direction diameter stop at the first failure/invalid sample, without restart or a three-sample minimum. CED passes iff last valid R* >= minimum scale. Keep one raw weighted-PCA gate after CED at R*, current threshold 0.35, separate stage outcomes and unchanged detector/NMS/final-validator calculations. Store only the evaluated prefix and simplify cached debug to four panels with a bounded slider. |
+| 2026-11-05 | Replaced the CED prefix with overlapping joint stable-interval search: interval running peaks, maximum pairwise direction diameter, at least three valid samples and exact minimum containment. Select the farthest-ending interval and apply raw CED-weighted PCA >=0.10 once at its R*, preserving original bilateral/PCA arithmetic with lazy full-scene dependency caches. Store CED-only versus final outcomes, prior-response-loss diagnostics and PCA rejects with retained scale; add six-panel cached debug. Detector/Fusion/NMS/final-validator behavior is preserved and no Fusion scale sweep is added. |
+| 2026-11-05 | Simplified Lite to continuous CED-scale estimation: one-sided score drop <=0.15 and directed angle <=20 degrees, first failed transition stops without grace, exact minimum scale inserted, and only one/two initially undersupported samples may be skipped. Renamed minimum-scale/drop settings, added maximum-reach flag and accepted radius proposals, preserved normal/debug decisions with normal early exit, and retained fixed final-validator ROI interface with an explicit applied=False flag. Updated ACCEPT/REJECT diagnostics, tests and methods; original detector/NMS/CED equations remain unchanged. |
+| 2026-11-05 | Reverted Fusion Score Scale Persistence and its subsequent no-bilateral variant to the saved pre-Fusion CED magnitude/direction implementation. Restored 0.20/20-degree controls, eight log samples, two-consecutive-failure prefix/rollback, maximum-radius warning policy and four-panel CED debug. Removed sparse multi-scale PCA/Fusion helpers and ratio settings; retained earlier two-window click/camera fixes and current user detector/enable settings. |
+| 2026-11-05 | Removed bilateral recomputation and its spatial dependencies from Lite only, per user request. Lite now uses original CED times saturated PCA with its own base denominator; original detector bilateral/Fusion/NMS remain unchanged. Updated base comparison to unfiltered detector components, removed bilateral debug response, relabeled Lite plots and added a no-bilateral-call regression. |
+| 2026-11-05 | Replaced CED magnitude/direction/two-failure persistence with raw Fusion/base-Fusion ratio and first-failure prefix. Insert the exact required radius and reject out-of-range settings. Share existing dense kernels and cache full-scene dependency CED while evaluating PCA/Fusion only at NMS queries; preserve dense/NMS outputs and final-validator behavior. Updated six-panel cached debug decomposition and regression/real-data equivalence and timing checks; synthetic-cloud experiments remain excluded. |
+| 2026-11-05 | Fixed Lite debug interaction: enabled candidate clicks in both original NMS and extra Lite windows, restored camera drag handling replaced by Open3D custom callbacks, suppressed return-to-start drag clicks, queued Tk construction outside GLFW dispatch and raised the inspector. Added terminal click diagnostics and UI regressions; detector/NMS/Lite numerical results remain unchanged. |
+| 2026-11-05 | Added optional detector-only CED scale-persistence Lite Validator after unchanged NMS, sharing original CED arithmetic, caching radius responses and filtering explicit final-validator seeds. Added KEEP/REJECT display and cached NMS-click debug inspector; preserve original score/NMS records and disabled behavior. Documented two-failure prefix semantics, invalid responses, unreachable 120 mm at 30x3 mm defaults, and no automatic final-ROI override. Excluded synthetic experiments as requested. |
+| 2026-11-05 | Converted detector NMS to `nms_radius_factor` / `--nms-radius-factor`, removing optional absolute-mm defaults/CLI and the `None` fallback. Chose factor 1.0 to preserve the user's current CED 30 mm / NMS 30 mm settings. Keep metric numerical interfaces and the unchanged Local Maximum algorithm. Updated all shared detector consumers and factor/invalid-value/removed-CLI/scale-invariance tests; ball's separate hypothesis NMS remains unchanged. |
+| 2026-11-05 | Unified bilateral spatial settings as CED multipliers: `bilateral_radius_factor=1.0` and `bilateral_sigma_spatial_factor=0.5`, replacing optional spatial-mm defaults/CLI and their `None` resolution branches. Keep `bilateral_sigma_ced=0.05` dimensionless, existing resolved-mm library interfaces and unchanged filter equations/default numerical outputs. Extended multiplier/invalid-value/removed-option regressions and numerical scale-invariance checks. |
+| 2026-11-05 | Made detector PCA follow the absolute CED radius through `pca_radius_factor=1.5` and restored `--pca-radius-factor` in place of the independent PCA-mm option. Bilateral defaults continue to follow CED at radius 1x / spatial sigma 0.5x, retaining explicit mm overrides. Kept CED independent of voxel, resolved metric library interfaces, default 80/120/80/40 mm behaviour and NMS settings. Updated CLI/config/scale-regression tests and docs; scaling synthetic points and CED/NMS radii preserves expected scores and candidate IDs. |
+| 2026-11-05 | Decoupled detector support radii from voxel size: absolute `centroid_radius_mm=80` and independent `pca_radius_mm=120`, exposed as `--centroid-radius-mm` / `--pca-radius-mm`. Removed detector PCA-factor conversion/config/logging; kept bilateral defaults tied to CED radius, explicit overrides and NMS behaviour. Fine retains its original voxel-multiplied CED setting and fine-only flag. Updated shared Coarse consumers, CLI/fixtures/docs and numerical score/NMS regressions across voxel settings. No scoring, thresholding, sampling or validator geometry equations changed; no multi-scale loop was added. |
+| 2026-11-05 | Replaced guided Corner validation with independent endpoint candidate generation and complete-diameter shared-Edge/same-Endpoint integration. The standalone function defaults to 20 degrees / 5 mm; preserved the user's subsequent live CLI edits to 45 degrees / 15 mm. Removed vertex distances, query/core/Node gates, LS/anchor refinement and selected-Corner ranking. Added existing Edge fitting-tolerance metadata for 3-D skew residuals; Edge detection/masks remain unchanged. Return every unverified Corner with endpoint provenance and representative residual/gap; adapt validator, total, terminal and manager-owned views. Added numerical boundary/skew/merge/anti-chain/multi-output/validation tests and headless display checks. |
+| 2026-11-05 | Removed the plane-support `nearby` component count and its multi-component UNKNOWN gate. Support validity no longer depends on `corner_gate_radius_mm`; retain the nearest original-inlier-anchored component, original tie breaks and single-component Hull. Preserve missing-anchor UNKNOWN, residual/radius filtering, native IDs, plane models and Hull degeneracy checks. Added numerical tests for two nearby disconnected anchored components, Corner-gate independence, anchor preference and missing-anchor rejection. With the reference 20 mm connectivity / 10 mm Corner gate, the removed multi-component condition was unreachable in exact geometry; alternative settings may now retain previously UNKNOWN patches. |
+| 2026-11-05 | Removed same-type finite-edge deduplication and `validator_edge_duplicate_angle_deg` from defaults, resolved config, validation and CLI. Retain every valid finite candidate in the existing quality/length/source order, with consecutive Edge IDs and singleton `source_edge_ids`. Preserve TLS RMS fitting, Node provenance, core clipping, minimum length and intersection–boundary masking. Distinct opposite Hull chains now survive even when they share endpoint Node IDs; more retained Edges can change downstream IDs/Corner results. Updated angle-independence tests and added numerical thin-Hull retention and unchanged intersection-masking regressions. |
+| 2026-11-05 | Changed adjacent boundary TLS merging from maximum orthogonal residual to RMS over equally weighted unique group vertices, retaining the 3.5 mm threshold. Renamed the default/resolved setting and CLI to `validator_boundary_merge_rms_error_mm` / `boundary_merge_rms_error_mm` / `--validator-boundary-merge-rms-error-mm`. Added `tls_rms_error_mm` to Lines/Boundary Edges, retained maximum error as diagnostics, and changed live/exported TLS labels to RMS. Preserved Node adjacency/provenance, independent direction gates, SVD fitting, ROI clipping, minimum length and upstream plane fitting. Added numerical RMS-versus-max, exact threshold, propagation and configuration regressions. |
+| 2026-11-05 | Split the formerly shared guided geometry angle into independent boundary TLS merge, same-type finite-edge duplicate and Corner minimum angles, each defaulting to 30 degrees. Added settings, CLI propagation, finite `(0, 90]` validation and numerical independence regression tests. Preserved TLS formulas, the current 3.5 mm maximum residual, endpoint provenance, deduplication conditions and default numerical behavior in validator/total. |
 | 2026-10-30 | Refined Boundary-only Corner groups with the existing translated, rank-checked all-Line 3-D LS solver, including after group merges, while retaining single-intersection constrained LS and all topology/extent/residual gates. Selected accepted Corners by shared-intersection presence, perpendicular Line RMS, total extension and query distance, with deterministic ID tie breaking and sub-1e-8 mm ranking roundoff suppression. Added per-vertex ranking metrics and restored experimental 30/30/30/50 mm limits to 5/5/5/10 mm. Guided validator and total share this policy; upstream scoring/RANSAC/Hull/TLS/strip/masking and disabled point support are unchanged. Only modified Python syntax was checked; no tests or GUI/device runs were performed. |
 | 2026-10-30 | Changed only total mode's final Corner display markers to red and doubled their radius (4 mm at 5 mm validator voxel). Updated the final-window colour legend; contributing Edge styles and numerical detection results are unchanged. Python syntax passed; no tests or GUI/device run was performed. |
 | 2026-10-30 | Added total mode: unchanged detector/NMS followed by the canonical guided validator for every scene seed, aggregating each ACCEPT query's selected Corner and contributing active Edge intervals. Added exactly two managed result views with Q99 Fusion and gray raw geometry, green Corner/Boundary, cyan shared bars and larger markers. Reused frame KD-trees, skipped unused organized mapping and core-only debug comparisons, retained compact query records, suppressed seed dumps and batched coloured meshes. Existing modes/numerical thresholds and seeded sampling are unchanged. Only modified Python syntax was checked; no tests, GUI/device runs or benchmark were performed. |

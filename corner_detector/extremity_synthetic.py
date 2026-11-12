@@ -186,12 +186,17 @@ def ced_candidates(points, cfg):
     scores = dense_ced_weighted_pca_scores(points, cfg.centroid_radius_mm, cfg.pca_radius_mm,
         cfg.min_neighbors, point_tree=tree, bilateral_radius_mm=cfg.bilateral_radius_mm,
         bilateral_sigma_spatial_mm=cfg.bilateral_sigma_spatial_mm,
+        bilateral_mode=getattr(cfg, "bilateral_mode", "ced"),
+        pca_ced_cutoff=getattr(cfg, "pca_ced_cutoff", 0.0),
+        fusion_mode=getattr(cfg, "fusion_mode", "pca_ratio"),
+        local_minimum_tau=getattr(cfg, "local_minimum_tau", .005),
         bilateral_sigma_ced=cfg.bilateral_sigma_ced, pca_ratio_saturation_tau=cfg.pca_ratio_saturation_tau)
     scoring_s = perf_counter() - started
     stage = perf_counter()
     extraction = extract_corner_candidates(points, scores, cfg.nms_radius_mm,
         fusion_score_threshold=cfg.fusion_score_threshold,
-        fusion_threshold_mode=cfg.fusion_threshold_mode, point_tree=tree)
+        fusion_threshold_mode=cfg.fusion_threshold_mode, point_tree=tree,
+        post_nms_lambda1_ratio_max=getattr(cfg, "post_nms_lambda1_ratio_max", None))
     return extraction, {"ced_scoring_s": scoring_s, "ced_nms_s": perf_counter() - stage,
                         "ced_total_s": perf_counter() - started}
 

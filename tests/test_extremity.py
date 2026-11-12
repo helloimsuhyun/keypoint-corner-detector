@@ -313,7 +313,8 @@ class ExtremityTest(unittest.TestCase):
     def test_ced_adapter_shares_settings_and_caches_existing_heatmap_without_recomputation(self):
         from corner_detector import ball_query
         cfg, _ = configure(parse_args(["--source", "realsense", "--mode", "ball",
-                                       "--nms-radius-mm", "17", "--ball-nms-radius-x", "0.7"]))
+                                       "--centroid-radius-mm", "80", "--nms-radius-factor", "0.2125",
+                                       "--ball-nms-radius-x", "0.7"]))
         points = np.array([[0., 0., 0.], [3., 0., 0.]])
         indices = np.array([1])
         scores = {"candidate_extraction": {"candidate_indices": indices}}

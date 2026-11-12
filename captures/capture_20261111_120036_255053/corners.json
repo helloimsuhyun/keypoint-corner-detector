@@ -1,0 +1,644 @@
+{
+  "version": 1,
+  "corners": [
+    {
+      "id": "corner_001",
+      "point_index": 147369,
+      "refinement_path_xyz_mm": [
+        [
+          -168.927001953125,
+          118.9784164428711,
+          295.0000305175781
+        ],
+        [
+          -175.19278632269965,
+          118.84309641520183,
+          294.66668701171875
+        ]
+      ],
+      "refined_xyz_mm": [
+        -175.19278632269965,
+        118.84309641520183,
+        294.66668701171875
+      ],
+      "refinement": {
+        "method": "eigen_global_lambda1",
+        "eigen_origin_xyz_mm": [
+          -169.31488037109375,
+          118.9784164428711,
+          295.0000305175781
+        ],
+        "eigen_base_path_xyz_mm": [
+          [
+            -168.927001953125,
+            118.9784164428711,
+            295.0000305175781
+          ]
+        ],
+        "radius_mm": 30.0,
+        "voxel_size_mm": 2.0,
+        "ced_radius_mm": 30.0,
+        "pca_mode": "ced_threshold",
+        "search_radius_mm": 30.0,
+        "objective_before": 87.1154857536672,
+        "objective_after": 64.84440159076111,
+        "step_displacement_mm": 5.888905482236156,
+        "total_displacement_mm": 6.276104139415867,
+        "search_boundary_hit": false,
+        "evaluated": 284,
+        "lambda_values": [
+          64.84440159076111,
+          56.030113428855906,
+          0.5074199072268812
+        ],
+        "ratio": 0.8640701749777417,
+        "eigenvectors_12": [
+          [
+            -0.4548505405136564,
+            -0.8905615277489064
+          ],
+          [
+            -0.553404459415905,
+            0.27970720359460255
+          ],
+          [
+            0.6977495898193168,
+            -0.35869770775796955
+          ]
+        ],
+        "iteration": 1,
+        "converged": false
+      }
+    },
+    {
+      "id": "corner_002",
+      "point_index": 148464
+    },
+    {
+      "id": "corner_003",
+      "point_index": 87087,
+      "refinement_path_xyz_mm": [
+        [
+          -660.1820068359375,
+          7.59149169921875,
+          1323.0001220703125
+        ],
+        [
+          -635.2176513671875,
+          21.622793197631836,
+          1329.0001220703125
+        ]
+      ],
+      "refined_xyz_mm": [
+        -635.2176513671875,
+        21.622793197631836,
+        1329.0001220703125
+      ],
+      "refinement": {
+        "method": "eigen_global_lambda1",
+        "eigen_origin_xyz_mm": [
+          -660.1820068359375,
+          7.59149169921875,
+          1323.0001220703125
+        ],
+        "eigen_base_path_xyz_mm": [
+          [
+            -660.1820068359375,
+            7.59149169921875,
+            1323.0001220703125
+          ]
+        ],
+        "radius_mm": 30.0,
+        "voxel_size_mm": 2.0,
+        "ced_radius_mm": 30.0,
+        "pca_mode": "ced_threshold",
+        "search_radius_mm": 30.0,
+        "objective_before": 266.27024063427393,
+        "objective_after": 159.66489690457263,
+        "step_displacement_mm": 29.259126195248506,
+        "total_displacement_mm": 29.259126195248506,
+        "search_boundary_hit": true,
+        "evaluated": 136,
+        "lambda_values": [
+          159.66489690457263,
+          137.27829201461577,
+          15.788454221033582
+        ],
+        "ratio": 0.8597900645416335,
+        "eigenvectors_12": [
+          [
+            0.608498473100204,
+            0.49651711763803635
+          ],
+          [
+            -0.6526820062612861,
+            0.756845106489122
+          ],
+          [
+            0.45137103023727876,
+            0.425036747441778
+          ]
+        ],
+        "iteration": 1,
+        "converged": false
+      }
+    },
+    {
+      "id": "corner_004",
+      "point_index": 119764,
+      "refinement_path_xyz_mm": [
+        [
+          26.20528221130371,
+          68.18394470214844,
+          319.0
+        ],
+        [
+          26.540825271606444,
+          69.19184265136718,
+          319.0
+        ]
+      ],
+      "refined_xyz_mm": [
+        26.540825271606444,
+        69.19184265136718,
+        319.0
+      ],
+      "refinement": {
+        "method": "eigen_global_lambda1",
+        "eigen_origin_xyz_mm": [
+          26.540825271606444,
+          69.19184265136718,
+          319.0
+        ],
+        "eigen_base_path_xyz_mm": [
+          [
+            26.20528221130371,
+            68.18394470214844,
+            319.0
+          ]
+        ],
+        "radius_mm": 30.0,
+        "voxel_size_mm": 2.0,
+        "ced_radius_mm": 30.0,
+        "pca_mode": "ced_threshold",
+        "search_radius_mm": 30.0,
+        "objective_before": 134.68354442412462,
+        "objective_after": 134.68354442412462,
+        "step_displacement_mm": 0.0,
+        "total_displacement_mm": 1.0622840586946007,
+        "search_boundary_hit": false,
+        "evaluated": 504,
+        "lambda_values": [
+          134.68354442412462,
+          78.5162268556021,
+          30.848645939884214
+        ],
+        "ratio": 0.5829682251927594,
+        "eigenvectors_12": [
+          [
+            -0.18553070852263487,
+            0.8896833977388063
+          ],
+          [
+            0.94931110315503,
+            0.2719148156638809
+          ],
+          [
+            -0.2537455135005712,
+            0.3667775685758477
+          ]
+        ],
+        "iteration": 1,
+        "converged": true
+      }
+    },
+    {
+      "id": "corner_005",
+      "point_index": 83618
+    },
+    {
+      "id": "corner_006",
+      "point_index": 85002,
+      "refinement_path_xyz_mm": [
+        [
+          -66.44474029541016,
+          -3.490579128265381,
+          470.0000305175781
+        ],
+        [
+          -66.52865600585938,
+          6.300294399261475,
+          462.0
+        ]
+      ],
+      "refined_xyz_mm": [
+        -66.52865600585938,
+        6.300294399261475,
+        462.0
+      ],
+      "refinement": {
+        "method": "eigen_global_lambda1",
+        "eigen_origin_xyz_mm": [
+          -67.06270599365234,
+          -3.490579128265381,
+          470.0000305175781
+        ],
+        "eigen_base_path_xyz_mm": [
+          [
+            -66.44474029541016,
+            -3.490579128265381,
+            470.0000305175781
+          ]
+        ],
+        "radius_mm": 30.0,
+        "voxel_size_mm": 2.0,
+        "ced_radius_mm": 30.0,
+        "pca_mode": "ced_threshold",
+        "search_radius_mm": 30.0,
+        "objective_before": 173.67495151313744,
+        "objective_after": 128.74251662251248,
+        "step_displacement_mm": 12.654916123928643,
+        "total_displacement_mm": 12.643920853938768,
+        "search_boundary_hit": false,
+        "evaluated": 231,
+        "lambda_values": [
+          128.74251662251248,
+          43.90132313444601,
+          0.4450072985487641
+        ],
+        "ratio": 0.3410009706674417,
+        "eigenvectors_12": [
+          [
+            -0.844707416329316,
+            0.5120612740643348
+          ],
+          [
+            0.26584953264001254,
+            0.6539942405908505
+          ],
+          [
+            -0.4645356894721204,
+            -0.5568525701454626
+          ]
+        ],
+        "iteration": 1,
+        "converged": false
+      }
+    },
+    {
+      "id": "corner_007",
+      "point_index": 87630
+    },
+    {
+      "id": "corner_008",
+      "point_index": 101519,
+      "refinement_path_xyz_mm": [
+        [
+          -924.7025146484375,
+          123.93135070800781,
+          1266.0
+        ],
+        [
+          -937.6431884765625,
+          120.97904968261719,
+          1270.0001220703125
+        ]
+      ],
+      "refined_xyz_mm": [
+        -937.6431884765625,
+        120.97904968261719,
+        1270.0001220703125
+      ],
+      "refinement": {
+        "method": "eigen_global_lambda1",
+        "eigen_origin_xyz_mm": [
+          -924.7025146484375,
+          123.93135070800781,
+          1266.0
+        ],
+        "eigen_base_path_xyz_mm": [
+          [
+            -924.7025146484375,
+            123.93135070800781,
+            1266.0
+          ]
+        ],
+        "radius_mm": 30.0,
+        "voxel_size_mm": 2.0,
+        "ced_radius_mm": 30.0,
+        "pca_mode": "ced_threshold",
+        "search_radius_mm": 30.0,
+        "objective_before": 242.60609970070684,
+        "objective_after": 116.9148773254709,
+        "step_displacement_mm": 13.862831494606109,
+        "total_displacement_mm": 13.862831494606109,
+        "search_boundary_hit": false,
+        "evaluated": 230,
+        "lambda_values": [
+          116.9148773254709,
+          77.45341039966496,
+          12.921926070180364
+        ],
+        "ratio": 0.6624769419553681,
+        "eigenvectors_12": [
+          [
+            -0.06137976479361669,
+            0.8394136269171053
+          ],
+          [
+            -0.7484874365476694,
+            0.31921208989884753
+          ],
+          [
+            0.6603022654846636,
+            0.43987316877513766
+          ]
+        ],
+        "iteration": 1,
+        "converged": false
+      }
+    },
+    {
+      "id": "corner_009",
+      "point_index": 103950
+    },
+    {
+      "id": "corner_010",
+      "point_index": 88500,
+      "refinement_path_xyz_mm": [
+        [
+          -69.86956787109375,
+          6.273020267486572,
+          460.0
+        ],
+        [
+          -73.17892456054688,
+          8.657547950744629,
+          458.0000305175781
+        ]
+      ],
+      "refined_xyz_mm": [
+        -73.17892456054688,
+        8.657547950744629,
+        458.0000305175781
+      ],
+      "refinement": {
+        "method": "eigen_global_lambda1",
+        "eigen_origin_xyz_mm": [
+          -69.11289723714192,
+          6.681288083394368,
+          460.3333435058594
+        ],
+        "eigen_base_path_xyz_mm": [
+          [
+            -69.86956787109375,
+            6.273020267486572,
+            460.0
+          ]
+        ],
+        "radius_mm": 30.0,
+        "voxel_size_mm": 2.0,
+        "ced_radius_mm": 30.0,
+        "pca_mode": "ced_threshold",
+        "search_radius_mm": 30.0,
+        "objective_before": 111.93469727422399,
+        "objective_after": 83.35051524048707,
+        "step_displacement_mm": 5.087487666742485,
+        "total_displacement_mm": 4.542872648542,
+        "search_boundary_hit": false,
+        "evaluated": 176,
+        "lambda_values": [
+          83.35051524048707,
+          28.939408753487143,
+          0.4033823538070365
+        ],
+        "ratio": 0.34720131807211646,
+        "eigenvectors_12": [
+          [
+            -0.8219309862979249,
+            0.5455535371977882
+          ],
+          [
+            0.3003811430101452,
+            0.659370261249372
+          ],
+          [
+            -0.4839427886509309,
+            -0.5173028094171896
+          ]
+        ],
+        "iteration": 1,
+        "converged": false
+      }
+    },
+    {
+      "id": "corner_011",
+      "point_index": 86338,
+      "refinement_path_xyz_mm": [
+        [
+          -66.96066284179688,
+          0.21954868733882904,
+          465.0000305175781
+        ],
+        [
+          -69.11289723714192,
+          6.681288083394368,
+          460.3333435058594
+        ]
+      ],
+      "refined_xyz_mm": [
+        -69.11289723714192,
+        6.681288083394368,
+        460.3333435058594
+      ],
+      "refinement": {
+        "method": "eigen_global_lambda1",
+        "eigen_origin_xyz_mm": [
+          -66.96066284179688,
+          0.8317143842577934,
+          465.0000305175781
+        ],
+        "eigen_base_path_xyz_mm": [
+          [
+            -66.96066284179688,
+            0.21954868733882904,
+            465.0000305175781
+          ]
+        ],
+        "radius_mm": 30.0,
+        "voxel_size_mm": 2.0,
+        "ced_radius_mm": 30.0,
+        "pca_mode": "ced_threshold",
+        "search_radius_mm": 45.0,
+        "objective_before": 146.51606827398217,
+        "objective_after": 111.93469727422399,
+        "step_displacement_mm": 7.786372263094097,
+        "total_displacement_mm": 8.25615870610461,
+        "search_boundary_hit": false,
+        "evaluated": 373,
+        "lambda_values": [
+          111.93469727422399,
+          36.82409302744935,
+          0.4222382864346229
+        ],
+        "ratio": 0.3289783590269208,
+        "eigenvectors_12": [
+          [
+            -0.8380721548479431,
+            0.5217929071518963
+          ],
+          [
+            0.276913546202994,
+            0.6583928425901596
+          ],
+          [
+            -0.4700573913872724,
+            -0.5424491007200786
+          ]
+        ],
+        "iteration": 1,
+        "converged": false
+      }
+    },
+    {
+      "id": "corner_012",
+      "point_index": 102782
+    },
+    {
+      "id": "corner_013",
+      "point_index": 88058
+    },
+    {
+      "id": "corner_014",
+      "point_index": 126346,
+      "refinement_path_xyz_mm": [
+        [
+          -66.97958374023438,
+          76.77547454833984,
+          297.0000305175781
+        ],
+        [
+          -69.32260131835938,
+          76.77547454833984,
+          297.0000305175781
+        ],
+        [
+          -72.44662475585938,
+          76.77547454833984,
+          297.0000305175781
+        ],
+        [
+          -76.60872650146484,
+          77.42628479003906,
+          298.0
+        ]
+      ],
+      "refined_xyz_mm": [
+        -76.60872650146484,
+        77.42628479003906,
+        298.0
+      ],
+      "refinement": {
+        "method": "discrete_q10_global_voxel_points",
+        "voxel_size_mm": 2.0,
+        "radius_mm": 30,
+        "search_radius_mm": 6,
+        "candidate_spacing_mm": 0,
+        "q10_before": 0.3311821027695395,
+        "q10_after": 0.36049765728914823,
+        "neighbors_before": 512,
+        "neighbors_after": 472,
+        "evaluated": 30,
+        "available_downsampled_candidates": 30,
+        "displacement_mm": 4.32973254107546,
+        "step_displacement_mm": 4.32973254107546,
+        "total_displacement_mm": 9.702777089711626,
+        "iteration": 3,
+        "boundary_hit": false,
+        "min_support_ratio": 0.8,
+        "converged": true
+      }
+    },
+    {
+      "id": "corner_015",
+      "point_index": 122001
+    },
+    {
+      "id": "corner_016",
+      "point_index": 111373
+    },
+    {
+      "id": "corner_017",
+      "point_index": 111367
+    },
+    {
+      "id": "corner_018",
+      "point_index": 91850,
+      "refinement_path_xyz_mm": [
+        [
+          -92.20479583740234,
+          13.116889953613281,
+          378.0000305175781
+        ],
+        [
+          -97.43006286621093,
+          18.31478042602539,
+          374.40001220703124
+        ]
+      ],
+      "refined_xyz_mm": [
+        -97.43006286621093,
+        18.31478042602539,
+        374.40001220703124
+      ],
+      "refinement": {
+        "method": "eigen_global_lambda1",
+        "eigen_origin_xyz_mm": [
+          -92.61743672688802,
+          12.795824686686197,
+          378.33335367838544
+        ],
+        "eigen_base_path_xyz_mm": [
+          [
+            -92.20479583740234,
+            13.116889953613281,
+            378.0000305175781
+          ]
+        ],
+        "radius_mm": 30.0,
+        "voxel_size_mm": 2.0,
+        "ced_radius_mm": 30.0,
+        "pca_mode": "unweighted",
+        "search_radius_mm": 28.0,
+        "objective_before": 125.46850023888267,
+        "objective_after": 112.48578061371936,
+        "step_displacement_mm": 8.312124754835793,
+        "total_displacement_mm": 8.202536968634739,
+        "search_boundary_hit": false,
+        "evaluated": 213,
+        "lambda_values": [
+          112.48578061371936,
+          57.450322889496704,
+          0.4809016020500619
+        ],
+        "ratio": 0.510734090798404,
+        "eigenvectors_12": [
+          [
+            -0.4597643735595853,
+            0.8874669951446306
+          ],
+          [
+            0.5146340126208545,
+            0.29556423232045115
+          ],
+          [
+            -0.7237185598415453,
+            -0.3536157760928982
+          ]
+        ],
+        "iteration": 1,
+        "converged": false
+      }
+    }
+  ]
+}

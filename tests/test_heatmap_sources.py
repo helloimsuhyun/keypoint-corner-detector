@@ -63,7 +63,6 @@ class HeatmapSourceCompatibilityTest(unittest.TestCase):
             voxel_3d_mm=2.0,
             centroid_radius_mm=20.0,
             pca_radius_mm=36.0,
-            pca_radius_factor=1.8,
             bilateral_radius_mm=20.0,
             bilateral_sigma_spatial_mm=10.0,
             bilateral_sigma_ced=0.05,
@@ -100,11 +99,12 @@ class HeatmapSourceCompatibilityTest(unittest.TestCase):
                         patch.object(
                             runner, "prepare_frozen_from_frame",
                             return_value=({}, points),
-                        ), \
+                        ) as prepare, \
                         patch.object(runner, "run_dense_heatmap_mode") as heatmap:
                     runner.main([])
 
                 heatmap.assert_called_once_with(points, cfg)
+                self.assertFalse(prepare.call_args.kwargs['include_organized_context'])
                 calls = {
                     "stl": stl.call_count,
                     "kinect": kinect.call_count,
@@ -142,7 +142,6 @@ class HeatmapSourceCompatibilityTest(unittest.TestCase):
             voxel_3d_mm=2.0,
             centroid_radius_mm=20.0,
             pca_radius_mm=36.0,
-            pca_radius_factor=1.8,
             bilateral_radius_mm=20.0,
             bilateral_sigma_spatial_mm=10.0,
             bilateral_sigma_ced=0.05,

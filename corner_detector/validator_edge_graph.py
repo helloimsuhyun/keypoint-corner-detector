@@ -112,10 +112,12 @@ def _edge(points, patches, start, end, edge_type, query, support_radius, cfg, *,
             "support_by_plane": [], "point_support_checked": False,
             "support_quality": 1.,
             "roi_truncated": False, "valid": True,
-            "status": "VALID", "failure_reason": None}
+            "status": "VALID", "failure_reason": None,
+            "fit_tolerance_mm": cfg.boundary_merge_rms_error_mm if line is not None else cfg.inlier_threshold_mm}
     if line is not None:
         edge.update(plane_id=line["plane_id"], line_id=line["id"], source_hull_edge_ids=line["source_hull_edge_ids"].copy(),
                     support_node_ids=line["support_node_ids"].copy(),
+                    tls_rms_error_mm=line["tls_rms_error_mm"],
                     tls_max_error_mm=line["tls_max_error_mm"])
         for side in ("start", "end"):
             node = line[side + "_node"]
@@ -196,7 +198,8 @@ def _boundary_segments(patch, cfg, query):
         if direction @ (vertices[-1] - vertices[0]) < 0:
             direction = -direction
         residual = delta - (delta @ direction)[:, None] * direction
-        return center, direction, float(np.max(np.linalg.norm(residual, axis=1)))
+        distances = np.linalg.norm(residual, axis=1)
+        return center, direction, float(np.sqrt(np.mean(distances ** 2))), float(np.max(distances))
 
     groups = []
     for edge in debug["clipped_edges"]:
@@ -207,7 +210,7 @@ def _boundary_segments(patch, cfg, query):
             groups.append({"vertices": [start, end], "directions": [direction],
                            "direction": direction, "node_ids": [edge["start_node_id"], edge["end_node_id"]],
                            "source_hull_edge_ids": [edge["source_hull_edge_id"]]})
-    cosine = np.cos(np.deg2rad(cfg.corner_min_edge_angle_deg))
+    cosine = np.cos(np.deg2rad(cfg.boundary_merge_angle_deg))
     while len(groups) > 1:
         merged = False
         for index in range(len(groups)):
@@ -222,8 +225,8 @@ def _boundary_segments(patch, cfg, query):
             fit = fit_tls(combined)
             if fit is None:
                 continue
-            _, direction, max_error = fit
-            if max_error > cfg.boundary_merge_max_error_mm:
+            _, direction, rms_error, _ = fit
+            if rms_error > cfg.boundary_merge_rms_error_mm:
                 continue
             if any(left @ right < cosine for left, right in combinations(
                     (a["direction"], b["direction"], direction), 2)):
@@ -241,7 +244,7 @@ def _boundary_segments(patch, cfg, query):
         fit = fit_tls(group["vertices"])
         if fit is None:
             continue
-        center, direction, max_error = fit
+        center, direction, rms_error, max_error = fit
         projected = (np.asarray(group["vertices"]) - center) @ direction
         endpoints_uv = center + np.array([projected.min(), projected.max()])[:, None] * direction
         endpoints_mm = (patch["origin_mm"] + endpoints_uv[:, :1] * patch["basis_u"]
@@ -253,45 +256,10 @@ def _boundary_segments(patch, cfg, query):
                          "start_node_id": group["node_ids"][0], "end_node_id": group["node_ids"][-1],
                          "support_node_ids": group["node_ids"],
                          "source_hull_edge_ids": group["source_hull_edge_ids"],
+                         "tls_rms_error_mm": rms_error,
                          "tls_max_error_mm": max_error})
     debug["lines"] = segments
     return segments, debug
-
-
-def _same_finite_edge(left, right, cfg):
-    if left["edge_type"] != right["edge_type"] or left["plane_ids"] != right["plane_ids"]:
-        return False
-    if left["edge_type"] == "boundary" and {
-        left.get("start_node_id"), left.get("end_node_id")
-    } != {right.get("start_node_id"), right.get("end_node_id")}:
-        return False
-    if abs(left["direction"] @ right["direction"]) < np.cos(np.deg2rad(cfg.corner_min_edge_angle_deg)):
-        return False
-    for a, b in ((left, right), (right, left)):
-        delta = np.stack((a["start_mm"], a["end_mm"])) - b["start_mm"]
-        residual = delta - (delta @ b["direction"])[:, None] * b["direction"]
-        if np.max(np.linalg.norm(residual, axis=1)) > cfg.inlier_threshold_mm:
-            return False
-    axis = left["direction"]
-    a = sorted([left["start_mm"] @ axis, left["end_mm"] @ axis])
-    b = sorted([right["start_mm"] @ axis, right["end_mm"] @ axis])
-    return min(a[1], b[1]) > max(a[0], b[0]) + 1e-8
-
-
-def edge_parameter_is_active(edge, parameter, tolerance=0.):
-    """Allow extension only at original endpoints; mask cuts never form vertices."""
-    length = edge["length_mm"]
-    if ((edge.get("roi_clipped_start", False) and parameter <= 1e-8)
-            or (edge.get("roi_clipped_end", False) and parameter >= length - 1e-8)):
-        return False
-    if parameter < -tolerance or parameter > length + tolerance:
-        return False
-    parameter = float(np.clip(parameter, 0., length))
-    if any(low - 1e-8 <= parameter <= high + 1e-8
-           for low, high in edge.get("masked_intervals_mm", ())):
-        return False
-    return any(low - 1e-8 <= parameter <= high + 1e-8
-               for low, high in edge.get("active_intervals_mm", ((0., length),)))
 
 
 def _mask_boundary_overlaps(edges, cfg):
@@ -439,19 +407,10 @@ def build_validator_edge_graph(points_mm, query_mm, support, cfg):
                     line[side + "_node_id"] = edge[side + "_node_id"]
                     line[side + "_mm"] = edge[side + "_mm"]
             append(edge)
-    groups = []
-    for edge in sorted((edge for edge in candidates if edge["valid"]),
-                       key=lambda edge: (-edge["support_quality"], -edge["length_mm"], edge["source_edge_id"])):
-        match = next((group for group in groups
-                      if all(_same_finite_edge(edge, other, cfg) for other in group)), None)
-        if match is None:
-            groups.append([edge])
-        else:
-            match.append(edge)
-    # A representative keeps its observed finite interval; deduplication never fills a gap.
-    edges = [{**group[0], "edge_id": index,
-              "source_edge_ids": [edge["source_edge_id"] for edge in group]}
-             for index, group in enumerate(groups)]
+    edges = [{**edge, "edge_id": index, "source_edge_ids": [edge["source_edge_id"]]}
+             for index, edge in enumerate(sorted(
+                 (edge for edge in candidates if edge["valid"]),
+                 key=lambda edge: (-edge["support_quality"], -edge["length_mm"], edge["source_edge_id"])))]
     overlap_diagnostics = _mask_boundary_overlaps(edges, cfg)
     all_edges = edges
     edges = [edge for edge in all_edges if edge["valid"]]

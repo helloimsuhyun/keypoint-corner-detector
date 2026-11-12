@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "corners": [
+    {
+      "id": "corner_001",
+      "point_index": 89623
+    },
+    {
+      "id": "corner_002",
+      "point_index": 89283,
+      "refinement_path_xyz_mm": [
+        [
+          -60.124088287353516,
+          -3.7241318225860596,
+          370.0
+        ],
+        [
+          -60.124088287353516,
+          -4.698862075805664,
+          370.0
+        ],
+        [
+          -59.15058898925781,
+          -9.572514533996582,
+          370.0
+        ]
+      ],
+      "refined_xyz_mm": [
+        -59.15058898925781,
+        -9.572514533996582,
+        370.0
+      ],
+      "refinement": {
+        "method": "discrete_q10_global_voxel_points",
+        "voxel_size_mm": 2.0,
+        "radius_mm": 30,
+        "search_radius_mm": 6,
+        "candidate_spacing_mm": 0,
+        "q10_before": 0.3233205839017404,
+        "q10_after": 0.3421959882890424,
+        "neighbors_before": 398,
+        "neighbors_after": 387,
+        "evaluated": 19,
+        "available_downsampled_candidates": 19,
+        "displacement_mm": 4.969928487073351,
+        "step_displacement_mm": 4.969928487073351,
+        "total_displacement_mm": 5.9288515939023405,
+        "iteration": 2,
+        "boundary_hit": false,
+        "min_support_ratio": 0.8,
+        "converged": true
+      }
+    },
+    {
+      "id": "corner_003",
+      "point_index": 95191
+    },
+    {
+      "id": "corner_004",
+      "point_index": 89964
+    },
+    {
+      "id": "corner_005",
+      "point_index": 71744
+    }
+  ]
+}

@@ -16,6 +16,9 @@ NUMERIC = (
     "extremity_voting.py",
     "guided_ransac.py", "validator_plane_support.py",
     "validator_edge_graph.py", "validator_corner_graph.py",
+    "connectivity.py",
+    "q10_validator.py",
+    "spherical_antipodal.py",
 )
 
 
@@ -59,14 +62,36 @@ class ArchitectureTest(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("--source", run.stdout)
         self.assertIn("--mode", run.stdout)
-        self.assertIn("{fine,detector,ball,extremity256,validator}", run.stdout)
+        self.assertIn("{fine,detector,ball,extremity256,validator,total,new-validator}", run.stdout)
+        self.assertIn("--q10-direction-mode", run.stdout)
+        self.assertNotIn("--heatmap-", run.stdout)
+        self.assertNotIn("--cone-extremality", run.stdout)
         self.assertIn("--ball-radii-x", run.stdout)
         self.assertNotIn("{query,heatmap,fps}", run.stdout)
         self.assertIn("--centroid-radius-x", run.stdout)
+        self.assertIn("--centroid-radius-mm", run.stdout)
         self.assertIn("--pca-radius-factor", run.stdout)
+        self.assertNotIn("--pca-radius-mm", run.stdout)
+        self.assertIn("--bilateral-radius-factor", run.stdout)
+        self.assertIn("--bilateral-sigma-spatial-factor", run.stdout)
+        self.assertIn("--bilateral-sigma-ced", run.stdout)
+        self.assertNotIn("--bilateral-radius-mm", run.stdout)
+        self.assertNotIn("--bilateral-sigma-spatial-mm", run.stdout)
         self.assertIn("--pca-ratio-saturation-tau", run.stdout)
         self.assertIn("--fusion-score-threshold", run.stdout)
-        self.assertIn("--nms-radius-mm", run.stdout)
+        self.assertIn("--nms-radius-factor", run.stdout)
+        self.assertNotIn("--lite-validator", run.stdout)
+        self.assertIn("--q10-validator", run.stdout)
+        self.assertIn("--no-q10-validator", run.stdout)
+        self.assertNotIn("--lite-validator-debug", run.stdout)
+        self.assertNotIn("--lite-validator-min-scale-mm", run.stdout)
+        self.assertNotIn("--lite-validator-min-persistence-mm", run.stdout)
+        self.assertNotIn("--lite-validator-persistence-ratio-threshold", run.stdout)
+        self.assertNotIn("--lite-validator-ced-drop-threshold", run.stdout)
+        self.assertNotIn("--lite-validator-magnitude-change-threshold", run.stdout)
+        self.assertNotIn("--lite-validator-direction-change-deg", run.stdout)
+        self.assertNotIn("--lite-validator-pca-ratio-threshold", run.stdout)
+        self.assertNotIn("--nms-radius-mm", run.stdout)
         self.assertIn("fine 1/6: query-core CornerVINS", run.stdout)
         self.assertNotIn("--plane-extraction-mode", run.stdout)
         self.assertNotIn("--plane-cluster-analysis", run.stdout)
@@ -98,7 +123,7 @@ class ArchitectureTest(unittest.TestCase):
         removed = (
             "gaussian_ced_weight", "ced_soft_weight", "hamacher_product",
             "filtered_ced_support_weights", "pca_edge_rejection_masks",
-            "candidate_mode", "fusion_mode", "ced_filter_threshold",
+            "candidate_mode", "ced_filter_threshold",
             "pca_support_ced_threshold", "pca_edge_ratio_threshold",
             "candidate_score_threshold",
         )

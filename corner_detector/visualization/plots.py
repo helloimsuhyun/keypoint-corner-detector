@@ -369,7 +369,297 @@ def figure_to_rgb(figure):
 
 
 __all__ = [
+    "make_q10_validator_figure",
     "make_extremity_summary_figure",
     "figure_to_rgb",
     "make_plane_edge_debug_figure",
 ]
+
+
+
+
+def make_projection_validator_figure(result):
+    """Read cached UV projections; do not construct hulls, edges or new support."""
+    patches = result["plane_patches"]
+    evidence = result.get("plane_q10", [])
+    figure = Figure(figsize=(max(1, len(patches)) * 4.2, 4.4), dpi=100)
+    FigureCanvasAgg(figure)
+    for i in range(max(1, len(patches))):
+        axis = figure.add_subplot(1, max(1, len(patches)), i + 1)
+        if patches:
+            patch = patches[i]
+            uv = patch["projection_uv"]
+            if len(uv):
+                axis.scatter(uv[:, 0], uv[:, 1], s=8, color=("crimson", "seagreen", "royalblue")[i % 3], alpha=.8)
+            title = f"Plane {patch['plane_id']} | N={len(uv)}"
+            if evidence:
+                score = evidence[i]
+                centroid = score["centroid_uv_mm"]
+                axis.scatter(*centroid, color="teal", marker="x", s=40, label="centroid")
+                axis.annotate("", xy=centroid, xytext=(0, 0), arrowprops={"arrowstyle": "->", "color": "teal", "lw": 2})
+                value = "undefined" if score["q10"] is None else f"{score['q10']:.4f}"
+                decision = "UNKNOWN" if score["passed"] is None else "PASS" if score["passed"] else "REJECT"
+                title += f"\nQ10={value} | min={result['q10_threshold']:g} | {decision}"
+                if score["reason"]:
+                    axis.text(.02, .02, score["reason"], transform=axis.transAxes, fontsize=7)
+            else:
+                title += " | " + patch["status"]
+            axis.set_title(title, fontsize=10)
+        else:
+            axis.set_title("No fitted planes")
+        axis.scatter(0, 0, marker="+", color="darkorange", s=75, linewidths=2, label="query projected")
+        axis.set(xlabel="U (mm)", ylabel="V (mm)", aspect="equal")
+        axis.grid(alpha=.2)
+        axis.legend(fontsize=8)
+    status = result.get("validation_status", "projection only")
+    count = f" | {result['passed_plane_count']}/{len(patches)} planes pass" if evidence else ""
+    figure.suptitle(f"New validator | query {result['query_index']} | {status}{count}",
+                   color={"ACCEPT": "seagreen", "REJECT": "crimson"}.get(status, "darkorange"), y=.97)
+    figure.subplots_adjust(left=.07, right=.985, bottom=.16, top=.79, wspace=.28)
+    return figure
+
+
+def q10_step_directions(record, step):
+    """Display geometry from stored support/axis/Q10; never optimize or change results."""
+    points = record["step_q10_points_mm"][step]
+    origin = record["trace"]["positions_mm"][step]
+    offsets = points - origin
+    lengths = np.linalg.norm(offsets, axis=1)
+    units = offsets[lengths > 1e-7] / lengths[lengths > 1e-7, None]
+    return units, np.clip(units @ record["trace"]["mean_axes"][step], -1., 1.)
+
+
+def draw_q10_validator_figure(figure, record, step):
+    from ..plane_projection import make_tangent_basis
+    from .view3d import q10_debug_voxel_primitives, q10_direction_primitives, q10_spherical_plane_primitives
+    figure.clear()
+    figure.set_facecolor('#f4f7fb')
+    trace = record['trace']
+    positions = trace['positions_mm']
+    original, final = record['position'], record['refined_position_mm']
+    step = int(np.clip(step, 0, len(positions)-1))
+    origin = positions[step]
+    direction_mode = record.get('direction_mode', 'unit_mean')
+    q10 = trace['q10_values'][step]
+    final_q10 = record['q10_value']
+    refine_enabled = record.get('refine_enabled', True)
+    q10_cc = 'ON' if record['refine_cc_enabled'] else 'OFF'
+    planes = q10_spherical_plane_primitives(record)
+    analysis = record.get('spherical_planes')
+    validation = record.get('plane_antipodal')
+    status_color = {'ACCEPT': '#16815d', 'REJECT': '#c7364f'}.get(record['status'], '#b77912')
+    checks = ['UNKNOWN' if failed is None else 'REJECT' if failed else 'PASS'
+              for failed in (record['q10_reject'], record['antipodal_reject'])]
+    if record['q10_reject'] is True:
+        checks[1] = 'SKIPPED (Q10)'
+    if not refine_enabled:
+        checks[0] = 'OFF'
+    causes = ' + '.join('Q10' if reason == 'q10_below_threshold' else 'ANGULAR_SPAN'
+                        for reason in record['rejection_reasons'])
+    status = record['status'] + (f' [{causes}]' if causes else '')
+    figure.suptitle(f"Q10 + spherical MaxGap  |  NMS {record['point_index']}  |  {status}",
+                    x=.035, y=.975, ha='left', fontsize=16, weight='bold', color=status_color)
+    quality = f'{final_q10:.4f}' if final_q10 is not None and np.isfinite(final_q10) else 'unavailable'
+    quality_text = (f"Final Q10 {quality} / min {record['min_q10']:g}: {checks[0]}" if refine_enabled else
+                    'Q10 refine OFF / min gate OFF')
+    figure.text(.035, .928,
+                f"{quality_text}     "
+                f"MaxGap/span: {checks[1]}     Q10 CC {q10_cc}     Final: angular only",
+                fontsize=10, color='#34445c')
+    figure.text(.035, .895,
+                f"Step {step}/{len(positions)-1}  |  radius {record['radius_mm']:g} mm  |  "
+                f"voxel {record['voxel_mm']:g} mm  |  axis {direction_mode}  |  "
+                f"NMS displacement {np.linalg.norm(final-original):.2f} mm",
+                fontsize=9, color='#65738a')
+    grid = figure.add_gridspec(2, 3, left=.035, right=.755, top=.84, bottom=.105, wspace=.27, hspace=.40)
+
+    def physical_axes(axis, points, title):
+        center = (points.min(axis=0) + points.max(axis=0))/2
+        half = max(float(np.ptp(points, axis=0).max())*.56, 1.)
+        axis.set(xlim=(center[0]-half, center[0]+half), ylim=(center[1]-half, center[1]+half),
+                 zlim=(center[2]-half, center[2]+half), xlabel='X (mm)', ylabel='Y (mm)', zlabel='Z (mm)')
+        axis.set_box_aspect((1, 1, 1))
+        axis.set_title(title, loc='left', fontsize=10, pad=9)
+        axis.tick_params(labelsize=7)
+
+    def sphere_plot(axis, directions, colors, title):
+        # Display thinning only; cached histograms/support counts keep every sample.
+        take = np.linspace(0, len(directions)-1, min(len(directions), 4000), dtype=int)
+        if len(take):
+            axis.scatter(*directions[take].T, c=np.asarray(colors)[take], s=5, alpha=.45)
+        phi = np.linspace(0., 2*np.pi, 100)
+        zero = np.zeros_like(phi)
+        for ring in ((np.cos(phi), np.sin(phi), zero), (np.cos(phi), zero, np.sin(phi)),
+                     (zero, np.cos(phi), np.sin(phi))):
+            axis.plot(*ring, color='#bac6d6', linewidth=.6, alpha=.5)
+        axis.set(xlim=(-1.32, 1.32), ylim=(-1.32, 1.32), zlim=(-1.32, 1.32))
+        axis.set_box_aspect((1, 1, 1))
+        axis.set_title(title, loc='left', fontsize=10, pad=9)
+        axis.set_xticks([-1, 0, 1]); axis.set_yticks([-1, 0, 1]); axis.set_zticks([-1, 0, 1])
+        axis.tick_params(labelsize=7)
+
+    path = np.vstack((original, positions)) - original
+    trajectory = figure.add_subplot(grid[0, 0], projection='3d')
+    points = record['step_points_mm'][step] - original
+    trajectory.scatter(*points.T, s=3, color='#a7b2c1', alpha=.25)
+    trajectory.plot(*path.T, 'o-', color='#5265aa', markersize=3, linewidth=2, label='Q10 path')
+    trajectory.scatter(0, 0, 0, color='#e04848', s=35, label='NMS')
+    trajectory.scatter(*(origin-original), color='#f1992d', s=45, label=f'step {step}')
+    trajectory.scatter(*(final-original), color=status_color, s=65, marker='*', label='final')
+    extent = np.vstack((points, path))
+    direction = q10_direction_primitives(record, step)
+    if direction is not None:
+        delta = direction['tip_mm']-direction['origin_mm']
+        trajectory.quiver(*(origin-original), *delta, color='#008e99', linewidth=2, arrow_length_ratio=.14)
+        extent = np.vstack((extent, direction['tip_mm']-original))
+    physical_axes(trajectory, extent, '1  Position / from original NMS')
+    trajectory.legend(fontsize=7, loc='upper left', framealpha=.85)
+    units, cosines = q10_step_directions(record, step)
+    sphere = figure.add_subplot(grid[0, 1], projection='3d')
+    colors = np.tile([1., .28, .62], (len(units), 1))
+    colors[cosines >= q10-1e-12] = [.96, .75, .19]
+    sphere_plot(sphere, units, colors, f'2  Q10 sphere / {direction_mode}' if refine_enabled else '2  Q10 refinement OFF')
+    axis = trace['mean_axes'][step]
+    if np.isfinite(axis).all() and np.isfinite(q10):
+        u, v, d = make_tangent_basis(axis)
+        phi = np.linspace(0., 2*np.pi, 100)
+        ring = q10*d + np.sqrt(max(0., 1-q10*q10))*(np.cos(phi)[:, None]*u + np.sin(phi)[:, None]*v)
+        sphere.plot(*ring.T, color='#008e99', linewidth=2)
+        sphere.quiver(0, 0, 0, *axis, color='#008e99', length=1.2, linewidth=2, arrow_length_ratio=.13)
+    histogram = figure.add_subplot(grid[0, 2])
+    histogram.hist(cosines, bins=np.linspace(-1, 1, 41), color='#6792c4', alpha=.85)
+    if np.isfinite(q10):
+        histogram.axvline(q10, color='#008e99', linewidth=2, label=f'Q10 {q10:.4f}')
+    if refine_enabled:
+        histogram.axvline(record['min_q10'], color='#c7364f', linestyle='--', label=f"min {record['min_q10']:g}")
+    histogram.set(xlim=(-1, 1), xlabel=f'cosine to Q10 {direction_mode} axis', ylabel='Count')
+    histogram.set_title((f"3  Q10 support {trace['neighbor_counts'][step]} / ROI {trace['roi_counts'][step]}"
+                         if refine_enabled else '3  Q10 minimum gate OFF'),
+                        loc='left', fontsize=10, pad=9)
+    if refine_enabled:
+        histogram.legend(fontsize=7)
+    histogram.grid(axis='y', alpha=.15)
+    histogram.tick_params(labelsize=8)
+    spacing = (f"NN {trace['cc_median_nn_mm'][step]:.2f} mm / epsilon {trace['cc_radii_mm'][step]:.2f} mm"
+               if record['refine_cc_enabled'] else 'Q10 CC OFF / full R support')
+    if not refine_enabled:
+        spacing = 'No Q10 calculation / no relocation / no min gate'
+    histogram.text(.02, .03, spacing, transform=histogram.transAxes, fontsize=7, color='#34445c')
+
+    cloud = figure.add_subplot(grid[1, 0], projection='3d')
+    data = q10_debug_voxel_primitives(record, len(positions)-1)
+    points = data['points_mm'] - final
+    cloud.scatter(*points.T, c=data['point_colors'], s=8, alpha=.7)
+    cloud.scatter(0, 0, 0, color=status_color, s=65, marker='*')
+    extent = np.vstack((points, np.zeros(3)))
+    final_direction = q10_direction_primitives(record, len(positions)-1)
+    if final_direction is not None:
+        delta = final_direction['tip_mm'] - final
+        cloud.quiver(0, 0, 0, *delta, color='#008e99', linewidth=2, arrow_length_ratio=.14)
+        extent = np.vstack((extent, delta))
+    for plane in planes:
+        arc = .8*record['radius_mm']*plane['kept_arc']
+        if len(arc):
+            cloud.plot(*arc.T, color=plane['color'], linewidth=1.6)
+            extent = np.vstack((extent, arc))
+    physical_axes(cloud, extent, '4  Final voxel support / mm')
+
+    anti_axis = figure.add_subplot(grid[1, 1], projection='3d')
+    directions = analysis['directions'] if analysis is not None else np.empty((0, 3))
+    sphere_plot(anti_axis, directions, np.tile([.68, .72, .78], (len(directions), 1)),
+                '5  Great circles / projected inliers')
+    for plane in planes:
+        anti_axis.plot(*plane['circle'].T, color=plane['color'], linewidth=1.8)
+        dots = plane['projected_points']
+        take = np.linspace(0, len(dots)-1, min(len(dots), 4000), dtype=int)
+        if len(take):
+            anti_axis.scatter(*dots[take].T, c=plane['projected_colors'][take], s=9, alpha=.9)
+        arc = 1.26*plane['kept_arc']
+        if len(arc):
+            anti_axis.plot(*arc.T, color=plane['color'], linewidth=1.8)
+    history = figure.add_subplot(grid[1, 2])
+    history.plot(trace['q10_values'], 'o-', color='#008e99', linewidth=2, markersize=5)
+    history.axvline(step, color='#f1992d', linestyle='--', label=f'step {step}')
+    if refine_enabled:
+        history.axhline(record['min_q10'], color='#c7364f', linestyle=':', label='Q10 min')
+    history.set(xlabel='Refinement step', ylabel='Q10 cosine')
+    history.set_title('6  Cached Q10 history' if refine_enabled else '6  Q10 refinement OFF',
+                      loc='left', fontsize=10, pad=9)
+    history.set_xticks(np.arange(len(positions)))
+    history.grid(alpha=.15)
+    history.legend(fontsize=7)
+    history.tick_params(labelsize=8)
+
+    figure.text(.785, .89, 'PER-PLANE CLEANED SPAN', fontsize=10, weight='bold', color='#34445c')
+    if planes:
+        rose_grid = figure.add_gridspec(3, 2, left=.785, right=.985, top=.81, bottom=.105,
+                                       width_ratios=(1.15, 1.), hspace=.65, wspace=.18)
+        for row, plane in enumerate(planes):
+            rose = figure.add_subplot(rose_grid[row, 0], projection='polar')
+            rose.hist(np.radians(plane['angles_deg']), bins=36, range=(0., 2*np.pi),
+                      color=plane['color'], edgecolor='white', linewidth=.3, alpha=.9, zorder=2)
+            rose.set_theta_zero_location('E')
+            rose.set_theta_direction(1)
+            rose.set_xticks(np.radians([0, 90, 180, 270]))
+            rose.set_xticklabels(['0°', '90°', '180°', '270°'], fontsize=7)
+            rose.tick_params(axis='y', labelsize=6)
+            rose.grid(alpha=.25)
+            rose.set_title(f"P{plane['plane_index']+1}", color=plane['color'], weight='bold', fontsize=10, pad=16)
+            detail = figure.add_subplot(rose_grid[row, 1])
+            detail.axis('off')
+            test = plane['test']
+            if test is not None:
+                height = rose.get_ylim()[1]
+                if test['arc_start_deg'] is not None:
+                    angles = np.radians(np.linspace(test['arc_start_deg'],
+                        test['arc_start_deg'] + test['observed_span_deg'], 145))
+                    rose.plot(angles, np.full(len(angles), .90*height), color=plane['color'], linewidth=2)
+                rejected_angles = plane['angles_deg'][~test['kept_mask']]
+                rose.scatter(np.radians(rejected_angles), np.full(len(rejected_angles), .97*height),
+                             color=.3*plane['color'], marker='x', s=12, zorder=4)
+                verdict = 'UNKNOWN' if not test['reliable'] else 'REJECT' if test['edge_like'] else 'PASS'
+                color = {'REJECT': '#c7364f', 'PASS': '#16815d'}.get(verdict, '#b77912')
+                score_text = (f"SPAN {test['observed_span_deg']:.1f}°\ngap {test['max_gap_deg']:.1f}°\n"
+                              f"keep {test['kept_count']}/{test['raw_count']}\n"
+                              f"out {test['discarded_count']} / tail {test['tail_removed_count']}")
+            else:
+                verdict, color = 'UNKNOWN', '#b77912'
+                score_text = f"N {len(plane['angles_deg'])}\nInsufficient\nplane support"
+            detail.text(0, .94, verdict, color=color, weight='bold', fontsize=10, va='top')
+            detail.text(0, .72, score_text, fontsize=9, color='#34445c', va='top', linespacing=1.5)
+            detail.text(0, .12, f"RMS {plane['residual_rms_deg']:.2f}°\nnew {plane['newly_explained_count']}",
+                        fontsize=7, color='#65738a', va='top')
+    else:
+        empty = figure.add_axes([.79, .20, .19, .60])
+        empty.axis('off')
+        skipped = record['q10_reject'] is True
+        empty.text(.05, .75, 'RANSAC SKIPPED' if skipped else 'ANGULAR CHECK UNKNOWN',
+                   fontsize=10, weight='bold', color=status_color if skipped else '#b77912')
+        empty.text(.05, .62, ('Q10 below threshold\nRejected before plane fitting' if skipped else
+                             'No supported great circles\n\n' + record['reason'].replace('_', ' ')),
+                   fontsize=9, color='#65738a', va='top', wrap=True)
+    if validation is not None:
+        membership = analysis['membership_count']
+        summary = (f"K {len(planes)}/{analysis['requested_k']}  |  tolerance {analysis['tolerance_deg']:g}°  |  "
+                   f"link ≤ {validation['max_link_gap_deg']:g}°  |  REJECT span ≥ {validation['edge_span_deg']:g}°  |  "
+                   f"tail {'ON' if record['gap_tail_enabled'] else 'OFF'}  |  "
+                   f"unassigned {np.count_nonzero(membership == 0)} / overlap {np.count_nonzero(membership > 1)}")
+    else:
+        summary = ('RANSAC skipped: converged Q10 below threshold' if record['q10_reject'] is True else
+                   'Angular evidence unavailable: ' + record['reason'].replace('_', ' '))
+    figure.text(.035, .045, summary, fontsize=9, color='#34445c')
+    figure.text(.035, .018,
+                'P1 orange / P2 green / P3 purple   ·   White voxels: overlapping planes   ·   '
+                'Dim: discarded by all member planes   ·   Cyan arrow: Q10 direction', fontsize=8, color='#65738a')
+
+
+def make_q10_validator_figure(record):
+    figure = Figure(figsize=(18, 9.5))
+    FigureCanvasAgg(figure)
+    step = len(record["trace"]["positions_mm"]) - 1
+
+    def set_step(value):
+        draw_q10_validator_figure(figure, record, int(value))
+
+    set_step(step)
+    return {"figure": figure, "record": record, "set_step": set_step}

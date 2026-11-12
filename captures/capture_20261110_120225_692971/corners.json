@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "corners": [
+    {
+      "id": "corner_001",
+      "point_index": 118986,
+      "refinement_path_xyz_mm": [
+        [
+          22.2232723236084,
+          29.295753479003906,
+          300.0
+        ],
+        [
+          23.20697784423828,
+          30.87166976928711,
+          300.0
+        ],
+        [
+          27.034873962402344,
+          33.34633255004883,
+          301.0000305175781
+        ]
+      ],
+      "refined_xyz_mm": [
+        27.034873962402344,
+        33.34633255004883,
+        301.0000305175781
+      ],
+      "refinement": {
+        "method": "discrete_q10_global_voxel_points",
+        "voxel_size_mm": 2.0,
+        "radius_mm": 30,
+        "search_radius_mm": 6,
+        "candidate_spacing_mm": 0,
+        "q10_before": 0.27704075764699587,
+        "q10_after": 0.2784852597258211,
+        "neighbors_before": 507,
+        "neighbors_after": 490,
+        "evaluated": 34,
+        "available_downsampled_candidates": 34,
+        "displacement_mm": 4.6665625042455385,
+        "step_displacement_mm": 4.6665625042455385,
+        "total_displacement_mm": 6.368576149919171,
+        "iteration": 2,
+        "boundary_hit": false,
+        "min_support_ratio": 0.8,
+        "converged": true
+      }
+    },
+    {
+      "id": "corner_002",
+      "point_index": 101074
+    },
+    {
+      "id": "corner_003",
+      "point_index": 84653,
+      "refinement_path_xyz_mm": [
+        [
+          -21.805727005004883,
+          -48.98342514038086,
+          382.0000305175781
+        ],
+        [
+          -21.976974487304688,
+          -52.40175247192383,
+          385.0000305175781
+        ],
+        [
+          -20.00893783569336,
+          -54.56553649902344,
+          386.0
+        ]
+      ],
+      "refined_xyz_mm": [
+        -20.00893783569336,
+        -54.56553649902344,
+        386.0
+      ],
+      "refinement": {
+        "method": "discrete_q10_global_voxel_points",
+        "voxel_size_mm": 2.0,
+        "radius_mm": 30,
+        "search_radius_mm": 6,
+        "candidate_spacing_mm": 0,
+        "q10_before": 0.09254068149999316,
+        "q10_after": 0.11791622094033828,
+        "neighbors_before": 384,
+        "neighbors_after": 376,
+        "evaluated": 19,
+        "available_downsampled_candidates": 19,
+        "displacement_mm": 3.091127390417937,
+        "step_displacement_mm": 3.091127390417937,
+        "total_displacement_mm": 7.0984628194805675,
+        "iteration": 2,
+        "boundary_hit": false,
+        "min_support_ratio": 0.8,
+        "converged": true
+      }
+    },
+    {
+      "id": "corner_004",
+      "point_index": 91220,
+      "refinement_path_xyz_mm": [
+        [
+          88.94048309326172,
+          -30.688772201538086,
+          356.0
+        ],
+        [
+          90.8082046508789,
+          -31.156293869018555,
+          356.0
+        ]
+      ],
+      "refined_xyz_mm": [
+        90.8082046508789,
+        -31.156293869018555,
+        356.0
+      ],
+      "refinement": {
+        "method": "discrete_q10_global_voxel_points",
+        "voxel_size_mm": 2.0,
+        "radius_mm": 30,
+        "search_radius_mm": 6,
+        "candidate_spacing_mm": 0,
+        "q10_before": 0.6527583311593451,
+        "q10_after": 0.7016998005823308,
+        "neighbors_before": 258,
+        "neighbors_after": 240,
+        "evaluated": 24,
+        "available_downsampled_candidates": 24,
+        "displacement_mm": 1.4007911682128906,
+        "step_displacement_mm": 1.4007911682128906,
+        "total_displacement_mm": 1.9253468067731827,
+        "iteration": 1,
+        "boundary_hit": false,
+        "min_support_ratio": 0.8,
+        "converged": true
+      }
+    }
+  ]
+}

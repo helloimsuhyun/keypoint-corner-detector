@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 import numpy as np
@@ -52,7 +53,7 @@ def run_frozen_click_stage(
 
     action = None
     ball_mode = getattr(cfg, "mode", None) in ("ball", "extremity256")
-    guided_mode = getattr(cfg, "mode", None) == "validator"
+    guided_mode = getattr(cfg, "mode", None) in ("validator", "new-validator")
     edge_debug_window = None
     edge_debug_view = None
     edge_debug_plane_index = 0
@@ -60,7 +61,9 @@ def run_frozen_click_stage(
     close_point_inspector = None
     root.title(f"{WINDOW_FROZEN} | {'BALL | ' if ball_mode else ''}{BUILD}")
     query_instruction = ("Click: nearest CED query | " if ball_mode or guided_mode else "Click: query | ") if allow_reselection else ""
-    workflow_keys = ("3D: 1 Coarse -> 2 Voxel -> 3 Planes | 4 ROI-Hull-TLS (S: PNG) / 5 Pair / 6 Corner + raw | " if guided_mode else
+    projection_only = bool(getattr(getattr(cfg, "validator", None), "projection_only", False))
+    workflow_keys = ("3D: 1 Seeds -> 2 Voxel -> 3 Planes -> 4 2D projections | " if projection_only else
+                     "3D: 1 Coarse -> 2 Voxel -> 3 Planes | 4 ROI-Hull-TLS (S: PNG) / 5 Pair / 6 Corner + raw | " if guided_mode else
                      "3D: all queries + local views + point/directions | " if ball_mode else
                      "P/N: plane | J/K: Hough peak | ")
     instructions = query_instruction + workflow_keys + "R: recapture | Q/Esc: quit"
@@ -247,12 +250,16 @@ def run_total_view_loop(windows):
 
 
 def run_guided_validator_view_process(connection, scene_points_mm, query_indices, scene_colors, fusion_vmax=1.0,
-                                    raw_points_mm=None):
+                                    raw_points_mm=None, query_positions_mm=None, projection_only=False):
     """Keep native GUI/Filament shutdown separate from detector and Tk lifetime."""
     frozen = {"points_voxel_mm": scene_points_mm,
               "points_raw_mm": raw_points_mm,
               "validator_query_indices": query_indices, "validator_scene_colors": scene_colors,
               "validator_fusion_vmax": fusion_vmax}
+    if projection_only:
+        frozen["validator_projection_only"] = True
+    if query_positions_mm is not None:
+        frozen["validator_query_positions_mm"] = query_positions_mm
     try:
         open_guided_validator_window(frozen, lambda action: connection.send(("action", action)))
         while frozen.get("guided_validator_display") is not None:
@@ -406,6 +413,182 @@ def open_ball_point_inspector(root, result):
     canvas.mpl_connect("button_release_event", release)
     canvas.draw_idle()
     return close
+
+
+def bind_lite_validator_click(vis, records, on_pick, *, position_key="position"):
+    """Left click selects an NMS marker; dragging retains the existing camera controls."""
+    from .view3d import pick_lite_validator_candidate
+    bind_safe_camera_keys(vis)
+
+    cursor, pressed = np.zeros(2), None
+    buttons, modifiers, dragged = set(), 0, False
+
+    def move(callback_vis, x, y):
+        nonlocal dragged
+        delta = np.array([x, y]) - cursor
+        control = callback_vis.get_view_control()
+        # Open3D replaces its default handlers when custom mouse callbacks are registered.
+        if 2 in buttons or (0 in buttons and modifiers & 2):
+            control.translate(*delta, *cursor)
+        elif 0 in buttons:
+            if modifiers & 1:
+                try:
+                    matrix = np.asarray(control.convert_to_pinhole_camera_parameters().extrinsic, dtype=float)
+                    if matrix.shape == (4, 4) and np.isfinite(matrix).all():
+                        up, front = -matrix[1, :3], -matrix[2, :3]
+                        if min(np.linalg.norm(up), np.linalg.norm(front)) > 1e-12:
+                            up, front = up / np.linalg.norm(up), front / np.linalg.norm(front)
+                            angle = .003 * delta[0]
+                            control.set_up(up * np.cos(angle) + np.cross(front, up) * np.sin(angle)
+                                           + front * np.dot(front, up) * (1 - np.cos(angle)))
+                except (AttributeError, TypeError, ValueError, RuntimeError):
+                    pass
+            elif modifiers & 4:
+                control.camera_local_rotate(*delta, *cursor)
+            else:
+                control.rotate(*delta, *cursor)
+        cursor[:] = x, y
+        if pressed is not None and np.linalg.norm(cursor - pressed) > 4:
+            dragged = True
+        return False
+
+    def button(callback_vis, button, action, mods):
+        nonlocal pressed, modifiers, dragged
+        if action == 1:
+            buttons.add(button)
+            modifiers = mods
+            if button == 0:
+                pressed, dragged = cursor.copy(), False
+                callback_vis.get_view_control().reset_camera_local_rotate()
+        elif action == 0:
+            buttons.discard(button)
+            if button != 0:
+                return False
+            start, pressed = pressed, None
+            if start is not None and not dragged and modifiers == 0 and mods == 0:
+                options = {} if position_key == "position" else {"position_key": position_key}
+                record = pick_lite_validator_candidate(callback_vis, records, *cursor, **options)
+                if record is not None:
+                    print(f"[LITE DEBUG] Selected NMS candidate {record['candidate_id']}", flush=True)
+                    on_pick(record)
+                else:
+                    print("[LITE DEBUG] No NMS marker near click; click a candidate marker.", flush=True)
+        return False
+
+    vis.register_mouse_move_callback(move)
+    vis.register_mouse_button_callback(button)
+
+
+def bind_safe_camera_keys(vis):
+    # Native V/Ctrl-V interprets arbitrary clipboard text as camera JSON.
+    vis.register_key_action_callback(ord("V"), lambda _vis, _action, _mods: False)
+
+
+def run_baseline_comparison_process(connection, points_mm, rgb, gt_mm, results, title):
+    """Keep the comparison GUI lifecycle separate from detector execution."""
+    from .view3d import open_baseline_comparison_view
+    try:
+        display = open_baseline_comparison_view(points_mm, rgb, gt_mm, results, title=title)
+        display["app"].run()
+        connection.send(None)
+    except Exception as exc:
+        connection.send(str(exc))
+    finally:
+        connection.close()
+
+
+def run_q10_debug_view_process(connection, record):
+    """Own exactly one Open3D window, with no detector/Tk/GLFW context inherited."""
+    from .view3d import open_q10_debug_view
+    view = None
+    try:
+        view = open_q10_debug_view(record)
+        connection.send(("ready", None))
+        while view["poll"]():
+            if connection.poll():
+                kind, value = connection.recv()
+                if kind == "close":
+                    break
+                if kind == "step" and "set_step" in view:
+                    view["set_step"](value)
+            time.sleep(.01)
+    except (EOFError, BrokenPipeError):
+        pass
+    except Exception as exc:
+        try:
+            connection.send(("error", str(exc)))
+        except (EOFError, BrokenPipeError, OSError):
+            pass
+    finally:
+        if view is not None:
+            view["close"]()
+        connection.close()
+
+
+def open_lite_validator_debug_window(display, *, spatial_view=None):
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+    if tk is None:
+        raise RuntimeError("Lite debug requires Tk in the active environment")
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        raise RuntimeError("Cannot open the Lite debug display: " + str(exc)) from exc
+    record = display["record"]
+    root.title(f"Q10 + spherical MaxGap | refine {'ON' if record.get('refine_enabled', True) else 'OFF'} "
+               f"| NMS candidate {record['candidate_id']}")
+    root.geometry(f"{min(1760, root.winfo_screenwidth()-80)}x{min(1020, root.winfo_screenheight()-100)}")
+    info = tk.StringVar(master=root)
+    tk.Label(root, textvariable=info, anchor="w").pack(fill="x")
+    canvas = FigureCanvasTkAgg(display["figure"], master=root)
+    closed = False
+
+    info.set("Markers: RED original | ORANGE current | WHITE path | GREEN pass / RED reject / AMBER unknown\n"
+             "Voxels: P1 ORANGE / P2 GREEN / P3 PURPLE | WHITE overlapping planes | DIM discarded by all member planes\n"
+             "BLUE unscored | GRAY no fitted plane | Plane colors match arcs, projected dots and rose plots. CYAN arrow = Q10 direction.")
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+    def select_step(value):
+        step = int(float(value))
+        display["set_step"](step)
+        canvas.draw_idle()
+        if spatial_view is not None and "set_step" in spatial_view:
+            spatial_view["set_step"](step)
+    slider = tk.Scale(root, from_=0, to=len(record["trace"]["positions_mm"]) - 1,
+                      orient="horizontal", label="Q10 refinement step (final RANSAC / plane support stays fixed)",
+                      command=select_step, resolution=1)
+    slider.set(len(record["trace"]["positions_mm"]) - 1)
+    slider.pack(fill="x")
+
+    def close():
+        nonlocal closed, spatial_view
+        if not closed:
+            closed = True
+            if spatial_view is not None:
+                spatial_view["close"]()
+                spatial_view = None
+            if canvas._idle_draw_id is not None:
+                canvas.get_tk_widget().after_cancel(canvas._idle_draw_id)
+                canvas._idle_draw_id = None
+            display["figure"].clear()
+            root.destroy()
+
+    def poll():
+        nonlocal spatial_view
+        if not closed:
+            try:
+                root.update_idletasks()
+                root.update()
+            except tk.TclError:
+                close()
+            if spatial_view is not None and not spatial_view["poll"]():
+                spatial_view["close"]()
+                spatial_view = None
+        return not closed
+
+    root.protocol("WM_DELETE_WINDOW", close)
+    root.update_idletasks()
+    root.lift()
+    return {"poll": poll, "close": close}
 
 
 class TkImagePanel:

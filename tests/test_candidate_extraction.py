@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stderr
+from io import StringIO
 import unittest
 
 import numpy as np
@@ -32,6 +34,49 @@ def score_record(scores, valid=None):
 
 
 class CandidateExtractionTest(unittest.TestCase):
+    def test_detector_support_radii_follow_ced_but_not_voxel(self):
+        for mode in ("detector", "validator", "total", "ball", "extremity256"):
+            for voxel in (5., 10., 20.):
+                with self.subTest(mode=mode, voxel=voxel):
+                    args = parse_args(["--source", "realsense", "--mode", mode,
+                                       "--voxel-3d-mm", str(voxel)])
+                    cfg, _ = configure(args)
+                    self.assertEqual((cfg.centroid_radius_mm, cfg.pca_radius_mm),
+                                     (DEFAULTS.centroid_radius_mm,
+                                      DEFAULTS.centroid_radius_mm * DEFAULTS.pca_radius_factor))
+                    args.centroid_radius_mm, args.pca_radius_factor, args.nms_radius_factor = 80., 1.5, .375
+                    cfg, _ = configure(args)
+                    self.assertEqual((cfg.centroid_radius_mm, cfg.pca_radius_mm,
+                                      cfg.bilateral_radius_mm, cfg.bilateral_sigma_spatial_mm), (80., 120., 80., 40.))
+                    self.assertEqual(cfg.nms_radius_mm, 30.)
+                    args.centroid_radius_mm = 40.
+                    cfg, _ = configure(args)
+                    self.assertEqual((cfg.centroid_radius_mm, cfg.pca_radius_mm,
+                                      cfg.bilateral_radius_mm, cfg.bilateral_sigma_spatial_mm,
+                                      cfg.nms_radius_mm), (40., 60., 40., 20., 15.))
+                    args.pca_radius_factor = .5
+                    cfg, _ = configure(args)
+                    self.assertEqual(cfg.pca_radius_mm, 20.)
+                    args.bilateral_radius_factor, args.bilateral_sigma_spatial_factor = 2., .25
+                    cfg, _ = configure(args)
+                    self.assertEqual((cfg.bilateral_radius_mm, cfg.bilateral_sigma_spatial_mm), (80., 10.))
+
+    def test_detector_radius_validation_and_old_options_do_not_silently_change_units(self):
+        for flag in ("--centroid-radius-mm", "--pca-radius-factor",
+                     "--bilateral-radius-factor", "--bilateral-sigma-spatial-factor", "--bilateral-sigma-ced",
+                     "--nms-radius-factor"):
+            for value in ("0", "-1", "nan", "inf"):
+                with self.subTest(flag=flag, value=value), self.assertRaises(ValueError):
+                    configure(parse_args(["--source", "realsense", "--mode", "detector", flag, value]))
+        for options in (["--centroid-radius-x", "8"], ["--centroid-radius-x=8"],
+                        ["--pca-radius-mm", "120"], ["--bilateral-radius-mm", "80"],
+                        ["--bilateral-sigma-spatial-mm", "40"], ["--nms-radius-mm", "30"]):
+            with self.subTest(options=options), redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                parse_args(["--source", "realsense", "--mode", "detector", *options])
+        fine, _ = configure(parse_args(["--source", "realsense", "--mode", "fine",
+                                        "--voxel-3d-mm", "5", "--centroid-radius-x", "6"]))
+        self.assertEqual(fine.centroid_radius_mm, 30.)
+
     def test_candidate_defaults_and_explicit_cli_values(self):
         default_args = parse_args([
             "--source", "realsense", "--mode", "detector", "--no-3d-view",
@@ -39,20 +84,17 @@ class CandidateExtractionTest(unittest.TestCase):
         default_cfg, _noise = configure(default_args)
         self.assertEqual(
             default_cfg.nms_radius_mm,
-            (
-                0.5 * default_cfg.centroid_radius_mm
-                if DEFAULTS.nms_radius_mm is None
-                else DEFAULTS.nms_radius_mm
-            ),
+            default_cfg.centroid_radius_mm * DEFAULTS.nms_radius_factor,
         )
         self.assertEqual(
             default_cfg.pca_radius_mm,
-            DEFAULTS.pca_radius_factor * default_cfg.centroid_radius_mm,
+            DEFAULTS.centroid_radius_mm * DEFAULTS.pca_radius_factor,
         )
-        self.assertEqual(default_cfg.bilateral_radius_mm, default_cfg.centroid_radius_mm)
+        self.assertEqual(default_cfg.bilateral_radius_mm,
+                         default_cfg.centroid_radius_mm * DEFAULTS.bilateral_radius_factor)
         self.assertEqual(
             default_cfg.bilateral_sigma_spatial_mm,
-            0.5 * default_cfg.centroid_radius_mm,
+            DEFAULTS.bilateral_sigma_spatial_factor * default_cfg.centroid_radius_mm,
         )
         self.assertEqual(
             default_cfg.pca_ratio_saturation_tau,
@@ -60,7 +102,8 @@ class CandidateExtractionTest(unittest.TestCase):
         )
         self.assertEqual(
             default_cfg.fusion_score_threshold,
-            DEFAULTS.fusion_score_threshold,
+            (DEFAULTS.local_minimum_fusion_threshold if DEFAULTS.fusion_mode == "local_minimum"
+             else DEFAULTS.fusion_score_threshold),
         )
         self.assertEqual(
             default_cfg.fusion_threshold_mode,
@@ -70,20 +113,23 @@ class CandidateExtractionTest(unittest.TestCase):
 
         custom_args = parse_args([
             "--source", "realsense", "--mode", "detector", "--no-3d-view",
-            "--nms-radius-mm", "12.5",
+            "--nms-radius-factor", "0.5",
+            "--centroid-radius-mm", "25",
             "--pca-radius-factor", "1.4",
-            "--bilateral-radius-mm", "18",
-            "--bilateral-sigma-spatial-mm", "7",
+            "--bilateral-radius-factor", "0.72",
+            "--bilateral-sigma-spatial-factor", "0.28",
             "--bilateral-sigma-ced", "0.08",
             "--pca-ratio-saturation-tau", "0.5",
+            "--fusion-mode", "pca_ratio",
             "--fusion-score-threshold", "0.025",
             "--fusion-threshold-mode", "global-mean",
         ])
         custom_cfg, _noise = configure(custom_args)
         self.assertEqual(custom_cfg.nms_radius_mm, 12.5)
-        self.assertEqual(custom_cfg.pca_radius_factor, 1.4)
-        self.assertEqual(custom_cfg.bilateral_radius_mm, 18.0)
-        self.assertEqual(custom_cfg.bilateral_sigma_spatial_mm, 7.0)
+        self.assertEqual(custom_cfg.centroid_radius_mm, 25.)
+        self.assertEqual(custom_cfg.pca_radius_mm, 35.)
+        self.assertAlmostEqual(custom_cfg.bilateral_radius_mm, 18.0)
+        self.assertAlmostEqual(custom_cfg.bilateral_sigma_spatial_mm, 7.0)
         self.assertEqual(custom_cfg.bilateral_sigma_ced, 0.08)
         self.assertEqual(custom_cfg.pca_ratio_saturation_tau, 0.5)
         self.assertEqual(custom_cfg.fusion_score_threshold, 0.025)

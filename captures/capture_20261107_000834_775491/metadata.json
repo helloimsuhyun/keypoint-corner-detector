@@ -1,0 +1,18 @@
+{
+  "mode": "realsense",
+  "units": "mm",
+  "depth_scale_m": 0.0010000000474974513,
+  "intrinsics": {
+    "fx": 385.6357421875,
+    "fy": 385.0394287109375,
+    "ppx": 324.9571228027344,
+    "ppy": 243.7669677734375,
+    "width": 640,
+    "height": 480
+  },
+  "alignment": "depth_to_color",
+  "depth_filter_m": [
+    0.15,
+    2.0
+  ]
+}

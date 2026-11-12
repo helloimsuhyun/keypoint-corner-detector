@@ -210,7 +210,7 @@ class GuidedIntegrationTest(unittest.TestCase):
                               "inlier_mask": np.array([True, True, True, False])},
                              {"normal": np.array([0., 1., 0]), "offset_mm": 0.,
                               "inlier_mask": np.array([True, True, False, True])}],
-                  "geometry_computed": True, "validation_status": "ACCEPT",
+                  "geometry_computed": True, "validation_status": "CANDIDATES", "corner_radius_mm": 5.,
                   "support_roi_points_mm": points.copy(), "support_radius_mm": 50.,
                   "support_roi_ransac_indices": np.arange(4),
                   "plane_patches": [{"plane_id": 0, "valid": True,
@@ -230,9 +230,9 @@ class GuidedIntegrationTest(unittest.TestCase):
                       for index, kind, plane_ids, endpoint in (
                           (0, "boundary", [0], 2), (1, "boundary", [1], 3),
                           (2, "plane_intersection", [0, 1], 1))],
-                  "corner_edge_ids": [0, 1, 2], "selected_vertex_id": 0,
-                  "vertices": [{"vertex_id": 0, "valid": True, "status": "ACCEPT",
-                                "position_mm": np.zeros(3)}]}
+                  "corners": [{"position": np.zeros(3), "edge_ids": [0, 1, 2],
+                               "endpoint_ids": {0: 0, 1: 0, 2: 0},
+                               "intersection_residual": 0., "endpoint_gap": 0.}]}
         frozen = {"points_voxel_mm": points, "validator_query_indices": np.array([0]),
                   "validator_scene_colors": np.full(points.shape, .4)}
         fake, widgets, scenes = self.open3d_stub()

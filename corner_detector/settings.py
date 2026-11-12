@@ -1,4 +1,4 @@
-"""Settings grouped by mode: detector, validator, fine, and ball."""
+"""Settings grouped by mode: detector, validator, new-validator, fine, and ball."""
 
 from __future__ import annotations
 
@@ -8,9 +8,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+from .refiner import Q10_DIRECTION_MODES
 
 from .constants import BUILD
-from .preprocessing import NoiseConfig, validate_probability
+from .preprocessing import NoiseConfig, validate_probability, _noise_is_enabled
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class SettingsDefaults:
     source: str = "stl"
     mode: str = "fine"
     input: str | None = None
+    dataset_region: str = "roi"
     frame_index: int = 0
     fps: int = 30
     stl_unit_mm: float = 1.0
@@ -32,7 +34,6 @@ class SettingsDefaults:
     min_depth_m: float = 0.01
     max_depth_m: float = 3.0
 
-    voxel_3d_mm: float = 10.0
     no_3d_view: bool = False
 
     # Shared synthetic perturbation and reproducibility.
@@ -47,20 +48,61 @@ class SettingsDefaults:
 
     # ------------------------------------------------------------------
     # Detector: dense CED -> bilateral/PCA fusion -> threshold -> NMS.
-    # ------------------------------------------------------------------
-    only: bool = False
-    # Fine also uses these; validator/ball reuse them for Coarse queries.
-    min_neighbors: int = 40
-    centroid_radius_x: float = 8.0 # 8cm
 
-    bilateral_sigma_spatial_mm: float | None = None
-    bilateral_sigma_ced: float = 0.05
-    bilateral_radius_mm: float | None = None
-    pca_radius_factor: float = 1.5
-    pca_ratio_saturation_tau: float | None = 0.5
+    only: bool = False
+    # Fine also uses min_neighbors; validator/ball reuse detector Coarse settings.
+    voxel_3d_mm: float = 10.0
+    centroid_radius_mm: float = 45.0
+    min_neighbors: int = 5
+    pca_radius_factor: float = 1.0 # pca radius = pca_radius_factor * ced radius
+    pca_ced_cutoff: float = 0.10  # PCA 이웃의 원본 CED 최소값; 0.10이면 CED < 0.10 제외
+
+    bilateral_mode: str = "off"  # "ced": CED 필터, "fusion": Fusion 필터, "off": 생략
+    bilateral_radius_factor: float = 1.0  # bilateral 탐색 반경 / CED 반경
+    bilateral_sigma_spatial_factor: float = 0.5  # 공간 sigma / CED 반경
+    bilateral_sigma_ced: float = 0.05  # 선택한 CED/Fusion 점수 차이의 무차원 sigma
+
+    fusion_mode: str = "local_minimum"  # "pca_ratio": 기존 CED×PCA ratio, "local_minimum": CED×Min-Max L
+    # for pca_ratio mode
+    pca_ratio_saturation_tau: float | None = 0.6
     fusion_threshold_mode: str = "fixed" # "fixed", "global-mean", "peak-relative"
-    fusion_score_threshold: float = 0.10
-    nms_radius_mm: float | None = 30
+    fusion_score_threshold: float = 0.07
+    # for local_minimum mode
+    local_minimum_tau: float = 0.005  # Lab의 Min-Max 기본 tau; R=PCA 반경
+    local_minimum_fusion_threshold: float = 0.15  # 새 모드의 Fusion threshold
+    post_nms_lambda1_ratio_max: float | None = 0.25 # OFF=None; NMS 뒤 CED 가중 lambda1 / R_PCA² 상한 0.20
+
+    nms_radius_factor: float = 0.30  # NMS radisu = ced radius * nms_radius_factor
+
+    # ==================================================================
+    # Lite 1: Q10 relocation/quality. Lengths are mm; CC affects Q10 only.
+    q10_validator_enabled: bool = True
+    q10_refine_enabled: bool = False  # False면 위치 보정과 q10_min_q10 게이트 생략, MaxGap은 유지
+    q10_debug: bool = True
+    q10_voxel_mm: float = 2.0
+    q10_radius_mm: float = 30.0
+    q10_cc_factor: float = 4.0
+    q10_refine_cc_enabled: bool = False
+    q10_direction_mode: str = "centroid"  # unit_mean, unit_median, centroid
+    q10_min_q10: float = 0.00 # q10 threshold
+
+    # Lite 2: unit-sphere RANSAC -> 단위구에서 각 평면별 ransac
+    q10_sphere_max_planes: int = 3
+    q10_sphere_tolerance_deg: float = 10.0  # Angular distance to n.u=0 (not mm).
+    q10_sphere_iterations: int = 300
+    q10_sphere_min_support: int = 12  # Minimum NEW support per accepted plane.
+    q10_sphere_min_fraction: float = 0.06  # Relative to all nonzero R directions.
+    q10_sphere_seed: int = 20261110
+
+    # 2D 히스토그램 -> 각 평면별로 2D 히스토그램을 만들고, 인접점 연결 간격과 span을 기준으로 REJECT 여부 결정
+    q10_gap_link_deg: float = 5.0  # 원형 각도에서 인접점 연결 간격
+    q10_gap_edge_span_deg: float = 150.0  # 정리한 span이 이 값 이상이면 REJECT ## 각도 threhsold
+
+    # 희소 bin trimming: 각 bin의 점 수가 중앙값 대비 이 비율보다 작으면 제거
+    q10_gap_tail_enabled: bool = True  # 최대 그룹의 희소한 양 끝 bin만 제거
+    q10_gap_tail_bin_width_deg: float = 10.0
+    q10_gap_tail_density_fraction: float = 0.50  # 점이 있는 bin 중앙값 대비 비율
+    q10_gap_tail_min_bin_count: int = 2
 
     # ------------------------------------------------------------------
     # Validator / total: Coarse NMS -> query-local voxel -> guided RANSAC.
@@ -84,23 +126,37 @@ class SettingsDefaults:
     validator_roi_padding_mm: float = 10.0  # Hull용 추가 반경: R_pad = R + padding (voxel과 독립)
     validator_plane_connect_radius_x: float = 4.0  # 평면 support의 3D 거리 연결 반경 / RANSAC voxel
 
-    # 3. Clipped Hull -> TLS boundary lines (기존 병합 기준 유지).
-    validator_boundary_merge_max_error_mm: float = 3.5  # 최대 수직 TLS 피팅 오차
-    validator_edge_min_length_x: float = 1.0  # 최소 유한 edge 길이 / RANSAC voxel
+    # 3. Clipped Hull -> TLS boundary lines.
+    validator_boundary_merge_angle_deg: float = 0.1  # TLS 병합을 허용할 최대 방향 차이
+    validator_boundary_merge_rms_error_mm: float = 5.0  # 수직 TLS 피팅 오차의 RMS 상한
+    validator_edge_min_length_x: float = 3.0  # 최소 유한 edge 길이 / RANSAC voxel
 
-    # 4. Plane-pair intersection -> boundary overlap masking.
+    # 4. 평면 교선 > edge 처리 및 겹치는 각 평면의 edge 마스킹
     validator_plane_parallel_angle_deg: float = 20.0  # 이 각도 미만의 평면쌍은 교선 추출 제외
     validator_intersection_strip_half_width_mm: float = 15.0  # 교선 tolerance strip의 반폭
-    validator_edge_overlap_angle_deg: float = 25.0
+    # 겹치는 각 평면의 edge 제거
     validator_edge_overlap_distance_mm: float = 15.0
+    validator_edge_overlap_angle_deg: float = 25.0
     validator_edge_overlap_min_length_mm: float = 2.5
 
-    # 5. Vertex / Corner: 같은 평면은 공통 ACTIVE Node가 필요; *_mm는 voxel과 독립적.
-    validator_corner_min_edge_angle_deg: float = 30.0  # 최소 교차각; Boundary 병합/중복 방향 비교에도 사용
-    validator_vertex_line_distance_mm: float = 30.0  # 최근접점 거리 및 LS 후 선분까지의 최대 거리
-    validator_vertex_endpoint_tolerance_mm: float = 15.0  # 원래 선분 끝점의 최대 외삽 길이
-    validator_vertex_group_span_mm: float = 15.0  # Vertex 그룹의 최대 전체 범위
-    validator_corner_gate_radius_mm: float = 10.0  # 추정 코너와 Coarse query 사이 최대 거리
+    # 5. Endpoint Corner 후보 생성 및 공통 Edge/Endpoint 기반 통합
+    validator_min_angle_deg: float = 45.0  # Corner 후보 Edge 쌍의 최소 방향 차이
+    validator_corner_radius_mm: float = 15.0  # Endpoint 거리 및 Corner 통합 반경
+
+    # New validator: same query/RANSAC/support computation, stop at 2-D UV projection.
+    # Independent copies of the current validator defaults; lengths *_x use this voxel.
+    new_validator_ransac_voxel_mm: float = 2.0
+    new_validator_ransac_radius_x: float = 15.0
+    new_validator_max_planes: int = 3
+    new_validator_ransac_iterations: int = 256
+    new_validator_inlier_threshold_x: float = 1.0
+    new_validator_guided_sigma_x: float = 1.5
+    new_validator_min_inliers: int = 35
+    new_validator_min_inlier_ratio: float = 0.08
+    new_validator_random_seed: int = 42
+    new_validator_roi_padding_mm: float = 10.0
+    new_validator_plane_connect_radius_x: float = 4.0
+    new_validator_min_q10: float = 0.10  # All fitted planes must meet this 2-D cosine Q10 lower bound.
 
     # ================================================================================================
     # under this comment, the parameters are used for past mode we not use it now, but we keep it for future use
@@ -108,6 +164,7 @@ class SettingsDefaults:
     # Fine (--mode fine): organized planes -> boundary/Hough -> graph/refiner.
     # ------------------------------------------------------------------
     # Fine step 0: query geometry.
+    centroid_radius_x: float = 8.0  # Fine-only CED radius / 3-D voxel.
     query_radius_x: float = 10.0
     voxel_2d_mm: float = 10.0
     # ------------------------------------------------------------------
@@ -234,39 +291,86 @@ DEFAULTS = SettingsDefaults()
 def _resolve_detector_values(args):
     """Resolve settings consumed only by the whole-cloud detector."""
     v3 = float(args.voxel_3d_mm)
-    ced_radius_mm = args.centroid_radius_x * v3
+    ced_radius_mm = args.centroid_radius_mm
     return {
         "voxel_3d_mm": v3,
         "min_neighbors": args.min_neighbors,
         "show_3d": not args.no_3d_view,
         "only": args.only,
         "centroid_radius_mm": ced_radius_mm,
-        "bilateral_sigma_spatial_mm": (
-            0.5 * ced_radius_mm
-            if args.bilateral_sigma_spatial_mm is None
-            else args.bilateral_sigma_spatial_mm
-        ),
+        "bilateral_mode": args.bilateral_mode,
+        "bilateral_sigma_spatial_mm": ced_radius_mm * args.bilateral_sigma_spatial_factor,
         "bilateral_sigma_ced": args.bilateral_sigma_ced,
-        "bilateral_radius_mm": (
-            ced_radius_mm
-            if args.bilateral_radius_mm is None
-            else args.bilateral_radius_mm
-        ),
-        "pca_radius_factor": args.pca_radius_factor,
+        "bilateral_radius_mm": ced_radius_mm * args.bilateral_radius_factor,
         "pca_radius_mm": ced_radius_mm * args.pca_radius_factor,
+        "pca_ced_cutoff": args.pca_ced_cutoff,
         "pca_ratio_saturation_tau": args.pca_ratio_saturation_tau,
+        "fusion_mode": args.fusion_mode,
+        "local_minimum_tau": args.local_minimum_tau,
+        "post_nms_lambda1_ratio_max": args.post_nms_lambda1_ratio_max,
         "fusion_threshold_mode": args.fusion_threshold_mode.replace("-", "_"),
-        "fusion_score_threshold": args.fusion_score_threshold,
-        "nms_radius_mm": (
-            0.5 * ced_radius_mm
-            if args.nms_radius_mm is None
-            else args.nms_radius_mm
-        ),
+        "fusion_score_threshold": (args.local_minimum_fusion_threshold if args.fusion_mode == "local_minimum"
+                                   else args.fusion_score_threshold),
+        "nms_radius_mm": ced_radius_mm * args.nms_radius_factor,
     }
 
 
 
 _DEFAULT_DETECTOR = _resolve_detector_values(DEFAULTS)
+
+
+
+
+
+
+@dataclass(frozen=True)
+class Q10ValidatorConfig:
+    debug: bool = DEFAULTS.q10_debug
+    voxel_mm: float = DEFAULTS.q10_voxel_mm
+    radius_mm: float = DEFAULTS.q10_radius_mm
+    cc_factor: float = DEFAULTS.q10_cc_factor
+    refine_cc_enabled: bool = DEFAULTS.q10_refine_cc_enabled
+    min_q10: float = DEFAULTS.q10_min_q10
+    direction_mode: str = DEFAULTS.q10_direction_mode
+    sphere_max_planes: int = DEFAULTS.q10_sphere_max_planes
+    sphere_tolerance_deg: float = DEFAULTS.q10_sphere_tolerance_deg
+    sphere_iterations: int = DEFAULTS.q10_sphere_iterations
+    sphere_min_support: int = DEFAULTS.q10_sphere_min_support
+    sphere_min_fraction: float = DEFAULTS.q10_sphere_min_fraction
+    sphere_seed: int = DEFAULTS.q10_sphere_seed
+    gap_link_deg: float = DEFAULTS.q10_gap_link_deg
+    gap_edge_span_deg: float = DEFAULTS.q10_gap_edge_span_deg
+    gap_tail_enabled: bool = DEFAULTS.q10_gap_tail_enabled
+    gap_tail_bin_width_deg: float = DEFAULTS.q10_gap_tail_bin_width_deg
+    gap_tail_density_fraction: float = DEFAULTS.q10_gap_tail_density_fraction
+    gap_tail_min_bin_count: int = DEFAULTS.q10_gap_tail_min_bin_count
+    refine_enabled: bool = DEFAULTS.q10_refine_enabled
+
+    def validate(self):
+        if (not np.isfinite([self.voxel_mm, self.radius_mm, self.cc_factor, self.min_q10]).all()
+                or min(self.voxel_mm, self.radius_mm, self.cc_factor) <= 0
+                or not np.isfinite(2 * self.radius_mm)
+                or self.direction_mode not in Q10_DIRECTION_MODES
+                or not isinstance(self.debug, (bool, np.bool_))
+                or not isinstance(self.refine_enabled, (bool, np.bool_))
+                or not isinstance(self.refine_cc_enabled, (bool, np.bool_)) or not -1 <= self.min_q10 <= 1):
+            raise ValueError("Q10 requires positive finite mm scales/CC factor, Q10 cosine in [-1,1], boolean refine/CC/debug switches and a supported direction mode")
+        counts = ((self.sphere_max_planes, 1), (self.sphere_iterations, 10),
+                  (self.sphere_min_support, 3), (self.sphere_seed, 0))
+        if (any(isinstance(v, (bool, np.bool_)) or not isinstance(v, (int, np.integer)) or v < lo
+                for v, lo in counts) or self.sphere_max_planes > 3
+                or not np.isfinite([self.sphere_tolerance_deg, self.sphere_min_fraction]).all()
+                or not 0 < self.sphere_tolerance_deg < 45
+                or not 0 <= self.sphere_min_fraction <= 1):
+            raise ValueError("Sphere RANSAC requires 1..3 planes, >=10 iterations, >=3 support, nonnegative seed, tolerance in (0,45) and fraction in [0,1]")
+        if (not np.isfinite([self.gap_link_deg, self.gap_edge_span_deg,
+                             self.gap_tail_bin_width_deg, self.gap_tail_density_fraction]).all()
+                or not 0 < self.gap_link_deg < 180 or not 0 < self.gap_edge_span_deg <= 360
+                or not 0 < self.gap_tail_bin_width_deg <= 90 or not 0 <= self.gap_tail_density_fraction <= 1
+                or not isinstance(self.gap_tail_enabled, (bool, np.bool_))
+                or any(isinstance(v, (bool, np.bool_)) or not isinstance(v, (int, np.integer)) or v < lo
+                       for v, lo in ((self.gap_tail_min_bin_count, 1),))):
+            raise ValueError("Angular gap requires link in (0,180), span in (0,360], boolean tail switch, bin width in (0,90], density fraction in [0,1] and >=1 point per end bin")
 
 
 @dataclass
@@ -281,7 +385,6 @@ class DetectorConfig:
     bilateral_sigma_spatial_mm: float = _DEFAULT_DETECTOR["bilateral_sigma_spatial_mm"]
     bilateral_sigma_ced: float = _DEFAULT_DETECTOR["bilateral_sigma_ced"]
     bilateral_radius_mm: float = _DEFAULT_DETECTOR["bilateral_radius_mm"]
-    pca_radius_factor: float = _DEFAULT_DETECTOR["pca_radius_factor"]
     pca_radius_mm: float = _DEFAULT_DETECTOR["pca_radius_mm"]
     pca_ratio_saturation_tau: float | None = _DEFAULT_DETECTOR[
         "pca_ratio_saturation_tau"
@@ -290,6 +393,14 @@ class DetectorConfig:
     fusion_score_threshold: float = _DEFAULT_DETECTOR["fusion_score_threshold"]
     nms_radius_mm: float = _DEFAULT_DETECTOR["nms_radius_mm"]
     validator: ValidatorConfig | None = None
+    q10_validator: Q10ValidatorConfig | None = None
+    bilateral_mode: str = _DEFAULT_DETECTOR["bilateral_mode"]
+    pca_ced_cutoff: float = _DEFAULT_DETECTOR["pca_ced_cutoff"]
+    fusion_mode: str = _DEFAULT_DETECTOR["fusion_mode"]
+    local_minimum_tau: float = _DEFAULT_DETECTOR["local_minimum_tau"]
+    post_nms_lambda1_ratio_max: float | None = _DEFAULT_DETECTOR["post_nms_lambda1_ratio_max"]
+
+
 
 
 
@@ -311,22 +422,56 @@ def _resolve_guided_validator_values(args):
         "random_seed": args.validator_random_seed,
         "geometry_enabled": args.validator_geometry_enabled,
         **{name: getattr(args, "validator_" + name) for name in (
-            "edge_overlap_angle_deg", "edge_overlap_distance_mm", "edge_overlap_min_length_mm",
-            "vertex_line_distance_mm",
-            "vertex_endpoint_tolerance_mm", "vertex_group_span_mm")},
+            "edge_overlap_angle_deg", "edge_overlap_distance_mm", "edge_overlap_min_length_mm")},
         "roi_padding_mm": args.validator_roi_padding_mm,
         "plane_connect_radius_mm": args.validator_plane_connect_radius_x * ransac_voxel,
         "plane_parallel_angle_deg": args.validator_plane_parallel_angle_deg,
         "intersection_strip_half_width_mm": args.validator_intersection_strip_half_width_mm,
-        "boundary_merge_max_error_mm": args.validator_boundary_merge_max_error_mm,
+        "boundary_merge_angle_deg": args.validator_boundary_merge_angle_deg,
+        "boundary_merge_rms_error_mm": args.validator_boundary_merge_rms_error_mm,
         "edge_min_length_mm": args.validator_edge_min_length_x * ransac_voxel,
-        "corner_min_edge_angle_deg": args.validator_corner_min_edge_angle_deg,
-        "corner_gate_radius_mm": args.validator_corner_gate_radius_mm,
+        "min_angle_deg": args.validator_min_angle_deg,
+        "corner_radius_mm": args.validator_corner_radius_mm,
     }
 
 
 
+def _resolve_new_validator_values(args):
+    voxel = args.new_validator_ransac_voxel_mm
+    return {
+        "ransac_voxel_mm": voxel,
+        "ransac_radius_mm": args.new_validator_ransac_radius_x * voxel,
+        "inlier_threshold_mm": args.new_validator_inlier_threshold_x * voxel,
+        "guided_sigma_mm": args.new_validator_guided_sigma_x * voxel,
+        **{name: getattr(args, "new_validator_" + name) for name in (
+            "max_planes", "ransac_iterations", "min_inliers", "min_inlier_ratio", "random_seed", "roi_padding_mm", "min_q10")},
+        "plane_connect_radius_mm": args.new_validator_plane_connect_radius_x * voxel,
+    }
+
+
+_DEFAULT_NEW_VALIDATOR = _resolve_new_validator_values(DEFAULTS)
+
+
 _DEFAULT_GUIDED_VALIDATOR = _resolve_guided_validator_values(DEFAULTS)
+
+
+def _validate_guided_plane_settings(cfg):
+    numeric = [value for value in vars(cfg).values() if isinstance(value, (int, float, np.number))]
+    if not np.isfinite(numeric).all():
+        raise ValueError("Guided validator settings must be finite")
+    for name in ("max_planes", "ransac_iterations", "min_inliers", "random_seed"):
+        value = getattr(cfg, name)
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+            raise ValueError(f"{name} must be an integer")
+    if min(cfg.ransac_voxel_mm, cfg.ransac_radius_mm,
+           cfg.inlier_threshold_mm, cfg.guided_sigma_mm) <= 0:
+        raise ValueError("Validator radii, threshold and guided sigma must be positive")
+    if not 0 <= cfg.max_planes <= 3 or cfg.ransac_iterations < 1:
+        raise ValueError("Require 0..3 planes and at least one RANSAC iteration")
+    if cfg.min_inliers < 3 or cfg.random_seed < 0:
+        raise ValueError("Require at least 3 inliers and a nonnegative seed")
+    if not 0 <= cfg.min_inlier_ratio <= 1:
+        raise ValueError("min_inlier_ratio must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -345,67 +490,79 @@ class GuidedValidatorConfig:
     edge_overlap_angle_deg: float = DEFAULTS.validator_edge_overlap_angle_deg
     edge_overlap_distance_mm: float = DEFAULTS.validator_edge_overlap_distance_mm
     edge_overlap_min_length_mm: float = DEFAULTS.validator_edge_overlap_min_length_mm
-    vertex_line_distance_mm: float = DEFAULTS.validator_vertex_line_distance_mm
-    vertex_endpoint_tolerance_mm: float = DEFAULTS.validator_vertex_endpoint_tolerance_mm
-    vertex_group_span_mm: float = DEFAULTS.validator_vertex_group_span_mm
     roi_padding_mm: float = _DEFAULT_GUIDED_VALIDATOR["roi_padding_mm"]
     plane_connect_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["plane_connect_radius_mm"]
     plane_parallel_angle_deg: float = _DEFAULT_GUIDED_VALIDATOR["plane_parallel_angle_deg"]
     intersection_strip_half_width_mm: float = _DEFAULT_GUIDED_VALIDATOR["intersection_strip_half_width_mm"]
-    boundary_merge_max_error_mm: float = _DEFAULT_GUIDED_VALIDATOR["boundary_merge_max_error_mm"]
+    boundary_merge_angle_deg: float = _DEFAULT_GUIDED_VALIDATOR["boundary_merge_angle_deg"]
+    boundary_merge_rms_error_mm: float = _DEFAULT_GUIDED_VALIDATOR["boundary_merge_rms_error_mm"]
     edge_min_length_mm: float = _DEFAULT_GUIDED_VALIDATOR["edge_min_length_mm"]
-    corner_min_edge_angle_deg: float = _DEFAULT_GUIDED_VALIDATOR["corner_min_edge_angle_deg"]
-    corner_gate_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["corner_gate_radius_mm"]
+    min_angle_deg: float = _DEFAULT_GUIDED_VALIDATOR["min_angle_deg"]
+    corner_radius_mm: float = _DEFAULT_GUIDED_VALIDATOR["corner_radius_mm"]
 
     @property
     def padded_support_radius_mm(self):
         return self.ransac_radius_mm + self.roi_padding_mm
 
     def validate(self):
-        numeric = [value for value in vars(self).values() if isinstance(value, (int, float, np.number))]
-        if not np.isfinite(numeric).all():
-            raise ValueError("Guided validator settings must be finite")
-        for name in ("max_planes", "ransac_iterations", "min_inliers", "random_seed"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
-                raise ValueError(f"{name} must be an integer")
-        if min(self.ransac_voxel_mm, self.ransac_radius_mm,
-               self.inlier_threshold_mm, self.guided_sigma_mm) <= 0:
-            raise ValueError("Validator radii, threshold and guided sigma must be positive")
-        if not 0 <= self.max_planes <= 3 or self.ransac_iterations < 1:
-            raise ValueError("Require 0..3 planes and at least one RANSAC iteration")
-        if self.min_inliers < 3 or self.random_seed < 0:
-            raise ValueError("Require at least 3 inliers and a nonnegative seed")
-        if not 0 <= self.min_inlier_ratio <= 1:
-            raise ValueError("min_inlier_ratio must be in [0, 1]")
+        _validate_guided_plane_settings(self)
         if self.intersection_strip_half_width_mm < 0:
             raise ValueError("Intersection strip half width must be nonnegative (mm)")
-        if self.boundary_merge_max_error_mm < 0:
-            raise ValueError("Boundary merge maximum error must be nonnegative (mm)")
+        if self.boundary_merge_rms_error_mm < 0:
+            raise ValueError("Boundary merge RMS error must be nonnegative (mm)")
         if not isinstance(self.geometry_enabled, (bool, np.bool_)):
             raise ValueError("geometry_enabled must be boolean")
         if self.roi_padding_mm < 0:
             raise ValueError("ROI padding must be nonnegative (mm)")
         if not 0 <= self.edge_overlap_angle_deg < 90:
             raise ValueError("Edge overlap angle must be in [0, 90)")
-        if min(self.edge_overlap_distance_mm, self.edge_overlap_min_length_mm,
-               self.vertex_line_distance_mm, self.vertex_endpoint_tolerance_mm,
-               self.vertex_group_span_mm) <= 0:
-            raise ValueError("Edge overlap and vertex distances must be positive (mm)")
+        if min(self.edge_overlap_distance_mm, self.edge_overlap_min_length_mm) <= 0:
+            raise ValueError("Edge overlap distances must be positive (mm)")
         if min(self.plane_connect_radius_mm,
                self.edge_min_length_mm,
-               self.corner_gate_radius_mm) <= 0:
+               self.corner_radius_mm) <= 0:
             raise ValueError("Geometry radii, length and tolerance must be positive")
-        if not (0 < self.plane_parallel_angle_deg <= 90
-                and 0 < self.corner_min_edge_angle_deg <= 90):
+        if not all(0 < angle <= 90 for angle in (
+                self.plane_parallel_angle_deg, self.boundary_merge_angle_deg,
+                self.min_angle_deg)):
             raise ValueError("Geometry angle thresholds must be in (0, 90] degrees")
 
+
+
+@dataclass(frozen=True)
+class NewValidatorConfig:
+    """Independent plane settings; no hull, edge or corner controls."""
+    ransac_voxel_mm: float = _DEFAULT_NEW_VALIDATOR["ransac_voxel_mm"]
+    ransac_radius_mm: float = _DEFAULT_NEW_VALIDATOR["ransac_radius_mm"]
+    inlier_threshold_mm: float = _DEFAULT_NEW_VALIDATOR["inlier_threshold_mm"]
+    guided_sigma_mm: float = _DEFAULT_NEW_VALIDATOR["guided_sigma_mm"]
+    max_planes: int = _DEFAULT_NEW_VALIDATOR["max_planes"]
+    ransac_iterations: int = _DEFAULT_NEW_VALIDATOR["ransac_iterations"]
+    min_inliers: int = _DEFAULT_NEW_VALIDATOR["min_inliers"]
+    min_inlier_ratio: float = _DEFAULT_NEW_VALIDATOR["min_inlier_ratio"]
+    random_seed: int = _DEFAULT_NEW_VALIDATOR["random_seed"]
+    roi_padding_mm: float = _DEFAULT_NEW_VALIDATOR["roi_padding_mm"]
+    plane_connect_radius_mm: float = _DEFAULT_NEW_VALIDATOR["plane_connect_radius_mm"]
+    min_q10: float = _DEFAULT_NEW_VALIDATOR["min_q10"]
+    geometry_enabled: bool = field(default=True, init=False)
+    projection_only: bool = field(default=True, init=False)
+
+    @property
+    def padded_support_radius_mm(self):
+        return self.ransac_radius_mm + self.roi_padding_mm
+
+    def validate(self):
+        _validate_guided_plane_settings(self)
+        if self.roi_padding_mm < 0 or self.plane_connect_radius_mm <= 0:
+            raise ValueError("New validator requires nonnegative padding and positive connectivity radius")
+        if not -1 <= self.min_q10 <= 1:
+            raise ValueError("New validator min_q10 must be a cosine in [-1,1]")
 
 
 @dataclass
 class ValidatorDetectorConfig(DetectorConfig):
     mode: str = "validator"
-    validator: GuidedValidatorConfig = field(default_factory=GuidedValidatorConfig)
+    validator: GuidedValidatorConfig | NewValidatorConfig = field(default_factory=GuidedValidatorConfig)
 
 
 
@@ -707,11 +864,14 @@ def parse_args(argv=None, *, prog=None):
 
     # Shared input, preprocessing, and display options for every mode.
     shared = parser.add_argument_group("shared input and preprocessing")
-    shared.add_argument("--input", "-i", help="STL path or Kinect 7-Scenes path")
-    shared.add_argument("--source", choices=("stl", "kinect", "realsense"))
+    shared.add_argument("--input", "-i", help="STL/Kinect path or saved dataset scene/root")
+    shared.add_argument("--source", choices=("stl", "kinect", "realsense", "dataset", "demo"),
+                        help="demo: lab three-plane corner, no input file; detector mode only")
+    shared.add_argument("--dataset-region", choices=("roi", "scene"),
+                        help="dataset input: saved ROI (default) or complete scene; detector mode only")
     shared.add_argument("--frame-index", type=int)
     shared.add_argument("--fps", type=int, help="Live RealSense camera FPS")
-    shared.add_argument("--mode", choices=("fine", "detector", "ball", "extremity256", "validator", "total"))
+    shared.add_argument("--mode", choices=("fine", "detector", "ball", "extremity256", "validator", "total", "new-validator"))
     shared.add_argument("--stl-unit-mm", type=float)
     shared.add_argument("--width", type=int)
     shared.add_argument("--height", type=int)
@@ -736,26 +896,34 @@ def parse_args(argv=None, *, prog=None):
     detector.add_argument("--min-neighbors", type=int,
                           help="minimum CED/PCA support (also used by fine)")
     detector.add_argument(
-        "--centroid-radius-x", type=float,
-        help="CED centroid radius / 3-D voxel (shared by fine and detector)",
+        "--centroid-radius-mm", type=float,
+        help="CED centroid radius in mm, independent of voxel size (default: 80)",
     )
     detector.add_argument("--only", action="store_true",
                           help="detector only: stop at NMS and show just the NMS Fusion heatmap")
     detector.add_argument(
         "--pca-radius-factor", type=float,
-        help="CED-weighted PCA radius / CED radius (configured default: 1.5)",
+        help="CED-weighted PCA radius / CED radius (default: 1.5)",
     )
     detector.add_argument(
-        "--bilateral-sigma-spatial-mm", type=float,
-        help="bilateral spatial sigma in mm (default: 0.5 x CED radius)",
+        "--pca-ced-cutoff", type=float,
+        help="minimum original CED score for PCA support, inclusive in [0,1]; zero weights stay excluded (default: 0)",
+    )
+    detector.add_argument(
+        "--bilateral-mode", choices=("ced", "fusion", "off"),
+        help="bilateral target: CED before Fusion, Fusion product, or off (default: ced)",
+    )
+    detector.add_argument(
+        "--bilateral-sigma-spatial-factor", type=float,
+        help="bilateral spatial sigma / CED radius (default: 0.5)",
     )
     detector.add_argument(
         "--bilateral-sigma-ced", type=float,
-        help="bilateral range sigma for normalized CED (default: 0.05)",
+        help="dimensionless bilateral range sigma for the selected CED/Fusion score differences (default: 0.05)",
     )
     detector.add_argument(
-        "--bilateral-radius-mm", type=float,
-        help="bilateral neighborhood radius in mm (default: CED radius)",
+        "--bilateral-radius-factor", type=float,
+        help="bilateral neighborhood radius / CED radius (default: 1.0)",
     )
     detector.add_argument(
         "--pca-ratio-saturation-tau", type=float,
@@ -770,12 +938,58 @@ def parse_args(argv=None, *, prog=None):
     )
     detector.add_argument(
         "--fusion-score-threshold", type=float,
-        help="strict fixed fusion threshold used when mode=fixed",
+        help="strict fixed Fusion threshold for fusion-mode=pca_ratio",
     )
+    detector.add_argument('--fusion-mode', choices=('pca_ratio', 'local_minimum'),
+                          help='Fusion factor: existing weighted PCA ratio or Normal-PCA Min-Max local minimum')
+    detector.add_argument('--local-minimum-tau', type=float, help='Min-Max contrast tau (default: 0.005); R=PCA radius')
+    detector.add_argument('--local-minimum-fusion-threshold', type=float,
+                          help='strict fixed Fusion threshold for local_minimum mode (default: 0.2)')
+    detector.add_argument('--post-nms-lambda1-ratio-max', type=float,
+                          help='upper bound on CED-weighted lambda1 / PCA radius² after NMS; settings None=OFF')
     detector.add_argument(
-        "--nms-radius-mm", type=float,
-        help="3-D candidate NMS radius in mm (configured default: 50)",
+        "--nms-radius-factor", type=float,
+        help="3-D candidate NMS radius / CED radius (default: 1.0)",
     )
+    q10 = parser.add_argument_group("detector/validator/total/new-validator: Q10 relocation and spherical RANSAC MaxGap Lite (default ON)")
+    q10.add_argument("--q10-validator", dest="q10_validator_enabled", action=argparse.BooleanOptionalAction,
+                     help="select once inside the original detector NMS ball, then check Q10 and cleaned per-plane angular span")
+    q10.add_argument("--q10-refine", dest="q10_refine_enabled", action=argparse.BooleanOptionalAction,
+                     help="enable Q10 relocation and min-Q10 gate; OFF checks MaxGap at the exact original NMS position")
+    q10.add_argument("--q10-debug", action=argparse.BooleanOptionalAction,
+                     help="click original/refined markers for cached path, sphere, histogram and MaxGap evidence")
+    q10.add_argument("--q10-refine-cc", dest="q10_refine_cc_enabled", action=argparse.BooleanOptionalAction,
+                     help="query CC in each Q10 candidate's spherical neighborhood")
+    for name, kind in (("voxel_mm", float), ("radius_mm", float), ("cc_factor", float)):
+        q10.add_argument("--q10-" + name.replace("_", "-"), type=kind)
+    q10.add_argument("--q10-gap-tail", dest="q10_gap_tail_enabled", action=argparse.BooleanOptionalAction,
+                     help="trim sparse bins only from the two ends of the dominant angular group")
+    for name, kind in (("link_deg", float), ("edge_span_deg", float), ("tail_bin_width_deg", float),
+                       ("tail_density_fraction", float), ("tail_min_bin_count", int)):
+        q10.add_argument("--q10-gap-" + name.replace("_", "-"), type=kind)
+    q10.add_argument("--q10-min-q10", type=float,
+                     help="reject the cached converged Q10 cosine below this value before spherical RANSAC; equality passes")
+    q10.add_argument("--q10-direction-mode", choices=Q10_DIRECTION_MODES,
+                     help="Q10 axis: mean/coordinate median of unit directions, or original-XYZ centroid direction")
+    for name, kind, help_text in (
+        ("max_planes", int, "maximum origin-constrained great circles, 1..3 (default 3)"),
+        ("tolerance_deg", float, "angular inlier distance to great circle in degrees"),
+        ("iterations", int, "RANSAC trials per plane, >=10 (default 300)"),
+        ("min_support", int, "minimum newly explained directions per plane (default 12)"),
+        ("min_fraction", float, "minimum new support / all nonzero directions (default .06)"),
+        ("seed", int, "nonnegative deterministic RANSAC seed (default 20261110)"),
+    ):
+        q10.add_argument("--q10-sphere-" + name.replace("_", "-"), type=kind, help=help_text)
+
+    new_validator = parser.add_argument_group("new-validator: independent RANSAC and 2-D projection (no hull/edge/corner)")
+    for name, kind in (
+        ("ransac_voxel_mm", float), ("ransac_radius_x", float),
+        ("max_planes", int), ("ransac_iterations", int), ("inlier_threshold_x", float),
+        ("guided_sigma_x", float), ("min_inliers", int), ("min_inlier_ratio", float),
+        ("random_seed", int), ("roi_padding_mm", float), ("plane_connect_radius_x", float),
+        ("min_q10", float),
+    ):
+        new_validator.add_argument("--new-validator-" + name.replace("_", "-"), type=kind)
 
     guided = parser.add_argument_group("validator: query-local RANSAC voxel and voxel multipliers")
     for name, kind in (
@@ -787,23 +1001,24 @@ def parse_args(argv=None, *, prog=None):
         guided.add_argument("--validator-" + name.replace("_", "-"), type=kind)
     guided.add_argument("--validator-geometry", dest="validator_geometry_enabled",
                         action=argparse.BooleanOptionalAction,
-                        help="validate a corner formed by at least two finite edges")
-    for name in ("edge_overlap_angle_deg", "edge_overlap_distance_mm", "edge_overlap_min_length_mm",
-                 "vertex_line_distance_mm",
-                 "vertex_endpoint_tolerance_mm", "vertex_group_span_mm"):
+                        help="generate endpoint-based Corner candidates from finite edges")
+    for name in ("edge_overlap_angle_deg", "edge_overlap_distance_mm", "edge_overlap_min_length_mm"):
         guided.add_argument("--validator-" + name.replace("_", "-"), type=float)
     for name, kind in (
         ("roi_padding_mm", float), ("plane_connect_radius_x", float),
         ("plane_parallel_angle_deg", float), ("edge_min_length_x", float),
         ("intersection_strip_half_width_mm", float),
-        ("boundary_merge_max_error_mm", float),
-        ("corner_min_edge_angle_deg", float),
-        ("corner_gate_radius_mm", float),
+        ("boundary_merge_angle_deg", float),
+        ("boundary_merge_rms_error_mm", float),
+        ("min_angle_deg", float),
+        ("corner_radius_mm", float),
     ):
         guided.add_argument("--validator-" + name.replace("_", "-"), type=kind)
 
     # Fine mode options follow the clicked-query pipeline order exactly.
     fine_query = parser.add_argument_group("fine 0/6: query geometry")
+    fine_query.add_argument("--centroid-radius-x", type=float,
+                            help="fine only: CED centroid radius / 3-D voxel")
     fine_cornervins = parser.add_argument_group(
         "fine 1/6: query-core CornerVINS AHC -> RANSAC/refit -> merge/hull"
     )
@@ -1009,6 +1224,12 @@ def parse_args(argv=None, *, prog=None):
     parser.set_defaults(**vars(DEFAULTS))
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(raw_argv)
+    if args.mode not in ("detector", "validator", "total", "new-validator") and not any(t in ("--q10-validator", "--no-q10-validator") for t in raw_argv):
+        args.q10_validator_enabled = False
+    if args.mode != "fine" and any(
+            token == "--centroid-radius-x" or token.startswith("--centroid-radius-x=")
+            for token in raw_argv):
+        parser.error("--centroid-radius-x is fine-only; use --centroid-radius-mm for the detector")
     if args.only and args.mode != "detector":
         parser.error("--only requires --mode detector")
     has_score_value = any(
@@ -1027,8 +1248,12 @@ def parse_args(argv=None, *, prog=None):
         args.plane_edge_graph_enabled = args.mode == "fine"
     if not any(flag in raw_argv for flag in ("--plane-edge-debug-2d", "--no-plane-edge-debug-2d")):
         args.plane_edge_debug_2d = args.mode == "fine"
-    if args.source in ("stl", "kinect") and not args.input:
+    if args.source in ("stl", "kinect", "dataset") and not args.input:
         parser.error(f"--input is required for --source {args.source}")
+    if args.source in ("dataset", "demo") and args.mode != "detector":
+        parser.error(f"--source {args.source} requires --mode detector")
+    if args.source == "demo" and args.input:
+        parser.error("--source demo generates points in memory; omit --input")
     if args.frame_index < 0:
         parser.error("--frame-index must be >= 0")
     if args.fps < 1:
@@ -1045,10 +1270,23 @@ def configure(args):
     numeric = [value for value in vars(args).values() if isinstance(value, (int, float))]
     if not np.isfinite(numeric).all():
         raise ValueError("Numeric arguments must be finite.")
+    if args.q10_validator_enabled and args.mode not in ("detector", "validator", "total", "new-validator"):
+        raise ValueError("--q10-validator requires --mode detector, validator, total or new-validator")
+    q10_cfg = None
+    if args.q10_validator_enabled:
+        q10_cfg = Q10ValidatorConfig(**{name: getattr(args, "q10_" + name) for name in (
+            "debug", "voxel_mm", "radius_mm", "cc_factor",
+            "refine_enabled", "refine_cc_enabled", "min_q10", "direction_mode", "sphere_max_planes",
+            "sphere_tolerance_deg", "sphere_iterations", "sphere_min_support", "sphere_min_fraction",
+            "sphere_seed", "gap_link_deg", "gap_edge_span_deg", "gap_tail_enabled", "gap_tail_bin_width_deg",
+            "gap_tail_density_fraction", "gap_tail_min_bin_count")})
+        q10_cfg.validate()
     if args.width < 64 or args.height < 64 or not 5 <= args.fov_deg <= 90:
         raise ValueError("Require width/height >=64 and FOV in [5,90].")
-    if min(args.stl_unit_mm, args.voxel_3d_mm, args.centroid_radius_x) <= 0:
-        raise ValueError("STL scale, 3-D voxel size, and CED radius must be positive.")
+    if min(args.stl_unit_mm, args.voxel_3d_mm) <= 0:
+        raise ValueError("STL scale and 3-D voxel size must be positive.")
+    if args.mode == "fine" and args.centroid_radius_x <= 0:
+        raise ValueError("Fine CED radius must be positive.")
     if args.min_neighbors < 3:
         raise ValueError("min-neighbors must be >= 3.")
     if not 0 < args.min_depth_m < args.max_depth_m:
@@ -1094,14 +1332,26 @@ def configure(args):
     if args.mode in ("ball", "extremity256"):
         extremity = ExtremityConfig(**_resolve_extremity_values(args))
         extremity.validate()
-    if args.mode in ("detector", "ball", "extremity256", "validator", "total"):
-        if args.pca_radius_factor <= 0:
-            raise ValueError("pca-radius-factor must be > 0.")
-        if args.nms_radius_mm is not None and args.nms_radius_mm <= 0:
-            raise ValueError("nms-radius-mm must be > 0.")
-        for name in ("bilateral_sigma_spatial_mm", "bilateral_radius_mm"):
+    if args.mode in ("detector", "ball", "extremity256", "validator", "total", "new-validator"):
+        if args.fusion_mode not in ('pca_ratio', 'local_minimum'):
+            raise ValueError('fusion-mode must be pca_ratio or local_minimum')
+        if not np.isfinite(args.local_minimum_tau) or args.local_minimum_tau <= 0:
+            raise ValueError('local-minimum-tau must be finite and > 0')
+        if not 0 <= args.local_minimum_fusion_threshold <= 1:
+            raise ValueError('local-minimum-fusion-threshold must be in [0,1]')
+        if args.post_nms_lambda1_ratio_max is not None and not 0 <= args.post_nms_lambda1_ratio_max <= 1:
+            raise ValueError('post-nms-lambda1-ratio-max must be in [0,1] or None')
+        if args.bilateral_mode not in ("ced", "fusion", "off"):
+            raise ValueError("bilateral-mode must be ced, fusion or off.")
+        if min(args.centroid_radius_mm, args.pca_radius_factor) <= 0:
+            raise ValueError("centroid-radius-mm and pca-radius-factor must be > 0.")
+        if not 0.0 <= args.pca_ced_cutoff <= 1.0:
+            raise ValueError("pca-ced-cutoff must be in [0, 1].")
+        if args.nms_radius_factor <= 0:
+            raise ValueError("nms-radius-factor must be > 0.")
+        for name in ("bilateral_sigma_spatial_factor", "bilateral_radius_factor"):
             value = getattr(args, name)
-            if value is not None and value <= 0:
+            if value <= 0:
                 raise ValueError(f"{name.replace('_', '-')} must be > 0.")
         if args.bilateral_sigma_ced <= 0:
             raise ValueError("bilateral-sigma-ced must be > 0.")
@@ -1116,14 +1366,16 @@ def configure(args):
             "fixed", "global_mean",
         ):
             raise ValueError("fusion-threshold-mode must be fixed or global-mean.")
-        if args.mode in ("validator", "total"):
-            guided_cfg = GuidedValidatorConfig(**_resolve_guided_validator_values(args))
+        if args.mode in ("validator", "total", "new-validator"):
+            guided_cfg = (NewValidatorConfig(**_resolve_new_validator_values(args)) if args.mode == "new-validator"
+                          else GuidedValidatorConfig(**_resolve_guided_validator_values(args)))
             guided_cfg.validate()
             if args.mode == "total" and not guided_cfg.geometry_enabled:
                 raise ValueError("--mode total requires --validator-geometry")
-            cfg = ValidatorDetectorConfig(**_resolve_detector_values(args), validator=guided_cfg, mode=args.mode)
+            cfg = ValidatorDetectorConfig(**_resolve_detector_values(args), validator=guided_cfg, mode=args.mode, q10_validator=q10_cfg)
         elif args.mode == "detector":
-            cfg = DetectorConfig(**_resolve_detector_values(args), validator=None)
+            cfg = DetectorConfig(**_resolve_detector_values(args), validator=None,
+                                 q10_validator=q10_cfg)
         else:
             validator_values = _resolve_validator_values(args)
             validator_values.update({
@@ -1210,18 +1462,22 @@ def configure(args):
         quantization_mm=args.quantization_mm,
         seed=args.seed,
     )
+    if args.source == "dataset" and _noise_is_enabled(noise):
+        raise ValueError("Synthetic depth noise requires an organized frame; dataset uses saved XYZ directly")
+    if args.source == "demo" and _noise_is_enabled(noise):
+        raise ValueError("Synthetic depth noise requires an organized frame; demo generates XYZ directly")
     return cfg, noise
 
 
-# Compatibility aliases for library callers. The removed names are not accepted
-# by ``--mode``; new code should import ValidatorConfig / DetectorConfig.
+# Compatibility aliases retain their detector/validator meanings.
 BoundaryConfig = ValidatorConfig
 HeatmapConfig = DetectorConfig
 DetectorDefaults = SettingsDefaults
 
 
 __all__ = [
-    "GuidedValidatorConfig", "ValidatorDetectorConfig",
+    "Q10ValidatorConfig",
+    "GuidedValidatorConfig", "NewValidatorConfig", "ValidatorDetectorConfig",
     "ValidatorConfig", "DetectorConfig", "ExtremityConfig", "ExtremityDetectorConfig",
     "SettingsDefaults", "DEFAULTS",
     "BoundaryConfig", "HeatmapConfig", "DetectorDefaults", "configure", "parse_args",

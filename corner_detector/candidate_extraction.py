@@ -77,6 +77,7 @@ def _candidate_record(
             "pca_ratio_saturation_tau"
         ),
         "fusion_score": float(fusion[index]),
+        "fusion_mode": score_result.get("fusion_mode", "pca_ratio"),
         "eigenvalues_mm2": eigenvalues[index].copy(),
         "score": float(fusion[index]),
         "pca_valid": bool(pca_valid[index]),
@@ -105,6 +106,7 @@ def extract_corner_candidates(
     fusion_threshold_mode="fixed",
     fusion_peak_relative_ratio=0.5,
     point_tree=None,
+    post_nms_lambda1_ratio_max=None,
 ):
     """Extract candidates by thresholding then deterministic local-max NMS.
 
@@ -115,6 +117,8 @@ def extract_corner_candidates(
     local maximum exactly when no eligible point inside the inclusive 3-D
     radius has a higher score. Equal-score ties prefer the smaller original
     point index.
+    Optional weighted lambda1/R_PCA² gating runs after this unchanged NMS;
+    it keeps <= threshold and does not promote neighbors of rejected peaks.
     """
     points = np.asarray(points_mm, dtype=np.float64)
     radius = float(nms_radius_mm)
@@ -131,6 +135,10 @@ def extract_corner_candidates(
         raise ValueError("fusion_threshold_mode must be fixed, global_mean or peak_relative")
     if not np.isfinite(peak_ratio) or not 0.0 <= peak_ratio <= 1.0:
         raise ValueError("fusion_peak_relative_ratio must be finite and in [0, 1]")
+    if post_nms_lambda1_ratio_max is not None:
+        post_nms_lambda1_ratio_max = float(post_nms_lambda1_ratio_max)
+        if not np.isfinite(post_nms_lambda1_ratio_max) or not 0 <= post_nms_lambda1_ratio_max <= 1:
+            raise ValueError("post_nms_lambda1_ratio_max must be finite in [0,1] or None")
 
     count = len(points)
     scores = _aligned_array(score_result, "fusion_score", count)
@@ -150,33 +158,25 @@ def extract_corner_candidates(
         elif threshold_mode == "peak_relative":
             threshold = max(configured_threshold, peak_ratio * float(np.max(scores[threshold_source])))
     eligible = threshold_source & (scores > threshold)
-    eligible_indices = np.flatnonzero(eligible)
-
-    tree = point_tree if point_tree is not None else cKDTree(points)
-    radius2 = radius * radius
-    selected = []
-    for point_index in eligible_indices:
-        point_index = int(point_index)
-        neighbors = np.asarray(
-            tree.query_ball_point(points[point_index], radius), dtype=np.int64,
-        )
-        delta = points[neighbors] - points[point_index]
-        inside = np.einsum("ij,ij->i", delta, delta) <= radius2
-        local = neighbors[inside]
-        local = local[eligible[local]]
-        higher = scores[local] > scores[point_index]
-        tied_predecessor = (
-            (scores[local] == scores[point_index]) & (local < point_index)
-        )
-        if not np.any(higher | tied_predecessor):
-            selected.append(point_index)
-
-    selected = np.asarray(selected, dtype=np.int64)
-    if len(selected):
-        order = np.lexsort((selected, -scores[selected]))
-        selected = selected[order]
-
-    candidate_indices = selected
+    candidate_indices = local_maximum_nms_indices(points, scores, eligible, radius, point_tree=point_tree)
+    nms_indices = candidate_indices.copy()
+    gate_values = np.full(len(nms_indices), np.nan)
+    gate_invalid = np.zeros(len(nms_indices), dtype=bool)
+    gate_passed = np.ones(len(nms_indices), dtype=bool)
+    if post_nms_lambda1_ratio_max is not None:
+        pca_radius = float(score_result.get("pca_radius_mm", np.nan))
+        pca_radius2 = pca_radius * pca_radius
+        if not np.isfinite([pca_radius, pca_radius2]).all() or min(pca_radius, pca_radius2) <= 0:
+            raise ValueError("Post-NMS lambda1 gate requires a positive finite PCA radius and radius²")
+        eigenvalues = np.asarray(score_result.get("eigenvalues_mm2"), dtype=float)
+        if eigenvalues.shape != (count, 3):
+            raise ValueError("Post-NMS lambda1 gate requires aligned (N,3) weighted eigenvalues")
+        weighted_valid = _aligned_array(score_result, "pca_valid_mask", count, dtype=bool)
+        lambda1 = eigenvalues[nms_indices, 0]
+        gate_values = lambda1 / pca_radius2
+        gate_invalid = ~weighted_valid[nms_indices] | ~np.isfinite(gate_values) | (lambda1 < 0)
+        gate_passed = ~gate_invalid & (gate_values <= post_nms_lambda1_ratio_max)
+        candidate_indices = nms_indices[gate_passed]
     candidate_mask = np.zeros(count, dtype=bool)
     candidate_mask[candidate_indices] = True
     candidates = [
@@ -191,6 +191,12 @@ def extract_corner_candidates(
         )
         for index in candidate_indices
     ]
+    if post_nms_lambda1_ratio_max is not None:
+        for candidate, value in zip(candidates, gate_values[gate_passed]):
+            candidate["weighted_lambda1_over_r2"] = float(value)
+            candidate["post_nms_lambda1_ratio_max"] = post_nms_lambda1_ratio_max
+    nms_mask = np.zeros(count, dtype=bool)
+    nms_mask[nms_indices] = True
     return {
         "nms_radius_mm": radius,
         "fusion_score_threshold": threshold,
@@ -207,7 +213,51 @@ def extract_corner_candidates(
         "candidate_mask": candidate_mask,
         "candidate_indices": candidate_indices,
         "candidates": candidates,
+        "nms_candidate_indices": nms_indices,
+        "nms_candidate_mask": nms_mask,
+        "post_nms_lambda1_gate": {
+            "enabled": post_nms_lambda1_ratio_max is not None,
+            "threshold": post_nms_lambda1_ratio_max,
+            "nms_indices": nms_indices.copy(),
+            "normalized_lambda1": gate_values,
+            "passed_mask": gate_passed,
+            "invalid_mask": gate_invalid,
+            "rejected_indices": nms_indices[~gate_passed],
+        },
     }
+
+
+def local_maximum_nms_indices(points_mm, scores, eligible_mask, radius_mm, *, point_tree=None):
+    """Inclusive-radius local maxima; equal scores prefer the smaller scene ID."""
+    points = np.asarray(points_mm, dtype=np.float64)
+    scores = np.asarray(scores, dtype=np.float64)
+    eligible = np.asarray(eligible_mask, dtype=bool)
+    radius = float(radius_mm)
+    if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all():
+        raise ValueError("points_mm must be finite with shape (N, 3)")
+    if scores.shape != (len(points),) or eligible.shape != scores.shape:
+        raise ValueError("scores and eligible_mask must align with points_mm")
+    if not np.isfinite(radius) or radius <= 0 or not np.isfinite(scores[eligible]).all():
+        raise ValueError("NMS needs a positive finite radius and finite eligible scores")
+    tree = point_tree if point_tree is not None else cKDTree(points)
+    radius2 = radius * radius
+    selected = []
+    for point_index in np.flatnonzero(eligible):
+        point_index = int(point_index)
+        neighbors = np.asarray(tree.query_ball_point(points[point_index], radius), dtype=np.int64)
+        delta = points[neighbors] - points[point_index]
+        local = neighbors[np.einsum("ij,ij->i", delta, delta) <= radius2]
+        local = local[eligible[local]]
+        higher = scores[local] > scores[point_index]
+        tied_predecessor = (scores[local] == scores[point_index]) & (local < point_index)
+        if not np.any(higher | tied_predecessor):
+            selected.append(point_index)
+    selected = np.asarray(selected, dtype=np.int64)
+    if len(selected):
+        selected = selected[np.lexsort((selected, -scores[selected]))]
+    return selected
+
+
 
 
 def greedy_nms_indices(points_mm, scores, eligible_mask, radius_mm):
@@ -237,4 +287,5 @@ def greedy_nms_indices(points_mm, scores, eligible_mask, radius_mm):
     return np.asarray(selected, dtype=np.int64)
 
 
-__all__ = ["extract_corner_candidates", "greedy_nms_indices"]
+__all__ = ["extract_corner_candidates",
+           "local_maximum_nms_indices", "greedy_nms_indices"]

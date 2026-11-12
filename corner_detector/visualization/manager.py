@@ -41,6 +41,32 @@ _VIEW_KEYS = (
 )
 
 
+def show_baseline_comparison(points_mm, rgb, gt_mm, results, *, title):
+    """Give each saved scene a fresh GUI process; block until its comparison closes."""
+    from multiprocessing import get_context
+    from .query_ui import run_baseline_comparison_process
+    context = get_context("spawn")
+    connection, child = context.Pipe(duplex=False)
+    process = context.Process(target=run_baseline_comparison_process,
+                              args=(child, points_mm, rgb, gt_mm, results, title), daemon=True)
+    try:
+        process.start()
+        child.close()
+        process.join()
+        try:
+            error = connection.recv() if connection.poll() else None
+        except EOFError:
+            error = None
+        if error or process.exitcode != 0:
+            raise RuntimeError(error or f"Open3D viewer exited with code {process.exitcode}")
+    finally:
+        if process.pid is not None and process.is_alive():
+            process.terminate()
+            process.join()
+        child.close()
+        connection.close()
+
+
 def prepare_guided_validator_view(frozen):
     close_guided_validator_view(frozen)
     scores = frozen.get("validator_ced_scores")
@@ -50,7 +76,9 @@ def prepare_guided_validator_view(frozen):
               if scores is not None else frozen["validator_scene_colors"])
     display = open_guided_validator_view(
         frozen["points_voxel_mm"], frozen["validator_query_indices"],
-        colors, fusion_vmax=fusion_vmax, raw_points_mm=frozen.get("points_raw_mm"))
+        colors, fusion_vmax=fusion_vmax, raw_points_mm=frozen.get("points_raw_mm"),
+        **({"query_positions_mm": frozen["validator_query_positions_mm"]} if "validator_query_positions_mm" in frozen else {}),
+**({"projection_only": True} if frozen.get("validator_projection_only") else {}))
     frozen["guided_validator_display"] = display
     return display
 
@@ -71,6 +99,8 @@ def start_guided_validator_view(frozen):
     process = context.Process(target=run_guided_validator_view_process, args=(
         child, frozen["points_voxel_mm"],
         frozen["validator_query_indices"], colors, fusion_vmax, frozen.get("points_raw_mm"),
+        *([frozen.get("validator_query_positions_mm"), True] if frozen.get("validator_projection_only") else
+          [frozen["validator_query_positions_mm"]] if "validator_query_positions_mm" in frozen else []),
     ), daemon=True)
     try:
         process.start()
@@ -123,6 +153,12 @@ def prepare_guided_validator_result(frozen, result):
     display = frozen.get("guided_validator_display")
     if display is not None and not display["closed"]:
         update_guided_validator_view(display, result)
+        if result.get("projection_computed") and "projection_image" in display:
+            from .plots import make_projection_validator_figure, figure_to_rgb
+            from .view3d import update_validator_projection_view
+            figure = make_projection_validator_figure(result)
+            update_validator_projection_view(display, figure_to_rgb(figure))
+            figure.clear()
 
 
 def save_guided_validator_roi_views(frozen):
@@ -339,6 +375,8 @@ def close_query_views(frozen, *, keep_extremity_overview=False, keep_guided_vali
         frozen.pop(key, None)
 
 
+
+
 def show_dense_heatmaps(
     points_mm,
     score_result,
@@ -350,6 +388,10 @@ def show_dense_heatmaps(
     """Display score fields and an optional registered-RGB candidate view."""
     if not cfg.show_3d:
         return
+    options = {}
+    lite = score_result.get("lite_validator")
+    if lite is not None and lite.get("debug", False):
+        options["lite_debug_callback"] = lambda record: inspect_lite_candidate(points_mm, record, lite)
     show_dense_score_heatmaps(
         np.asarray(points_mm, dtype=np.float64),
         score_result,
@@ -357,7 +399,117 @@ def show_dense_heatmaps(
         marker_radius_mm=max(0.8, 0.65 * cfg.voxel_3d_mm),
         rgb_points_mm=rgb_points_mm,
         rgb_colors_rgb=rgb_colors_rgb,
+        **options,
     )
+
+
+def prepare_lite_validator_debug(points_mm, record, result):
+    from .plots import make_q10_validator_figure
+    context = result["context"]
+    payload = dict(record)
+    trace = record["trace"]
+    analysis = context["analysis_points_mm"]
+    payload["step_analysis_indices"] = [np.sort(np.asarray(context["analysis_tree"].query_ball_point(
+        p, record["radius_mm"] + 1e-8), dtype=np.int64)) for p in trace["positions_mm"]]
+    payload["step_points_mm"] = [analysis[ids].copy() for ids in payload["step_analysis_indices"]]
+    payload["step_q10_points_mm"] = [analysis[ids].copy() for ids in trace["support_analysis_indices"]]
+    payload["roi_analysis_indices"] = record.get("roi_analysis_indices")
+    if payload["roi_analysis_indices"] is None:
+        payload["roi_analysis_indices"] = np.sort(np.asarray(context["analysis_tree"].query_ball_point(
+            record["refined_position_mm"], record["radius_mm"] + 1e-8), dtype=np.int64))
+    payload["roi_analysis_points_mm"] = analysis[payload["roi_analysis_indices"]].copy()
+    payload["vector_points_mm"] = analysis[record.get("vector_analysis_indices", [])].copy()
+    payload.update({name: result[name] for name in (
+        "gap_link_deg", "gap_edge_span_deg",
+        "gap_tail_enabled", "gap_tail_bin_width_deg", "gap_tail_density_fraction",
+        "gap_tail_min_bin_count", "voxel_mm")})
+    return make_q10_validator_figure(payload)
+
+
+
+def _start_q10_debug_process(record):
+    from multiprocessing import get_context
+    from .query_ui import run_q10_debug_view_process
+    context = get_context("spawn")
+    connection, child = context.Pipe()
+    process = context.Process(target=run_q10_debug_view_process, args=(child, record), daemon=True)
+    try:
+        process.start()
+    except Exception:
+        connection.close()
+        raise
+    finally:
+        child.close()
+    closed = False
+
+    def close():
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+        try:
+            connection.send(("close", None))
+        except (EOFError, BrokenPipeError, OSError):
+            pass
+        process.join(timeout=.5)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=.5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=.5)
+        connection.close()
+
+    def poll():
+        if closed:
+            return False
+        try:
+            while connection.poll():
+                kind, detail = connection.recv()
+                if kind == "ready":
+                    controller["ready"] = True
+                if kind == "error":
+                    print(f"[Q10 3D] Display error: {detail}", flush=True)
+                    close()
+                    return False
+        except (EOFError, BrokenPipeError, OSError):
+            pass
+        if not process.is_alive():
+            if process.exitcode not in (None, 0):
+                print(f"[Q10 3D] Display process exited ({process.exitcode}); detector remains active.", flush=True)
+            close()
+            return False
+        return True
+
+    def set_step(value):
+        if not closed:
+            try:
+                connection.send(("step", int(value)))
+            except (EOFError, BrokenPipeError, OSError):
+                close()
+
+    controller = {"poll": poll, "close": close, "ready": False, "set_step": set_step}
+    return controller
+
+
+def open_lite_validator_debug(points_mm, record, result):
+    from .query_ui import open_lite_validator_debug_window
+    display = prepare_lite_validator_debug(points_mm, record, result)
+    spatial = None
+    try:
+        if result.get("kind") == "q10_antipodal":
+            spatial = _start_q10_debug_process(display.get("record", record))
+        return open_lite_validator_debug_window(display, spatial_view=spatial)
+    except Exception:
+        if spatial is not None:
+            spatial["close"]()
+        display["figure"].clear()
+        raise
+
+
+def inspect_lite_candidate(points_mm, record, result):
+    if result["debug"]:
+        return open_lite_validator_debug(points_mm, record, result)
 
 
 def show_detector_validator_results(points_mm, validation, cfg):
@@ -390,6 +542,8 @@ __all__ = [
     "prepare_cornervins_plane_views",
     "prepare_plane_edge_graph_view",
     "show_dense_heatmaps",
+    "prepare_lite_validator_debug", "open_lite_validator_debug",
+    "inspect_lite_candidate",
     "show_detector_validator_results",
     "show_total_results",
 ]

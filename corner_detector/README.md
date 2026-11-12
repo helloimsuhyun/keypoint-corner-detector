@@ -1,5 +1,41 @@
 # `corner_detector` package
 
+`settings.py`의 `fusion_mode`로 Fusion 방식을 선택한다.
+
+```python
+fusion_mode = "local_minimum"  # 현재 선택: CED × Normal PCA lambda1의 Min-Max Local Minimum
+# fusion_mode = "pca_ratio"     # 기존 CED × weighted PCA ratio
+local_minimum_tau = 0.005
+local_minimum_fusion_threshold = 0.2
+post_nms_lambda1_ratio_max = 0.20  # 현재 사용자 설정; None이면 OFF
+```
+
+기존 모드는 기존 `fusion_score_threshold`를 사용한다. 새 모드는 Lab과 같이
+`L=(주변 최대 lambda1 - 현재 lambda1)/(주변 최대-최소 lambda1 + tau*R_PCA²)`이며,
+Normal PCA 반경과 min/max 반경은 모두 PCA 반경이다. CED/bilateral 모드는 기존 설정을 따른다.
+
+```bash
+python3 -m corner_detector --source demo --mode detector --fusion-mode local_minimum
+python3 -m corner_detector --source realsense --mode detector --fusion-mode local_minimum --post-nms-lambda1-ratio-max 0.2
+```
+
+후단 게이트는 **NMS 후 CED 가중 PCA의 가장 큰 고유값 / PCA 반경² ≤ 상한**만 남긴다.
+같으면 통과하고 weighted PCA가 invalid이면 제외한다. NMS를 다시 하거나 탈락한 최대점의
+이웃을 대신 뽑지 않으며, 통과한 원래 scene ID만 Q10·후단 validator로 전달한다.
+새 점수에 쓰는 Normal PCA와 게이트에 쓰는 CED 가중 PCA는 구분한다.
+
+Lab의 **Demo 형상**을 카메라나 입력 파일 없이 detector에서 실행할 수 있다.
+
+```bash
+python3 -m corner_detector --source demo --mode detector
+python3 -m corner_detector --source demo --mode detector --no-3d-view
+```
+
+`corner_lab_open3d_cone.py`와 동일한 seed 7의 세 직교 평면·코너점 12,601개를
+메모리에서 생성한다. 원본 XYZ/RGB는 같고, voxel·CED·PCA·Fusion·NMS·Q10/MaxGap은
+현재 `settings.py`와 CLI 설정을 사용한다. Lab의 점수나 검출 설정을 복사하지 않는다.
+`--only`도 사용할 수 있다. 현재 demo는 detector 모드 전용이며 파일을 저장하지 않는다.
+
 `total`은 **detector → 모든 NMS query의 기존 validator → scene 최종 코너/기여 에지**를 자동 실행한다.
 
 ```bash
@@ -10,7 +46,7 @@ python3 -m corner_detector --mode total --source stl --input /path/to/model.stl
 최종 코너(빨강)/Boundary 에지(초록), 기여 공통 교선(청록), 실제 연장(노란 점선).
 5 mm validator voxel에서 코너 마커 반경은 4 mm, edge 막대 반경은 0.75 mm다.
 R은 재촬영, Q/Esc는 두 창 종료이며 `--no-3d-view`는 계산/로그만 실행한다.
-각 NMS query에서 기존 validator가 선택한 코너 하나를 모으고, 별도의 병합/NMS는 추가하지 않는다.
+각 NMS query에서 생성한 Corner 후보 전체를 모으고, query 간 병합/NMS는 추가하지 않는다.
 설정은 기존 detector·`validator_*` 값을 공유한다. `--no-validator-geometry`와 함께 사용할 수 없다.
 KD-tree를 공유하고 Before/After·organized 픽셀 매핑·후보별 긴 로그를 생략한다.
 중간 query 결과는 쌓지 않고 최종 기하/상태만 보관하며, 에지·코너 mesh는 색상별로 묶어 그린다.
@@ -24,62 +60,159 @@ detector와 validator의 Coarse Fusion 히트맵은 **프레임 전체 Coarse Fu
 공통 색상 상한으로 사용한다. 같은 점수는 같은 색으로 표시하며 invalid 점은 회색이다.
 Coarse 점수·threshold·NMS는 유지한다.
 
-`validator`는 **Coarse NMS → query 반경의 원본 점 crop → 로컬 voxel → guided RANSAC**을 실행한다.
-`validator_fine_*`와 Fine 재점수화·NMS·Top-K·추가 클릭은 제거했다. query 좌표는 그대로 유지한다.
+Detector는 voxel과 독립적인 CED 반경을 기준으로 PCA·bilateral 공간 범위를 설정한다.
+아래는 반경 관계를 설명하는 설정 예이며, 사용자가 조정한 실제 초기값은 `settings.py`를 따른다.
+
+```python
+centroid_radius_mm = 40.0  # CED 탐색 반경
+pca_radius_factor = 1.5              # PCA = CED × 1.5
+pca_ced_cutoff = 0.0                 # PCA 이웃의 원본 CED 최소값; lab처럼 쓰려면 0.10
+bilateral_mode = "ced"              # "ced": CED 필터 / "fusion": Fusion 필터 / "off": 생략
+bilateral_radius_factor = 1.0        # bilateral 반경 = CED × 1.0
+bilateral_sigma_spatial_factor = 0.5 # 공간 sigma = CED × 0.5
+bilateral_sigma_ced = 0.05           # 선택한 CED/Fusion 점수 차이의 sigma, 거리 단위 없음
+nms_radius_factor = 0.6              # NMS 반경 = CED × 0.6
+```
+
+CLI는 `--centroid-radius-mm`, `--pca-radius-factor`다. CED를 40 mm로 바꾸면
+기본 PCA는 60 mm, bilateral 반경은 40 mm, 공간 sigma는 20 mm가 된다.
+`bilateral_mode` / `--bilateral-mode`는 `ced`, `fusion`, `off` 중 하나를 선택한다.
+`ced`는 CED를 필터링한 뒤 PCA와 곱하고(기존 기본 동작), `fusion`은 원본 CED × PCA를
+모두 계산한 다음 **Fusion 점수 자체를 필터링**한다. `off`는 필터 없이 원본 CED × PCA다.
+PCA의 가중치는 세 모드 모두 원본 CED이며, threshold/NMS는 최종 Fusion을 사용한다.
+`pca_ced_cutoff` / `--pca-ced-cutoff`는 0~1의 무차원 값이다. PCA 이웃의 원본 CED가
+이 값 이상인 점만 가중 공분산에 사용한다(같으면 포함). 기본 0.0은 기존 양수 CED 지지를 유지하고,
+0.10이면 CED <0.10인 이웃을 제외한다. 쿼리 자신의 CED를 탈락시키는 조건은 아니며,
+남은 지지가 부족하면 PCA/Fusion이 invalid가 된다. CED 자체와 bilateral CED는 바꾸지 않는다.
+기존 `bilateral_enabled` boolean은 제거했다.
+공간 범위는 `--bilateral-radius-factor`, `--bilateral-sigma-spatial-factor`로 설정하며
+공간 mm 입력과 `None` 분기는 제거했다. `--bilateral-sigma-ced`는 선택한 CED/Fusion 점수 차이의
+허용 폭이므로 길이 배수로 바꾸지 않는다. 독립 입력 `--pca-radius-mm`는 제거했다.
+NMS도 `--nms-radius-factor`로 설정한다. CED 40 mm / factor 0.6이면 NMS 24 mm이며,
+factor 1.0이면 CED와 NMS 반경이 같다. `--nms-radius-mm`와 `None` 분기는 제거했다.
+최소 이웃 수는 `min_neighbors` 설정을 사용한다(현재 기본값 5). voxel은 점군 샘플링만 바꾸며
+탐색 반경을 자동으로 바꾸지 않는다. 공유 detector를 쓰는 validator/total의 Coarse 및
+ball/extremity 쿼리에도 적용한다. 기본 detector 자체의 다중 스케일 재검출은 수행하지 않는다.
+이전 `--centroid-radius-x`는 별도 fine 모드에서만 사용한다.
+
+Lite 전체 검사는 `q10_validator_enabled`로 제어하며, refine ON에서 **Q10 보정 → 단위구 RANSAC → 평면별 양방향성 검사**를 실행한다.
+
+```python
+q10_validator_enabled = True  # 전체 후단 검사
+q10_refine_enabled = True     # Q10 위치 보정 + q10_min_q10 게이트
+```
+
+`q10_refine_enabled=False` / `--no-q10-refine`면 **위치 보정과 최소 Q10 판정을 함께 생략**한다.
+Q10/CC 계산과 analysis voxel 스냅도 하지 않으며, 원래 NMS 좌표에서 RANSAC·MaxGap 검사만 실행한다.
+전체 검사를 끄려면 기존처럼 `q10_validator_enabled=False` / `--no-q10-validator`를 사용한다.
+Refine OFF에서도 MaxGap으로 탈락할 수 있고, 후단 plane validator에는 ACCEPT 후보만 전달한다.
+디버그에는 refine/min gate OFF를 표시하고 Q10 임계선과 방향 화살표는 그리지 않는다.
+
+아래 Q10 보정·최소 Q10 조건은 refine ON일 때 적용한다.
+전체 raw cloud를 `q10_voxel_mm`로 한 번 줄이고, 원래 NMS점을 중심으로 NMS 반경 안에서만 한 번 탐색한다.
+`q10_direction_mode`의 축으로 비가중 cosine Q10을 계산해 유효 voxel 중심점을 선택한다.
+최소 10개 support와 초기 support 수의 80% 이상을 요구하며, 검색 창은 이동하지 않는다.
+
+Q10의 구형 query CC는 `q10_refine_cc_enabled` / `--[no-]q10-refine-cc`로 제어한다.
+ON이면 전체 R 이웃의 non-self median NN × `q10_cc_factor`를 연결 반경으로 쓰고,
+실제 XYZ(mm)에서 query 성분을 선택한다. OFF이면 전체 R 이웃으로 Q10을 계산하며 NN/그래프를 생략한다.
+현재 기본값은 `settings.py`를 따른다. cloud·반경·CC·방향 설정이 같은 프레임에서 수치 결과를 캐시한다.
+
+최종 위치의 전체 R 이웃을 단위방향으로 바꿔 원점을 지나는 대원을 최대 3개 RANSAC으로 맞춘다.
+각 평면은 모든 방향을 독립적으로 분류하므로 교차점은 여러 평면에 소속될 수 있다.
+각 평면의 투영 각도를 원형으로 정렬해 `q10_gap_link_deg` 이내 이웃을 연결하고, 점이 가장 많은 그룹을 유지한다.
+현재 lab과 동일하게 10° bin을 사용해 **희소한 양 끝 bin만** 제거한다. 기준은
+`max(2, ceil(점이 있는 bin 점 수 중앙값 × 0.5))`이며, 내부의 희소한 bin은 유지한다.
+정리한 각도의 `span = 360° - 최대 빈 각도`를 계산한다.
+정리 후 점이 남아 있으면 개수·유지 비율 조건 없이 span으로 판정한다.
+어느 평면이든 **span ≥ `q10_gap_edge_span_deg`면 REJECT**한다. 모든 평면에 점이 남고
+span이 기준 미만이면 CORNER다. 평면을 못 찾거나 정리 후 빈 평면이 있으면 UNKNOWN이다.
+RANSAC 최소 지지점 조건은 유지하며, 최종 단계에 별도 3D CC는 없다.
+
+RANSAC 설정은 기존 `q10_sphere_*`를 유지한다(현재 detector 허용각은 settings.py 참조).
+새 판정은 `q10_gap_link_deg`, `q10_gap_edge_span_deg`,
+`q10_gap_tail_enabled`, `q10_gap_tail_bin_width_deg`,
+`q10_gap_tail_density_fraction`, `q10_gap_tail_min_bin_count`로 조절한다.
+CLI는 `--q10-gap-*`, tail 토글은 `--[no-]q10-gap-tail`이다.
+기존 `q10_gap_min_points`, `q10_gap_min_retained_fraction` 설정과 CLI는 삭제했다.
+기존 N+/N-/B 계산과 축 탐색, beta·양쪽 최소점·B 임계값·축 간격 설정/CLI는 삭제했다.
+수치 함수는 `spherical_antipodal.py`에 있으며 standalone GUI를 import하지 않는다.
+
+Refine ON에서 최종 품질은 보정 trace의 같은 Q10을 재사용한다. Q10 < `q10_min_q10`이면 **RANSAC 전에 즉시 탈락**한다(같으면 통과).
+Q10이 유효하지 않으면 RANSAC을 생략하고 INDETERMINATE로 유지한다. 미달점의 진단에는 `RANSAC SKIPPED`를 표시한다.
+Q10 또는 양방향성의 알려진 실패가 있으면 REJECT, 두 검사가 모두 통과하면 ACCEPT,
+나머지는 INDETERMINATE로 유지한다. 이전 `--q10-threshold` 별칭도 제거했다.
+원래 CED·PCA·Fusion·NMS 좌표/scene ID는 유지하고 수렴 좌표는 별도로 저장한다.
+
+```bash
+python3 -m corner_detector --mode detector --source realsense
+python3 -m corner_detector --mode detector --source realsense --q10-sphere-iterations 300 --q10-gap-link-deg 20 --q10-gap-edge-span-deg 160
+python3 -m corner_detector --mode detector --source realsense --no-q10-validator
+```
+
+진단은 저장된 모든 평면의 소속·유지 마스크를 읽는다. **P1 주황 / P2 초록 / P3 보라**이며,
+여러 평면 소속점은 **흰색**, 어느 소속 평면에서도 유지되지 않은 점은 **30% 밝기**로 표시한다.
+파랑은 평가 제외 voxel, 회색은 어느 평면에도 소속되지 않은 평가점이다.
+점·투영점·arc는 같은 평면색을 사용하고, Q10 방향 화살표만 청록색이다.
+최종 검사는 연결성 검사가 아니므로 이 색으로 3D 연결 여부를 주장하지 않는다.
+
+원래 NMS는 빨강, 수렴점은 주황, 최종 통과/탈락/판단불가는 초록/빨강/주황으로 표시한다.
+RealSense의 최종 결과창은 원래 RGB 점군 위에 **최종 통과 코너만 초록색**으로 표시한다.
+Q10 마커는 refinement 후 좌표를 사용하며, `--only`에서도 이 RGB 최종 뷰는 유지한다.
+각 마커를 클릭하면 단계 선택 슬라이더, 수렴 경로, 단위구·Q10 히스토그램,
+RANSAC 대원과 평면별 정리한 arc·span·유지점 수를 볼 수 있다.
+오른쪽 장미도는 평면별 원래 10° 각도 분포와 같은 평면색의 유지 arc, 어두운 × 표시의 제외점을 보여준다.
+대원·투영점·장미도의 색은 평면별로 같으며, 교차점은 해당하는 모든 평면에 표시한다.
+카드의 span/gap/유지점/전체·tail 제외점/판정은 저장값을 그대로 읽고, 근거가 부족하면 UNKNOWN이다.
+상단에는 Q10·양방향 검사를 구분하고 하단에는 각도·임계값·미소속/중복 소속 수를 표시한다.
+단계 슬라이더를 바꿔도 최종 평면 검사는 고정된다. 별도 native 3D 경로 창에서도 좌우 키로 단계를 본다.
+`--no-q10-debug`는 클릭 디버그를 끄고 수치 결과는 유지한다.
+
+```bash
+python3 -m corner_detector --mode detector --source realsense --only
+```
+
+`validator`는 **Coarse NMS → 설정에 따른 Q10 필터·수렴 → 시작점 반경의 원본 점 crop → 로컬 voxel → guided RANSAC**을 실행한다.
+`validator_fine_*`와 Fine 재점수화·NMS·Top-K·추가 클릭은 제거했다. validator 내부에서는 전달받은 시작 좌표를 유지한다.
 반경은 `validator_ransac_radius_x × validator_ransac_voxel_mm`, voxel은
 `validator_ransac_voxel_mm`으로 설정한다. 2번 패널에는 회색 voxel 입력 점군과 점 개수를 표시한다.
 RANSAC 뒤에는 support 재수집 → 평면 Hull →
-유한 교선·경계 에지 → 코너 검증을 실행한다. **서로 다른 방향의 유한 에지 두 개 이상**이
-만나고 원래 Coarse query 중심 gate를 통과하면 `ACCEPT`다. 최종 좌표는 `corner_position_mm`,
-지지 에지는 `corner_edges`와 `corner_edge_ids`에 저장된다. 터미널에도 좌표와 에지 끝점을 출력한다.
-에지·코너 주변의 Point Support 거리/최소 개수 검증은 제거했다. 평면 support와 Hull은 유지하며,
-최종 ACCEPT는 남은 기하 조건 통과를 뜻한다. `point_support_checked=False`로 구분한다.
-`validator`와 `total`의 최종 코너는 통과한 후보 중 공통 교선 포함 → 직선 피팅 RMS →
-필요한 총 외삽 길이 → query 거리 순으로 선택한다. 유효 교선 후보가 없으면 Boundary-only를 사용한다.
-Boundary-only도 모든 기여 Line으로 3D 최소제곱 위치를 계산하며, 처음 두 선의 중간점에 고정하지 않는다.
-기본 Line 거리/외삽/그룹 범위는 각각 5 mm, query gate는 10 mm다.
-기존 3-D 세 번째 패널은 RANSAC 점군·평면·법선만 표시한다. 후속 결과는 별도 창으로 나눈다.
+유한 교선·경계 에지 → Endpoint 기반 Corner 후보 생성·통합을 실행한다.
 
-- **5번:** 여러 평면 사이의 유한 교선 에지만 청록색으로 표시한다.
-- **4번:** Padded Hull → ROI clipping → TLS/Node 상태 → Before/After를 표시한다(기존 7번 이동).
-- **6번:** 선택한 NMS query 하나에 대해 2×2의 네 패널로 과정을 표시한다.
-  **6-1:** 평면별 원본 Boundary(RGB)와 공통 교선(청록).
-  **6-2:** 남은 구간(회색/청록), 제거 구간(자홍색 점선), overlap 거리 반경(파란 반투명 원통).
-  **6-3:** 실제 사용한 끝점 연장(노란 점선), 교점 후보(흰 점), LS 추정 코너와 선택된 기여 에지(초록).
-  **6-4:** 원본 raw 점군(회색) 위 선택 코너/Boundary 기여 에지(초록), 기여 공통 교선(청록), 실제 연장(노란 점선).
-  Boundary와 공통 교선의 기여 ID/개수를 따로 표시하며, 공통 교선이 없는 Boundary-only 코너도 명시한다.
-  LS 코너와 edge 직선 사이 잔차는 얇은 회색 연결선으로 구분한다.
+Corner 단계는 `validator_corner_graph.generate_corners(edges, min_angle_deg=20.0,
+corner_radius_mm=5.0)`로 독립 실행할 수 있다. 각도 필터 → 무한 직선 교점/최근접점 →
+양쪽 Edge의 가까운 Endpoint까지 거리 검사 → 공통 Edge·동일 Endpoint를 쓰는 후보 통합 순서다.
+통합 그룹의 모든 원래 교점 간 거리가 반경 이내여야 하며, Endpoint Gap이 가장 작은
+후보의 위치를 그대로 사용한다. 평균이나 추가 LS 보정은 없다.
 
-Validator는 선택한 후보 하나만 계산한다. 전체 scene을 자동 순회하지 않으며,
-창 순서는 4 → 5 → 6이고 6번이 마지막이다. 7번 창은 없다.
+사용자 조절값은 `validator_min_angle_deg`, `validator_corner_radius_mm` 두 개이며,
+CLI는 `--validator-min-angle-deg`, `--validator-corner-radius-mm`다. 독립 함수의 실험 초기값은
+20°/5 mm이고, 현재 작업 트리에서 사용자가 조정한 CLI 기본값 45°/15 mm는 유지한다.
+3D 꼬인 직선의 교차 오차는 Edge가 가진 기존 fitting tolerance로 검사한다.
+결과 `corners`는 `position`, `edge_ids`, `endpoint_ids`, `intersection_residual`,
+`endpoint_gap`을 담은 목록이다. Endpoint ID는 각 Edge의 0=start, 1=end다.
 
-교선과 중복되는 Boundary는 원래 TLS 직선을 보존한 채 구간 마스크로 제거한다.
-마스크 끝점은 코너로 사용하지 않는다. 교선 위 Vertex 그룹은 구속 LS로, 여러 교선의
-공통 Vertex는 3D Multi-Line LS로 정밀화하고 기존 각도·유한 구간·query gate를 다시 검사한다.
-독립 overlap/vertex 임계값은 `settings.py`의 `validator_edge_overlap_*`,
-`validator_vertex_*` 및 대응 CLI에서 조절한다.
+query 거리 gate, 별도 외삽 허용량, Vertex LS·랭킹·최종 하나 선택은 제거했다.
+모든 후보를 반환하며 `validation_status`는 `CANDIDATES` 또는 `NO_CANDIDATES`,
+`verified=False`다. 실제 물체 Corner인지에 대한 구조 검증은 하지 않는다.
+유효 Edge의 원래 양 끝 좌표를 사용하므로 ROI clipping이나 마스킹 관련 끝점도
+후보를 만들 수 있다. Edge 추출·TLS·겹침 마스킹 자체는 바꾸지 않는다.
 
-5번의 회색 Hull 외곽선은 패치 범위이며 확정된 에지가 아니다.
-4번은 ROI 구와 Node 상태를, 6번은 Edge 처리 및 최종 코너를 표시한다.
-각 창은 독립적으로 닫을 수 있고, 재촬영·종료 시 전체를 정리한다.
-`validator_roi_padding_mm=10.0`은 voxel과 독립적인 추가 반경이며,
-support 반경은 정확히 core+padding이다(현재 75+10=85 mm).
-기존 support 반경·voxel 배수 padding·바깥 경계 margin 설정은 제거했다.
-Padded Hull의 각 선분을 core와 평면의 정확한 단면 원으로 먼저 자른 뒤 TLS 병합한다.
-양 끝이 밖이어도 core를 관통하는 선분은 유지하고 ROI 테두리 연결선은 만들지 않는다.
-원래 내부 Hull Node는 ACTIVE, 잘라 생긴 Node는 INACTIVE이며 병합 후에도 상태를 유지한다.
-같은 평면의 코너는 공통 ACTIVE 끝점을 공유하는 이웃 Line에만 허용한다.
-평면 간 교선/LS 경로와 query gate 10 mm는 유지하며, 최종 코너도 core 안이어야 한다.
-4번 창은 선택한 query의 A: padded Hull, B: clipping, C: TLS/끝점 상태,
-D: core-only Before와 padded After를 보여준다. D의 카메라는 함께 움직인다.
-S를 누르면 `outputs/validator_roi/query_<id>_<timestamp>/`에
-`A.png`, `B.png`, `C.png`, `D_before_after.png`를 저장한다.
-Before 비교는 동일 RANSAC 모델/core voxel로 Hull·TLS·그래프만 추가 계산한다.
-유한 padding으로 가림 경계나 내부 Hull bridge까지 판별할 수는 없다.
-`--no-validator-geometry`는 기존 평면 추출까지만 실행한다.
+주 창은 기존 Coarse 선택·query-local voxel·RANSAC 평면 패널을 유지한다.
+보조 창은 4: Hull/clipping/TLS/Before–After, 5: 평면 교선,
+6: 원본 Edge → 겹침 마스킹 → Endpoint Corner 통합 → 원본 raw 점군 위 모든 후보다.
+Corner와 Boundary 기여 Edge는 초록, 공통 교선은 청록, Endpoint 연결은 노랑으로 표시한다.
+각 창은 중앙 visualization manager로 관리하며 숫자 결과를 변경하지 않는다.
+`total` 모드도 query당 모든 후보와 연결 Edge를 수집하고 query 간 통합은 하지 않는다.
+
+Padded Hull과 core clipping, 원래 ACTIVE/CLIPPED Node 정보 및 마스킹 구간은 보존한다.
+이 정보로 평면·Edge를 다시 계산하거나 Corner 단계에서 추가 구조 검증을 하지 않는다.
+`validator_roi_padding_mm`는 voxel과 독립적인 추가 반경이며 support는 core+padding이다.
+4번 Before/After 비교는 같은 RANSAC 모델로 Hull·TLS·Edge·Corner만 다시 계산한다.
+S-key PNG 저장과 R/Q/Esc 창 제어는 유지한다. `--no-validator-geometry`는 평면 추출까지만 실행한다.
 
 ```bash
-python3 -m corner_detector --mode validator --source stl --input /path/to/model.stl
+python3 -m corner_detector --mode detector --source stl --input /home/choisuhyun/keypoint-corner-detector/data/laser_pose_box.stl
 ```
 
 기존 평면·그래프 validator의 평면 추출 경로는 하나다.
@@ -101,6 +234,21 @@ query-core organized AHC
 평면 fitting은 exact query radius 안에서만 수행된다.
 
 이전의 multiscale Harris, SAH affinity graph, 독립 Edge3D 진단 경로는 삭제되었다.
+
+## 저장 데이터셋에서 detector / Lite 실행
+
+프로젝트 루트에서 실행한다. 단일 장면 또는 데이터셋 전체를 입력할 수 있다.
+
+```bash
+python3 -m corner_detector --source dataset --mode detector --input corner_dataset_tool/dataset/scene_0001
+python3 -m corner_detector --source dataset --mode detector --input corner_dataset_tool/dataset
+```
+
+기본은 저장된 ROI이며 `annotations.json`이 필요하다. 전체 점군은 `--dataset-region scene`,
+화면 없이 계산/로그만 실행하려면 `--no-3d-view`를 붙인다. `--only`, `--q10-*` 등 기존 검출기 설정을 공유한다.
+전체 폴더는 장면 번호순으로 처리하며, 화면을 닫으면 다음 장면으로 진행한다. 전체 중지는 `Ctrl+C`다.
+원본 XYZ/RGB·ROI·GT는 읽기만 하고 GT로 검출하거나 설정을 조절하지 않는다.
+결과는 화면/로그로 확인하며 파일 저장은 추가하지 않는다. 현재 dataset source는 detector 모드만 지원한다.
 
 ## CED Query → Local Extremity 가설 (`ball`)
 
@@ -254,3 +402,48 @@ python3 -m corner_detector.soft_voting_benchmark --seeds 30 --min-vote-fraction 
 
 게이트 제거는 낮은 vote의 가짜 peak와 NMS 비용도 늘린다. 기본값을 자동으로
 바꾸지 않으며, [두 실험의 결론](../outputs/soft_voting_20261029/CONCLUSION.md)을 함께 읽는다.
+
+Q10 방향축은 `settings.py`의 `q10_direction_mode` 또는
+`--q10-direction-mode unit_mean|unit_median|centroid`로 선택한다.
+기본 `unit_mean`은 기존 단위방향 벡터 평균, `unit_median`은 단위방향 벡터의
+성분별 중앙값, `centroid`는 같은 Q10 이웃 점군의 원래 XYZ 무게중심 방향이다.
+각 축을 정규화한 뒤 기존 cosine 하위 10% 값을 계산한다. 무게중심 모드도
+분위수 자체에는 가중치를 추가하지 않는다. 축이 정의되지 않으면 기존처럼
+INDETERMINATE로 처리한다. 선택 축은 캐시되어 최종 Q10 판정에도 그대로 쓰인다.
+클릭 디버그의 실제 voxel 점군에는 선택 위치에서 R 길이의 굵은 청록색 화살표가
+표시되며, step 변경에 따라 움직인다. 화살표 길이는 시각화용 R이다.
+
+별도 `--mode heatmap`과 Weighted Local Cone 설정/분기/전용 화면은 제거했다.
+detector의 CED·PCA·Fusion 계산, NMS 및 점수 heatmap 화면은 유지한다.
+
+`validator`와 `total`도 detector와 같은 Q10 ON/OFF 및 세부 설정을 따른다.
+Q10 ON이면 ACCEPT 후보만 수렴 좌표를 validator 시작점으로 쓴다.
+REJECT와 INDETERMINATE는 제외하며, ACCEPT가 없으면 validator 후보도 0개다. Q10 OFF이면 원래 NMS 좌표다.
+원래 scene ID·점군·NMS 배열은 유지하고 별도 시작 좌표를 전달한다.
+클릭 마커·픽킹·ROI·RANSAC 모두 같은 시작 좌표를 사용한다.
+
+```bash
+python3 -m corner_detector --mode validator --source realsense --q10-validator
+python3 -m corner_detector --mode total --source realsense --q10-validator
+python3 -m corner_detector --mode validator --source realsense --no-q10-validator
+```
+
+새 `new-validator` 모드는 기존 validator와 같은 raw crop → local voxel → guided
+RANSAC → support/CC → 평면별 2D UV 투영까지만 실행한다. Convex Hull·Edge·Corner는
+계산하지 않으며, 별도 창에서 평면별 U/V(mm) 점군을 확인한다. 기존 validator는 유지한다.
+
+```bash
+python3 -m corner_detector --mode new-validator --source realsense
+python3 -m corner_detector --mode new-validator --source realsense \
+  --new-validator-ransac-voxel-mm 5 --new-validator-ransac-radius-x 15 \
+  --new-validator-roi-padding-mm 10 --new-validator-plane-connect-radius-x 4
+```
+
+`settings.py`의 `new_validator_*` 12개 파라미터는 기존 `validator_*`와 독립적이며,
+초기값만 현재 validator 값과 같다. `*_x`는 새 모드의 RANSAC voxel에 대한 배수다.
+detector/Q10 설정은 공유하며 Q10 ON일 때 최종 ACCEPT의 수렴점만 시작점으로 쓴다.
+각 평면의 2D query→무게중심 방향을 기준으로 cosine Q10을 계산한다.
+공통 `new_validator_min_q10` / `--new-validator-min-q10`은 초기값 0.10이다.
+평면이 1/2/3개이면 각각 1/2/3개 모두 Q10 >= 임계값이어야 ACCEPT다.
+하나라도 미달이면 REJECT, 점 부족·무게중심 방향 미정·평면 0개는 판단 불가로 통과하지 않는다.
+이 판정은 2D 분포 검사이며 Hull·Edge·Corner는 계속 계산하지 않는다.
