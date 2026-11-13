@@ -1,8 +1,0 @@
-{
-  "mode": "synthetic",
-  "units": "mm",
-  "noise_sigma_mm": 0.38199999928474426,
-  "roughness_amplitude_mm": 4.375,
-  "roughness_wavelength_mm": 65.06500244140625,
-  "seed": 7
-}

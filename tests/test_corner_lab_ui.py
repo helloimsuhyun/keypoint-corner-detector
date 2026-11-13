@@ -39,6 +39,14 @@ def cached_comparison():
         median_minimum_scores=np.array([.7, .4, .2, 0., .1, .3, .6]),
         ced_median_min_scores=np.array([.4, .2, .1, 0., .05, .1, .3]),
         ced_median_min_maxima=np.array([0]), median_contrast_tau=.005,
+        harris_scores=np.array([0., .01, 0., .04, .005, .002, 0.]), harris_maxima=np.array([3]),
+        local_minimum_radius_mm=None, median_minimum_radius_mm=None,
+        ced_normal_component=np.array([0., .1, .3, .2, .05, .4, np.nan]),
+        ced_tangent_component=np.array([.3, .1, .2, .5, 0., .05, np.nan]),
+        ced_inverse_std_scores=np.array([.01, .02, .05, .03, .015, 0., np.nan]),
+        ced_inverse_std_maxima=np.array([2]), inverse_std_epsilon_mm2=1e-6,
+        inverse_std_activation='none', inverse_std_raw_scores=np.empty(0),
+        pca_neighbor_counts=np.array([4, 5, 6, 7, 6, 5, 4]), inverse_std_neighbor_medians=np.empty(0),
         fusion_maxima=np.array([1]), ced_maxima=np.array([2]), ratio_maxima=np.array([3]),
         weighted_lambda1_minima=np.array([4]), lambda1_minima=np.array([5]),
         match_ced_ratio=((2, 3, 1.),), match_ced_weighted_l1=((2, 4, 2.),),
@@ -56,14 +64,15 @@ class CornerLabUiTest(unittest.TestCase):
         window._overlay = lambda name, geometry, material: rendered.__setitem__(name, geometry)
         return window, result, rendered
 
-    def test_all_nine_heatmaps_use_their_cached_field_and_corresponding_extrema(self):
+    def test_all_ten_heatmaps_use_their_cached_field_and_corresponding_extrema(self):
         window, result, rendered = self.comparison_window()
         saved = copy.deepcopy(result.__dict__)
         expected = (('fusion_scores', 1, 'MAX'), ('ced_scores', 2, 'MAX'),
                     ('ced_weighted_ratio', 3, 'MAX'), ('ced_weighted_lambda1_mm2', 4, 'MIN'),
                     ('normal_lambda1_mm2', 5, 'MIN'), ('ced_local_min_scores', 3, 'MAX'),
                     ('local_minimum_scores', None, 'HEATMAP'),
-                    ('ced_median_min_scores', 0, 'MAX'), ('median_minimum_scores', None, 'HEATMAP'))
+                    ('ced_median_min_scores', 0, 'MAX'), ('median_minimum_scores', None, 'HEATMAP'),
+                    ('harris_scores', 3, 'MAX'))
         with (patch.object(lab, 'compute_full_scene_fusion_pca_comparison', side_effect=AssertionError('display recompute')),
               patch.object(lab, 'compute_local_fusion_pca_comparison', side_effect=AssertionError('display recompute'))):
             for index, (key, point_id, extreme) in enumerate(expected):

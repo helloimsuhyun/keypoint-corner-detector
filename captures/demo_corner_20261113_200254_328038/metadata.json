@@ -1,0 +1,12 @@
+{
+  "mode": "synthetic",
+  "units": "mm",
+  "noise_sigma_mm": 1.0880000591278076,
+  "roughness_amplitude_mm": 0.0,
+  "roughness_wavelength_mm": 20.0,
+  "corner_fillet_1face_radius_mm": 0.0,
+  "corner_fillet_2face_radius_mm": 0.0,
+  "corner_fillet_3face_radius_mm": 0.0,
+  "edge_fillet_radius_mm": 0.0,
+  "seed": 7
+}

@@ -17,7 +17,7 @@ from test_corner_lab_ui import lab, make_window, cached_comparison
 def comparison():
     values = vars(cached_comparison()).copy()
     values.update(matches=(), center_mm=np.zeros(3), view_radius_mm=40.,
-                  sigma_ced=.05, tau=.5, ced_cutoff=.1)
+                  tau=.5, ced_cutoff=.1)
     return lab.FusionPcaExtremaComparison(**values)
 
 

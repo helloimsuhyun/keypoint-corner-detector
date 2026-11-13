@@ -33,6 +33,26 @@ class _LazyOpen3D:
 o3d = _LazyOpen3D()
 
 
+def open_nms_peak_view(rgb, *, display=None):
+    """Reuse a native image window in the caller's already initialized GUI app."""
+    import open3d.visualization.gui as gui
+    if display is None or display['closed']:
+        window = gui.Application.instance.create_window('NMS | score relative to neighbors', 1210, 572)
+        image = gui.ImageWidget()
+        window.add_child(image)
+        display = dict(window=window, image=image, closed=False)
+        def layout(_):
+            image.frame = window.content_rect
+        def closed():
+            display['closed'] = True
+            return True
+        window.set_on_layout(layout)
+        window.set_on_close(closed)
+    display['image'].update_image(o3d.geometry.Image(np.ascontiguousarray(rgb)))
+    display['window'].set_needs_layout()
+    return display
+
+
 def synchronize_baseline_cameras(widgets, previous=None):
     """Copy rotation, pan and zoom from whichever comparison panel changed."""
     def signature(widget):

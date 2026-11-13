@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "corners": [
+    {
+      "id": "corner_001",
+      "point_index": 12600
+    },
+    {
+      "id": "corner_002",
+      "point_index": 10569
+    },
+    {
+      "id": "corner_003",
+      "point_index": 5778
+    },
+    {
+      "id": "corner_004",
+      "point_index": 7713
+    },
+    {
+      "id": "corner_005",
+      "point_index": 9295
+    },
+    {
+      "id": "corner_006",
+      "point_index": 10741
+    },
+    {
+      "id": "corner_007",
+      "point_index": 3572
+    }
+  ]
+}

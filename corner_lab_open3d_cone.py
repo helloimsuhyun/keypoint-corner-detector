@@ -2,13 +2,14 @@
 """RealSense corner lab: Q10, RANSAC, four full-scene extrema NMS modes, PCA fields.
 
 Commands:
-  python corner_lab_robust_max_gap.py --demo
+  python corner_lab_open3d_cone.py --demo
   python corner_lab_open3d_cone.py --camera
   python corner_lab_open3d_cone.py --open /path/to/cloud.npz
   python corner_lab_open3d_cone.py --scene 2
   python corner_lab_open3d_cone.py --scene 0002 --dataset /home/choisuhyun/keypoint-corner-detector/corner_dataset_tool/dataset
 
 Ctrl+Left click a 3D point to label it / inspect a saved corner.
+In Heatmap/NMS, Ctrl+Left click a visible NMS point to plot its cached neighborhood scores.
 All 3D positions, vectors, and neighborhood radii use millimetres.
 The spherical view uses unit directions, so its coordinates are dimensionless.
 The histogram shows cos(theta) = unit-direction dot normalized mean direction,
@@ -41,7 +42,11 @@ import traceback
 import numpy as np
 
 from pointcloud_inputs.demo import make_demo_cloud
-import open3d as o3d
+from corner_detector.harris3d import compute_harris3d
+from corner_detector.direction_fields import pca_normal_direction, ced_component_magnitudes
+from pointcloud_inputs.visualization import require_open3d
+
+o3d = require_open3d()
 import open3d.visualization.gui as gui
 import open3d.visualization.rendering as rendering
 
@@ -1325,6 +1330,13 @@ def compute_full_scene_lambda1(points_mm: np.ndarray,
 
 # ---- Local diagnostics: independent extrema in four detection strategies ----
 
+INVERSE_STD_ACTIVATIONS = (
+    ('none', 'None (raw r)'),
+    ('exponential', 'Exponential: 1-exp(-r)'),
+    ('median_density', 'Median density: 1-exp(-r*N_median/N)'),
+)
+
+
 @dataclass(frozen=True)
 class FusionPcaExtremaComparison:
     positions_mm: np.ndarray
@@ -1339,11 +1351,10 @@ class FusionPcaExtremaComparison:
     match_radius_mm: float
     ced_radius_mm: float
     pca_radius_mm: float
-    sigma_ced: float
     tau: float
     ced_cutoff: float
     # Additional fields, all sampled at exactly the same local voxel positions.
-    ced_scores: np.ndarray  # bilateral Raw CED, i.e. the CED used by Fusion
+    ced_scores: np.ndarray  # Raw normalized centroid distance, used by all CED-based scores.
     ced_weighted_ratio: np.ndarray  # lambda2_weighted / lambda1_weighted
     ced_weighted_lambda1_mm2: np.ndarray
     ced_maxima: np.ndarray
@@ -1360,11 +1371,161 @@ class FusionPcaExtremaComparison:
     ced_median_min_scores: np.ndarray = field(default_factory=lambda: np.empty(0))
     ced_median_min_maxima: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
     median_contrast_tau: float = .005
+    harris_scores: np.ndarray = field(default_factory=lambda: np.empty(0))
+    harris_maxima: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
+    local_minimum_radius_mm: float | None = None
+    median_minimum_radius_mm: float | None = None
+    ced_normal_component: np.ndarray = field(default_factory=lambda: np.empty(0))
+    ced_tangent_component: np.ndarray = field(default_factory=lambda: np.empty(0))
+    ced_inverse_std_scores: np.ndarray = field(default_factory=lambda: np.empty(0))
+    ced_inverse_std_maxima: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
+    # Independent NMS mode: same normalized CED, but CED-weighted PCA lambda1.
+    ced_weighted_inverse_std_scores: np.ndarray = field(default_factory=lambda: np.empty(0))
+    ced_weighted_inverse_std_maxima: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
+    ced_weighted_inverse_std_raw_scores: np.ndarray = field(default_factory=lambda: np.empty(0))
+    inverse_std_epsilon_mm2: float = 1e-6
+    inverse_std_activation: str = 'none'
+    inverse_std_raw_scores: np.ndarray = field(default_factory=lambda: np.empty(0))
+    pca_neighbor_counts: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
+    inverse_std_neighbor_medians: np.ndarray = field(default_factory=lambda: np.empty(0))
+    # Diagnostic only: unweighted PCA lambda2/lambda1 at the same query positions.
+    normal_pca_ratio: np.ndarray = field(default_factory=lambda: np.empty(0))
+    normal_ratio_maxima: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
+
+
+def compute_inverse_std_fusion(ced_scores, lambda1_mm2, pca_radius_mm, epsilon_mm2=1e-6):
+    """Dimensionless score: (||mu_CED - p|| / R_CED) / (sqrt(lambda1 + eps) / R_PCA).
+
+    ced_scores is already ||mu_CED - p|| / R_CED at its own search radius.
+    lambda1_mm2 is the selected (unweighted OR CED-weighted) PCA largest eigenvalue at R_PCA.
+    Epsilon is expressed in mm² and normalized with the eigenvalue by R_PCA².
+    """
+    ced = np.asarray(ced_scores, dtype=np.float64)
+    eigenvalues = np.asarray(lambda1_mm2, dtype=np.float64)
+    if ced.ndim != 1 or eigenvalues.shape != ced.shape:
+        raise ValueError('Inverse-std score requires aligned 1-D CED and lambda1 arrays')
+    if not np.isfinite(pca_radius_mm) or pca_radius_mm <= 0:
+        raise ValueError('PCA radius must be finite and >0 mm')
+    if not np.isfinite(epsilon_mm2) or epsilon_mm2 <= 0:
+        raise ValueError('Inverse-std epsilon must be finite and >0 mm²')
+    scores = np.full(len(ced), np.nan)
+    valid = np.isfinite(ced) & np.isfinite(eigenvalues) & (ced >= 0.) & (eigenvalues >= 0.)
+    normalized_pca_std = np.sqrt((eigenvalues[valid] + epsilon_mm2) / (pca_radius_mm ** 2))
+    scores[valid] = ced[valid] / normalized_pca_std
+    return scores
+
+
+def apply_inverse_std_activation(raw_scores, activation='none', *, neighbor_counts=None, median_counts=None):
+    """Select the pointwise activation applied before this criterion's MAX NMS."""
+    if activation not in dict(INVERSE_STD_ACTIVATIONS):
+        raise ValueError('Unknown inverse-std activation')
+    raw = np.asarray(raw_scores, dtype=np.float64)
+    if raw.ndim != 1:
+        raise ValueError('Activation requires a 1-D raw score array')
+    valid = np.isfinite(raw) & (raw >= 0.)
+    result = np.full(len(raw), np.nan)
+    if activation == 'none':
+        result[valid] = raw[valid]
+        return result
+    gain = np.ones(len(raw))
+    if activation == 'median_density':
+        counts, medians = np.asarray(neighbor_counts), np.asarray(median_counts)
+        if counts.shape != raw.shape or medians.shape != raw.shape:
+            raise ValueError('Median-density activation requires aligned counts and medians')
+        valid &= np.isfinite(counts) & np.isfinite(medians) & (counts > 0.) & (medians > 0.)
+        gain[valid] = medians[valid]/counts[valid]
+    elif activation != 'exponential':
+        raise ValueError('Activation is listed but has no implementation')
+    with np.errstate(over='ignore'):
+        result[valid] = -np.expm1(-raw[valid]*gain[valid])
+    return result
+
+
+def compute_neighbor_count_medians(positions_mm, neighbor_counts, radius_mm, is_cancelled=None):
+    """Median counts of nearby evaluated queries, excluding the current query row."""
+    xyz, counts = np.asarray(positions_mm), np.asarray(neighbor_counts)
+    if (xyz.ndim != 2 or xyz.shape[1] != 3 or not np.isfinite(xyz).all()
+            or counts.shape != (len(xyz),)):
+        raise ValueError('Density medians require finite (N,3) XYZ and aligned counts')
+    if not np.isfinite(radius_mm) or radius_mm <= 0:
+        raise ValueError('Density median radius must be finite and >0 mm')
+    medians = np.full(len(xyz), np.nan)
+    if not len(xyz):
+        return medians
+    tree = _eigen_field_tree(xyz)
+    positive = np.isfinite(counts) & (counts > 0.)
+    for i, point in enumerate(xyz):
+        if i % 256 == 0 and is_cancelled is not None and is_cancelled():
+            return None
+        ids = _eigen_field_radius(tree, point, radius_mm)
+        ids = ids[(ids != i) & positive[ids]]
+        if len(ids):
+            medians[i] = np.median(counts[ids])
+    return medians
+
+
+INVERSE_STD_SCORE_KEYS = ('ced_inverse_std_scores', 'ced_weighted_inverse_std_scores')
+
+
+def comparison_score_units(result, value_key, units):
+    # Both inverse-standard-deviation scores are dimensionless before/after activation.
+    return '' if value_key in INVERSE_STD_SCORE_KEYS else units
+
+
+def with_inverse_std_fusion(result, epsilon_mm2=1e-6, *, local_mode=False, is_cancelled=None,
+                            activation='none'):
+    """Compute TWO independent CED/normalized-PCA-std scores with separate MAX NMS.
+
+    The first uses unweighted lambda1; the second uses CED-weighted lambda1.
+    Both use the same CED/R_CED numerator, R_PCA² normalization, epsilon,
+    activation, and NMS radius.  Weighted PCA uses the already cached, cutoff-
+    filtered covariance eigenvalue; it does not change the original score.
+    """
+    from dataclasses import replace
+    if result is None:
+        return None
+    medians = np.empty(0)
+    if activation == 'median_density':
+        medians = compute_neighbor_count_medians(result.positions_mm, result.pca_neighbor_counts,
+                                                 result.pca_radius_mm, is_cancelled)
+        if medians is None:
+            return None
+
+    def score_and_nms(eigenvalues):
+        raw = compute_inverse_std_fusion(result.ced_scores, eigenvalues,
+                                         result.pca_radius_mm, epsilon_mm2)
+        scores = apply_inverse_std_activation(raw, activation,
+                                              neighbor_counts=result.pca_neighbor_counts,
+                                              median_counts=medians)
+        if local_mode:
+            maxima = find_local_scalar_extrema(result.positions_mm, scores, result.nms_radius_mm,
+                                               result.center_mm, result.view_radius_mm, maximize=True)
+        else:
+            maxima = find_full_scene_scalar_extrema(result.positions_mm, scores, result.nms_radius_mm,
+                                                    maximize=True, is_cancelled=is_cancelled)
+        if maxima is None:
+            return None
+        return raw, scores, maxima[scores[maxima] > 0.]
+
+    normal = score_and_nms(result.normal_lambda1_mm2)
+    if normal is None:
+        return None
+    weighted = score_and_nms(result.ced_weighted_lambda1_mm2)
+    if weighted is None:
+        return None
+    return replace(result,
+                   ced_inverse_std_scores=normal[1], ced_inverse_std_maxima=normal[2],
+                   inverse_std_raw_scores=normal[0],
+                   ced_weighted_inverse_std_raw_scores=weighted[0],
+                   ced_weighted_inverse_std_scores=weighted[1],
+                   ced_weighted_inverse_std_maxima=weighted[2],
+                   inverse_std_epsilon_mm2=float(epsilon_mm2), inverse_std_activation=activation,
+                   inverse_std_neighbor_medians=medians)
 
 
 def compute_local_minimum_fusion(positions_mm, lambda1_mm2, ced_scores,
                                  radius_mm, contrast_tau=.005, is_cancelled=None,
-                                 *, statistic='max'):
+                                 *, statistic='max', regularization_radius_mm=None):
     """Local max/median contrast above the minimum; S=CED*L on measured voxels."""
     if statistic not in ('max', 'median'):
         raise ValueError('Local minimum statistic must be max or median')
@@ -1376,7 +1537,10 @@ def compute_local_minimum_fusion(positions_mm, lambda1_mm2, ced_scores,
         raise ValueError('Minimum-fusion requires finite (N,3) XYZ and aligned scalar arrays')
     if not np.isfinite([radius_mm, contrast_tau]).all() or min(radius_mm, contrast_tau) <= 0:
         raise ValueError('Minimum-fusion radius and contrast tau must be finite and > 0')
-    regularizer = float(contrast_tau) * float(radius_mm) * float(radius_mm)
+    scale_radius = radius_mm if regularization_radius_mm is None else regularization_radius_mm
+    if not np.isfinite(scale_radius) or scale_radius <= 0:
+        raise ValueError('Minimum-fusion regularization radius must be finite and > 0')
+    regularizer = float(contrast_tau) * float(scale_radius) * float(scale_radius)
     if not np.isfinite(regularizer) or regularizer <= 0:
         raise ValueError('Minimum-fusion tau * R² must be finite and > 0')
     minimum = np.full(len(xyz), np.nan)
@@ -1401,12 +1565,17 @@ def compute_local_minimum_fusion(positions_mm, lambda1_mm2, ced_scores,
 
 def with_local_minimum_fusion(result: FusionPcaExtremaComparison, contrast_tau=.005,
                               *, local_mode=False, is_cancelled=None,
-                              median_contrast_tau=.005):
+                              median_contrast_tau=.005, local_minimum_radius_mm=None,
+                              median_minimum_radius_mm=None):
     """Attach a separate Normal-PCA minimum score/MAX NMS; retain old fields."""
     from dataclasses import replace
+    local_radius = result.pca_radius_mm if local_minimum_radius_mm is None else float(local_minimum_radius_mm)
+    median_radius = result.pca_radius_mm if median_minimum_radius_mm is None else float(median_minimum_radius_mm)
+    if not np.isfinite([local_radius, median_radius]).all() or min(local_radius, median_radius) <= 0:
+        raise ValueError('Min-Max and Median neighborhood radii must be finite and > 0')
     fields = compute_local_minimum_fusion(
         result.positions_mm, result.normal_lambda1_mm2, result.ced_scores,
-        result.pca_radius_mm, contrast_tau, is_cancelled)
+        local_radius, contrast_tau, is_cancelled, regularization_radius_mm=result.pca_radius_mm)
     if fields is None:
         return None
     minimum, scores = fields
@@ -1424,7 +1593,8 @@ def with_local_minimum_fusion(result: FusionPcaExtremaComparison, contrast_tau=.
     maxima = maxima[scores[maxima] > 0]
     median_fields = compute_local_minimum_fusion(
         result.positions_mm, result.normal_lambda1_mm2, result.ced_scores,
-        result.pca_radius_mm, median_contrast_tau, is_cancelled, statistic='median')
+        median_radius, median_contrast_tau, is_cancelled, statistic='median',
+        regularization_radius_mm=result.pca_radius_mm)
     if median_fields is None:
         return None
     median_minimum, median_scores = median_fields
@@ -1442,7 +1612,31 @@ def with_local_minimum_fusion(result: FusionPcaExtremaComparison, contrast_tau=.
     return replace(result, local_minimum_scores=minimum, ced_local_min_scores=scores,
                    ced_local_min_maxima=maxima, contrast_tau=float(contrast_tau),
                    median_minimum_scores=median_minimum, ced_median_min_scores=median_scores,
-                   ced_median_min_maxima=median_maxima, median_contrast_tau=float(median_contrast_tau))
+                   ced_median_min_maxima=median_maxima, median_contrast_tau=float(median_contrast_tau),
+                   local_minimum_radius_mm=float(local_radius), median_minimum_radius_mm=float(median_radius))
+
+
+def with_harris3d(result, *, support_points_mm=None, query_indices=None,
+                  local_mode=False, is_cancelled=None):
+    """Attach independent Harris responses/MAX NMS without changing cached fields."""
+    from dataclasses import replace
+    if result is None:
+        return None
+    support = result.positions_mm if support_points_mm is None else support_points_mm
+    scores = compute_harris3d(support, result.pca_radius_mm, query_indices=query_indices,
+                              is_cancelled=is_cancelled)
+    if scores is None:
+        return None
+    if local_mode:
+        maxima = find_local_scalar_extrema(result.positions_mm, scores, result.nms_radius_mm,
+                                           result.center_mm, result.view_radius_mm, maximize=True)
+    else:
+        maxima = find_full_scene_scalar_extrema(result.positions_mm, scores, result.nms_radius_mm,
+                                                maximize=True, is_cancelled=is_cancelled)
+    if maxima is None:
+        return None
+    maxima = maxima[scores[maxima] > 1e-12]
+    return replace(result, harris_scores=scores, harris_maxima=maxima)
 
 
 def find_local_scalar_extrema(positions_mm, scores, neighborhood_radius_mm,
@@ -1532,8 +1726,8 @@ def threshold_extrema_comparison(result: FusionPcaExtremaComparison,
         if extrema_key is None or value_key not in thresholds:
             continue
         limit = float(thresholds[value_key])
-        if not np.isfinite(limit) or limit < 0:
-            raise ValueError('NMS thresholds must be finite and >= 0')
+        if not np.isfinite(limit):
+            raise ValueError('NMS thresholds must be finite')
         ids = getattr(result, extrema_key)
         values = getattr(result, value_key)[ids]
         keep = np.isfinite(values) & (values >= limit if extreme == 'MAX' else values <= limit)
@@ -1631,14 +1825,18 @@ def compute_full_scene_fusion_pca_comparison(points_mm,
                                               voxel_mm=5.0,
                                               nms_radius_mm=10.0,
                                               match_radius_mm=8.0,
-                                              sigma_ced=0.05, tau=0.5,
+                                              tau=0.5,
                                               ced_cutoff=0.10,
                                               min_neighbors=12,
                                               is_cancelled=None,
                                               progress_callback=None,
                                               max_evaluation_points=120000,
                                               contrast_tau=.005,
-                                              median_contrast_tau=.005):
+                                              median_contrast_tau=.005,
+                                              local_minimum_radius_mm=None,
+                                              median_minimum_radius_mm=None,
+                                              inverse_std_epsilon_mm2=1e-6,
+                                              inverse_std_activation='none'):
     """Calculate four extrema methods at every voxel across the complete scene.
 
     Input points are already voxel-downsampled once from the ORIGINAL scene.
@@ -1651,18 +1849,21 @@ def compute_full_scene_fusion_pca_comparison(points_mm,
     if not np.isfinite(xyz).all() or n < min_neighbors:
         raise ValueError('Whole scene has too few valid voxel points')
     if min(pca_radius_mm, ced_radius_mm, voxel_mm, nms_radius_mm,
-           match_radius_mm, sigma_ced, tau) <= 0:
+           match_radius_mm, tau) <= 0:
         raise ValueError('Voxel/NMS/matching/PCA/CED parameters must be positive')
     if n > max_evaluation_points:
         raise ValueError(f'Scene contains {n:,} voxel points (safe limit '
                          f'{max_evaluation_points:,}). Increase full-scene voxel size.')
     tree = _eigen_field_tree(xyz)
     raw_ced = np.full(n, np.nan)
-    bilateral_ced = np.full(n, np.nan)
     fusion = np.full(n, np.nan)
     ratio = np.full(n, np.nan)
     weighted_l1 = np.full(n, np.nan)
     normal_l1 = np.full(n, np.nan)
+    normal_ratio = np.full(n, np.nan)
+    ced_vectors = np.full((n, 3), np.nan)
+    normal_directions = np.full((n, 3), np.nan)
+    pca_counts = np.zeros(n, dtype=np.int64)
 
     def report(stage, index):
         if progress_callback is not None and index % 1500 == 0:
@@ -1673,34 +1874,26 @@ def compute_full_scene_fusion_pca_comparison(points_mm,
             return None
         ids = _eigen_field_radius(tree, p, ced_radius_mm)
         if len(ids) >= 3:
-            raw_ced[i] = float(np.linalg.norm(xyz[ids].mean(axis=0) - p)
-                               / ced_radius_mm)
+            ced_vectors[i] = xyz[ids].mean(axis=0)-p
+            raw_ced[i] = float(np.linalg.norm(ced_vectors[i])/ced_radius_mm)
         report('Raw CED', i + 1)
     ced_for_weights = np.nan_to_num(raw_ced, nan=0.0)
 
     for i, p in enumerate(xyz):
         if i % 256 == 0 and is_cancelled is not None and is_cancelled():
             return None
-        if np.isfinite(raw_ced[i]):
-            ids = _eigen_field_radius(tree, p, ced_radius_mm)
-            distances_sq = np.sum((xyz[ids] - p) ** 2, axis=1)
-            diff = ced_for_weights[ids] - ced_for_weights[i]
-            w = np.exp(-0.5 * distances_sq / ced_radius_mm**2
-                       - 0.5 * (diff / sigma_ced)**2)
-            sw = float(w.sum())
-            if sw > 0:
-                bilateral_ced[i] = float(w @ ced_for_weights[ids] / sw)
-        report('Bilateral CED', i + 1)
-
-    for i, p in enumerate(xyz):
-        if i % 256 == 0 and is_cancelled is not None and is_cancelled():
-            return None
         ids = _eigen_field_radius(tree, p, pca_radius_mm)
+        pca_counts[i] = len(ids)
         if len(ids) < min_neighbors:
             continue
         pts = xyz[ids]
         dd = pts - pts.mean(axis=0)
-        normal_l1[i] = float(np.linalg.eigvalsh(dd.T @ dd / len(pts))[-1])
+        covariance = dd.T @ dd / len(pts)
+        normal_eig = np.linalg.eigvalsh(covariance)
+        normal_l1[i] = float(normal_eig[-1])
+        if normal_eig[-1] > 1e-5 * pca_radius_mm**2:
+            normal_ratio[i] = float(np.clip(normal_eig[-2] / normal_eig[-1], 0., 1.))
+        normal_directions[i] = pca_normal_direction(covariance)
         weights = ced_for_weights[ids].copy()
         weights[weights < ced_cutoff] = 0.
         keep = weights > 0
@@ -1717,16 +1910,13 @@ def compute_full_scene_fusion_pca_comparison(points_mm,
         weighted_l1[i] = float(eig[-1])
         if eig[-1] > 1e-5 * pca_radius_mm**2:
             ratio[i] = float(np.clip(eig[-2] / eig[-1], 0., 1.))
-            if np.isfinite(bilateral_ced[i]):
+            if np.isfinite(raw_ced[i]):
                 fusion[i] = float(np.clip(
-                    bilateral_ced[i] * tau * np.tanh(ratio[i] / tau), 0., 1.))
+                    raw_ced[i] * tau * np.tanh(ratio[i] / tau), 0., 1.))
         report('PCA / Fusion', i + 1)
-    if np.isfinite(fusion).sum() < min_neighbors:
-        raise ValueError('Too few valid Fusion voxels. Try smaller full-scene voxel '
-                         'size, larger PCA/CED radius, or lower cutoff.')
-
-    fields = [('Fusion MAX', fusion, True), ('CED MAX', bilateral_ced, True),
+    fields = [('Fusion MAX', fusion, True), ('CED MAX', raw_ced, True),
               ('CED-PCA ratio MAX', ratio, True),
+              ('Normal-PCA ratio MAX', normal_ratio, True),
               ('CED-PCA lambda1 MIN', weighted_l1, False),
               ('Normal-PCA lambda1 MIN', normal_l1, False)]
     extrema = []
@@ -1740,10 +1930,11 @@ def compute_full_scene_fusion_pca_comparison(points_mm,
         if ids is None:
             return None
         extrema.append(ids)
-    fmax, cmax, rmax, wlmin, nlmin = extrema
+    fmax, cmax, rmax, nrmax, wlmin, nlmin = extrema
     pair = lambda a,b: match_full_scene_extrema(xyz, a,b,match_radius_mm)
     center = xyz.mean(axis=0)
     view_radius = float(np.max(np.linalg.norm(xyz - center, axis=1)))
+    normal_component, tangent_component = ced_component_magnitudes(ced_vectors, normal_directions, ced_radius_mm)
     result = FusionPcaExtremaComparison(
         positions_mm=xyz, fusion_scores=fusion,
         normal_lambda1_mm2=normal_l1, fusion_maxima=fmax,
@@ -1753,18 +1944,35 @@ def compute_full_scene_fusion_pca_comparison(points_mm,
         match_radius_mm=float(match_radius_mm),
         ced_radius_mm=float(ced_radius_mm),
         pca_radius_mm=float(pca_radius_mm),
-        sigma_ced=float(sigma_ced), tau=float(tau), ced_cutoff=float(ced_cutoff),
-        ced_scores=bilateral_ced, ced_weighted_ratio=ratio,
+        tau=float(tau), ced_cutoff=float(ced_cutoff),
+        ced_scores=raw_ced, ced_weighted_ratio=ratio,
         ced_weighted_lambda1_mm2=weighted_l1,
         ced_maxima=cmax, ratio_maxima=rmax,
         weighted_lambda1_minima=wlmin,
         match_ced_ratio=pair(cmax,rmax),
         match_ced_weighted_l1=pair(cmax,wlmin),
-        match_ced_normal_l1=pair(cmax,nlmin))
+        match_ced_normal_l1=pair(cmax,nlmin),
+        ced_normal_component=normal_component, ced_tangent_component=tangent_component,
+        pca_neighbor_counts=pca_counts, normal_pca_ratio=normal_ratio,
+        normal_ratio_maxima=nrmax)
     if progress_callback is not None:
         progress_callback('Local lambda1 contrast / MAX NMS', 0, n)
-    return with_local_minimum_fusion(result, contrast_tau, is_cancelled=is_cancelled,
-                                     median_contrast_tau=median_contrast_tau)
+    result = with_local_minimum_fusion(result, contrast_tau, is_cancelled=is_cancelled,
+                                       median_contrast_tau=median_contrast_tau,
+                                       local_minimum_radius_mm=local_minimum_radius_mm,
+                                       median_minimum_radius_mm=median_minimum_radius_mm)
+    if progress_callback is not None:
+        progress_callback('Harris 3D normals / response / NMS', 0, n)
+    result = with_harris3d(result, is_cancelled=is_cancelled)
+    result = with_inverse_std_fusion(result, inverse_std_epsilon_mm2, is_cancelled=is_cancelled,
+                                     activation=inverse_std_activation)
+    if (result is not None and np.isfinite(fusion).sum() < min_neighbors
+            and np.isfinite(result.harris_scores).sum() < min_neighbors
+            and np.isfinite(result.ced_inverse_std_scores).sum() < min_neighbors
+            and np.isfinite(result.ced_weighted_inverse_std_scores).sum() < min_neighbors):
+        raise ValueError('Too few valid Fusion/Harris/inverse-std voxels. Try smaller full-scene voxel '
+                         'size, larger PCA/CED radius, or lower cutoff.')
+    return result
 
 def compute_local_fusion_pca_comparison(points_mm, center_mm,
                                         pca_radius_mm=30.0,
@@ -1772,21 +1980,24 @@ def compute_local_fusion_pca_comparison(points_mm, center_mm,
                                         view_radius_mm=40.0,
                                         voxel_mm=2.0,
                                         match_radius_mm=8.0,
-                                        sigma_ced=0.05,
                                         tau=0.5,
                                         ced_cutoff=0.10,
                                         min_neighbors=12,
                                         max_evaluation_points=6500,
                                         contrast_tau=.005,
-                                        median_contrast_tau=.005):
+                                        median_contrast_tau=.005,
+                                        local_minimum_radius_mm=None,
+                                        median_minimum_radius_mm=None,
+                                        inverse_std_epsilon_mm2=1e-6,
+                                        inverse_std_activation='none'):
     """Compare four extrema strategies on the SAME complete local support.
 
     0: Diagnostic Fusion MAX NMS
-    1: Bilateral CED MAX + CED-weighted ratio MAX, proximity matched
-    2: Bilateral CED MAX + CED-weighted lambda1 MIN, proximity matched
-    3: Bilateral CED MAX + normal-PCA lambda1 MIN, proximity matched
+    1: Raw CED MAX + CED-weighted ratio MAX, proximity matched
+    2: Raw CED MAX + CED-weighted lambda1 MIN, proximity matched
+    3: Raw CED MAX + normal-PCA lambda1 MIN, proximity matched
 
-    Fusion = bilateral(raw CED; sigma=0.05) * tau*tanh(weighted_ratio/tau).
+    Fusion = raw CED * tau*tanh(weighted_ratio/tau).
     Weighted PCA uses raw CED weights with CED>=ced_cutoff, as in this file.
     The diagnostic Fusion is NOT guaranteed identical to the external detector.
     All scores use every analysis voxel point (never silently subsampled).
@@ -1794,8 +2005,8 @@ def compute_local_fusion_pca_comparison(points_mm, center_mm,
     xyz = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)
     center = np.asarray(center_mm, dtype=np.float64).reshape(3)
     if min(pca_radius_mm, ced_radius_mm, view_radius_mm, voxel_mm,
-           match_radius_mm, sigma_ced, tau) <= 0:
-        raise ValueError('All analysis radii and sigma/tau must be positive')
+           match_radius_mm, tau) <= 0:
+        raise ValueError('All analysis radii and tau must be positive')
     if not len(xyz) or not np.isfinite(xyz).all():
         raise ValueError('No valid analysis points')
     distance = np.linalg.norm(xyz - center, axis=1)
@@ -1812,42 +2023,41 @@ def compute_local_fusion_pca_comparison(points_mm, center_mm,
     positions = local_xyz[query_ids]
 
     raw_ced = np.full(len(local_xyz), np.nan, dtype=np.float64)
+    ced_vectors = np.full((len(local_xyz), 3), np.nan)
     ced_support_ids = np.flatnonzero(rel <= view_radius_mm + pca_radius_mm + ced_radius_mm + 0.01)
     for j in ced_support_ids:
         ids = _eigen_field_radius(tree, local_xyz[j], ced_radius_mm)
         if len(ids) >= 3:
-            raw_ced[j] = (np.linalg.norm(local_xyz[ids].mean(axis=0) - local_xyz[j])
-                          / ced_radius_mm)
+            ced_vectors[j] = local_xyz[ids].mean(axis=0)-local_xyz[j]
+            raw_ced[j] = np.linalg.norm(ced_vectors[j])/ced_radius_mm
     # For compatibility with the original diagnostic, unsampled/unsupported CED
     # values inside the support are zero; invalid query values themselves stay NaN.
     ced_for_weights = np.nan_to_num(raw_ced, nan=0.0)
 
     fusion = np.full(len(query_ids), np.nan, dtype=np.float64)
-    bilateral_ced = np.full(len(query_ids), np.nan, dtype=np.float64)
+    ced_scores = raw_ced[query_ids]
     weighted_ratio = np.full(len(query_ids), np.nan, dtype=np.float64)
     weighted_l1 = np.full(len(query_ids), np.nan, dtype=np.float64)
     normal_l1 = np.full(len(query_ids), np.nan, dtype=np.float64)
+    normal_ratio = np.full(len(query_ids), np.nan, dtype=np.float64)
+    normal_directions = np.full((len(query_ids), 3), np.nan)
+    pca_counts = np.zeros(len(query_ids), dtype=np.int64)
 
     for row, i in enumerate(query_ids):
         p = local_xyz[i]
-        # Bilateral CED is independent of PCA validity.
-        if np.isfinite(raw_ced[i]):
-            bid = _eigen_field_radius(tree, p, ced_radius_mm)
-            dist2 = np.sum((local_xyz[bid] - p)**2, axis=1)
-            dc = ced_for_weights[bid] - ced_for_weights[i]
-            bw = np.exp(-0.5 * dist2 / ced_radius_mm**2
-                        - 0.5 * (dc / sigma_ced)**2)
-            sw_b = float(bw.sum())
-            if sw_b > 0:
-                bilateral_ced[row] = float(np.dot(bw, ced_for_weights[bid]) / sw_b)
-
         ids = _eigen_field_radius(tree, p, pca_radius_mm)
+        pca_counts[row] = len(ids)
         if len(ids) < min_neighbors:
             continue
         support = local_xyz[ids]
         mu = support.mean(axis=0)
         delta = support - mu
-        normal_l1[row] = float(np.linalg.eigvalsh(delta.T @ delta / len(support))[-1])
+        covariance = delta.T @ delta / len(support)
+        normal_eig = np.linalg.eigvalsh(covariance)
+        normal_l1[row] = float(normal_eig[-1])
+        if normal_eig[-1] > 1e-5 * pca_radius_mm**2:
+            normal_ratio[row] = float(np.clip(normal_eig[-2] / normal_eig[-1], 0., 1.))
+        normal_directions[row] = pca_normal_direction(covariance)
 
         weights = ced_for_weights[ids].copy()
         weights[weights < ced_cutoff] = 0.0
@@ -1866,23 +2076,22 @@ def compute_local_fusion_pca_comparison(points_mm, center_mm,
         if eig[-1] <= 1e-5 * pca_radius_mm**2:
             continue
         weighted_ratio[row] = float(np.clip(eig[-2] / eig[-1], 0.0, 1.0))
-        if np.isfinite(bilateral_ced[row]):
+        if np.isfinite(ced_scores[row]):
             fusion[row] = float(np.clip(
-                bilateral_ced[row] * tau * np.tanh(weighted_ratio[row] / tau),
+                ced_scores[row] * tau * np.tanh(weighted_ratio[row] / tau),
                 0.0, 1.0))
 
-    if np.isfinite(fusion).sum() < 12 or np.isfinite(normal_l1).sum() < 12:
-        raise ValueError('Insufficient valid Fusion/normal-PCA samples; '
-                         'try a larger PCA radius or lower voxel size')
     nms_radius = max(2.5 * voxel_mm, 0.22 * pca_radius_mm)
     extrema = lambda vals, is_max: find_local_scalar_extrema(
         positions, vals, nms_radius, center, view_radius_mm, maximize=is_max)
     fmax = extrema(fusion, True)
-    cmax = extrema(bilateral_ced, True)
+    cmax = extrema(ced_scores, True)
     rmax = extrema(weighted_ratio, True)
+    nrmax = extrema(normal_ratio, True)
     wlmin = extrema(weighted_l1, False)
     nlmin = extrema(normal_l1, False)
     pair = lambda a, b: match_fusion_lambda1_extrema(positions, a, b, match_radius_mm)
+    normal_component, tangent_component = ced_component_magnitudes(ced_vectors[query_ids], normal_directions, ced_radius_mm)
     result = FusionPcaExtremaComparison(
         positions_mm=positions, fusion_scores=fusion,
         normal_lambda1_mm2=normal_l1, fusion_maxima=fmax,
@@ -1890,16 +2099,34 @@ def compute_local_fusion_pca_comparison(points_mm, center_mm,
         center_mm=center, view_radius_mm=float(view_radius_mm),
         nms_radius_mm=float(nms_radius), match_radius_mm=float(match_radius_mm),
         ced_radius_mm=float(ced_radius_mm), pca_radius_mm=float(pca_radius_mm),
-        sigma_ced=float(sigma_ced), tau=float(tau), ced_cutoff=float(ced_cutoff),
-        ced_scores=bilateral_ced, ced_weighted_ratio=weighted_ratio,
+        tau=float(tau), ced_cutoff=float(ced_cutoff),
+        ced_scores=ced_scores, ced_weighted_ratio=weighted_ratio,
         ced_weighted_lambda1_mm2=weighted_l1,
         ced_maxima=cmax, ratio_maxima=rmax,
         weighted_lambda1_minima=wlmin,
         match_ced_ratio=pair(cmax, rmax),
         match_ced_weighted_l1=pair(cmax, wlmin),
-        match_ced_normal_l1=pair(cmax, nlmin))
-    return with_local_minimum_fusion(result, contrast_tau, local_mode=True,
-                                     median_contrast_tau=median_contrast_tau)
+        match_ced_normal_l1=pair(cmax, nlmin),
+        ced_normal_component=normal_component, ced_tangent_component=tangent_component,
+        pca_neighbor_counts=pca_counts, normal_pca_ratio=normal_ratio,
+        normal_ratio_maxima=nrmax)
+    result = with_local_minimum_fusion(result, contrast_tau, local_mode=True,
+                                       median_contrast_tau=median_contrast_tau,
+                                       local_minimum_radius_mm=local_minimum_radius_mm,
+                                       median_minimum_radius_mm=median_minimum_radius_mm)
+    harris_support = xyz[distance <= view_radius_mm + 2.*pca_radius_mm + .01]
+    harris_queries = np.flatnonzero(np.linalg.norm(harris_support-center, axis=1) <= view_radius_mm)
+    result = with_harris3d(result, support_points_mm=harris_support,
+                           query_indices=harris_queries, local_mode=True)
+    result = with_inverse_std_fusion(result, inverse_std_epsilon_mm2, local_mode=True,
+                                     activation=inverse_std_activation)
+    if ((np.isfinite(fusion).sum() < 12 or np.isfinite(normal_l1).sum() < 12)
+            and np.isfinite(result.harris_scores).sum() < 12
+            and np.isfinite(result.ced_inverse_std_scores).sum() < 12
+            and np.isfinite(result.ced_weighted_inverse_std_scores).sum() < 12):
+        raise ValueError('Insufficient valid Fusion/PCA/Harris/inverse-std samples; '
+                         'try a larger PCA radius or lower voxel size')
+    return result
 
 def compute_eigen_field(points_mm: np.ndarray, center_mm: np.ndarray,
                         pca_radius_mm: float = 30.0,
@@ -2161,7 +2388,7 @@ def eigen_heatmap_values(field: EigenFieldResult, metric: str) -> np.ndarray:
 
 
 def eigen_heatmap_colors(values: np.ndarray, *, limits=None) -> tuple[np.ndarray, tuple[float, float]]:
-    """Viridis on robust percentiles or explicit limits; invalid samples grey."""
+    """Turbo on robust percentiles or explicit limits; invalid samples grey."""
     from matplotlib import colormaps
     v = np.asarray(values, dtype=np.float64)
     finite = np.isfinite(v)
@@ -2170,7 +2397,7 @@ def eigen_heatmap_colors(values: np.ndarray, *, limits=None) -> tuple[np.ndarray
     low, high = np.percentile(v[finite], [2, 98]) if limits is None else limits
     if high <= low:
         high = low + max(1e-9, abs(low) * 1e-6)
-    rgba = colormaps['viridis'](np.clip((v - low) / (high - low), 0, 1))
+    rgba = colormaps['turbo'](np.clip((v - low) / (high - low), 0, 1))
     rgb = np.rint(255 * rgba[:, :3]).astype(np.uint8)
     rgb[~finite] = [95, 103, 115]
     return rgb, (float(low), float(high))
@@ -2247,10 +2474,10 @@ def render_eigen_field_3d_image(field: EigenFieldResult,
         ax.tick_params(labelsize=7)
         ax.view_init(elev=23, azim=-60)
         ax.set_title(title, fontsize=10)
-        cb = fig.colorbar(ScalarMappable(norm=Normalize(vmin, vmax), cmap='viridis'),
+        cb = fig.colorbar(ScalarMappable(norm=Normalize(vmin, vmax), cmap='turbo'),
                           ax=ax, fraction=.037, pad=.015, shrink=.65)
         cb.ax.tick_params(labelsize=7)
-        cb.set_label('high = yellow / low = purple', fontsize=7)
+        cb.set_label('low = purple / high = red (turbo)', fontsize=7)
     weighted = {'unweighted':'Unweighted PCA',
                 'ced_weighted':'Raw CED-weighted PCA',
                 'ced_threshold':'Raw CED-weighted PCA + 0.10 cutoff'}[field.mode]
@@ -2298,7 +2525,7 @@ def render_eigen_field_image(field: EigenFieldResult, width: int = 1380,
             top = low + 1e-9
         # Sampling rather than interpolation avoids filling missing geometry.
         dots = ax.scatter(xy[finite, 0], xy[finite, 1], c=values[finite],
-                          s=18, cmap='viridis', vmin=low, vmax=top,
+                          s=18, cmap='turbo', vmin=low, vmax=top,
                           linewidths=0.0, alpha=.93, rasterized=True)
         ax.scatter([0], [0], marker='*', s=210, c='#f97316',
                    edgecolors='black', linewidths=.7, zorder=9,
@@ -2349,15 +2576,138 @@ def render_eigen_field_image(field: EigenFieldResult, width: int = 1380,
 
 SCORE_VIEWS = (
     ("Fusion", "fusion_scores", "fusion_maxima", "MAX", ""),
-    ("Bilateral CED", "ced_scores", "ced_maxima", "MAX", ""),
+    ("Raw CED", "ced_scores", "ced_maxima", "MAX", ""),
     ("CED-weighted PCA ratio", "ced_weighted_ratio", "ratio_maxima", "MAX", ""),
+    ("Normal PCA ratio (lambda2/lambda1)", "normal_pca_ratio", "normal_ratio_maxima", "MAX", ""),
     ("CED-weighted lambda1", "ced_weighted_lambda1_mm2", "weighted_lambda1_minima", "MIN", " mm²"),
     ("Normal PCA lambda1", "normal_lambda1_mm2", "lambda1_minima", "MIN", " mm²"),
     ("CED x Local lambda1 minimum", "ced_local_min_scores", "ced_local_min_maxima", "MAX", ""),
     ("Local lambda1 minimum", "local_minimum_scores", None, "HEATMAP", ""),
     ("CED x Median lambda1 minimum", "ced_median_min_scores", "ced_median_min_maxima", "MAX", ""),
     ("Median lambda1 minimum", "median_minimum_scores", None, "HEATMAP", ""),
+    ("Harris 3D (NumPy)", "harris_scores", "harris_maxima", "MAX", ""),
+    ("CED normal component (PCA)", "ced_normal_component", None, "HEATMAP", ""),
+    ("CED tangent component (PCA)", "ced_tangent_component", None, "HEATMAP", ""),
+    ("Normalized CED / normalized PCA std", "ced_inverse_std_scores", "ced_inverse_std_maxima", "MAX", ""),
+    ("Normalized CED / normalized CED-weighted PCA std", "ced_weighted_inverse_std_scores", "ced_weighted_inverse_std_maxima", "MAX", ""),
 )
+
+
+
+def build_nms_neighborhood_curves(result, point_index: int, active_score_key: str):
+    """Retrieve SAME cached NMS-radius query neighbors for six diagnostic curves.
+
+    Every curve is indexed by exactly the same voxel rows, ordered by distance
+    from the clicked NMS candidate.  No PCA/CED/NMS computations are repeated.
+    """
+    xyz = np.asarray(result.positions_mm, dtype=np.float64)
+    idx = int(point_index)
+    if xyz.ndim != 2 or xyz.shape[1] != 3 or not (0 <= idx < len(xyz)):
+        raise ValueError('Invalid NMS point / evaluated point-cloud coordinates')
+    radius = float(result.nms_radius_mm)
+    pca_radius = float(result.pca_radius_mm)
+    if not np.isfinite(radius) or radius <= 0 or not np.isfinite(pca_radius) or pca_radius <= 0:
+        raise ValueError('NMS and PCA radii must be positive')
+
+    offsets = xyz - xyz[idx]
+    distances = np.linalg.norm(offsets, axis=1)
+    ids = np.flatnonzero(np.isfinite(distances) & (distances <= radius + 1e-8))
+    ids = ids[np.lexsort((ids, distances[ids]))]
+    # Always make the clicked voxel the first observation at distance zero.
+    ids = np.r_[idx, ids[ids != idx]]
+    n = len(xyz)
+
+    def column(key):
+        values = np.asarray(getattr(result, key), dtype=np.float64)
+        if values.shape != (n,):
+            raise ValueError(f'NMS neighbor field {key}: invalid length')
+        return values[ids]
+
+    return {
+        'ids': ids,
+        'distance_mm': distances[ids],
+        'active_score': column(active_score_key),
+        'normalized_ced': column('ced_scores'),
+        'normalized_lambda1': column('normal_lambda1_mm2') / (pca_radius ** 2),
+        'normalized_weighted_lambda1': column('ced_weighted_lambda1_mm2') / (pca_radius ** 2),
+        # PCA eigenvalue ratios are already dimensionless; never divide them by R^2.
+        'normal_pca_ratio': column('normal_pca_ratio'),
+        'weighted_pca_ratio': column('ced_weighted_ratio'),
+    }
+
+
+def render_nms_neighborhood_curves(curves, *, title: str,
+                                   nms_radius_mm: float, pca_radius_mm: float,
+                                   ced_radius_mm: float, units: str = '',
+                                   maximize: bool = True,
+                                   threshold: float | None = None,
+                                   width: int = 1220, height: int = 790,
+                                   weighted_score: bool = False):
+    """Render score, CED, lambda1 and lambda2/lambda1 for both PCA estimators.
+
+    Uses Agg rather than starting a second GUI event loop beside Open3D.
+    """
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    fig = Figure(figsize=(width / 110., height / 110.), dpi=110, facecolor='white')
+    FigureCanvasAgg(fig)
+    axes = fig.subplots(3, 2, sharex=True)
+    axes = axes.ravel()
+    x = np.asarray(curves['distance_mm'], dtype=float)
+    n = len(x)
+    plot_specs = (
+        (curves['active_score'], f'NMS score{units}', 'Active score', '#3b82f6'),
+        (curves['normalized_ced'], 'Normalized CED', '||mu - p|| / R_CED', '#009b89'),
+        (curves['normalized_lambda1'], 'PCA λ1 / R²', 'Unweighted PCA: lambda1 / R_PCA^2', '#9259be'),
+        (curves['normalized_weighted_lambda1'], 'CED-weighted λ1 / R²',
+         'CED-weighted PCA: lambda1_weighted / R_PCA^2'
+         + (' (score denominator)' if weighted_score else ' (diagnostic)'), '#d18b20'),
+        (curves['normal_pca_ratio'], 'PCA λ2 / λ1',
+         'Unweighted PCA: lambda2 / lambda1', '#cf4b78'),
+        (curves['weighted_pca_ratio'], 'CED-weighted λ2 / λ1',
+         'CED-weighted PCA: lambda2_weighted / lambda1_weighted', '#7a9e24'),
+    )
+    for row, (y_data, y_label, subtitle, color) in enumerate(plot_specs):
+        ax = axes[row]
+        y = np.asarray(y_data, dtype=float)
+        good = np.isfinite(x) & np.isfinite(y)
+        other = good.copy()
+        other[0] = False
+        ax.scatter(x[other], y[other], s=13, color=color, alpha=.52,
+                   linewidths=0, rasterized=(n > 1500), label='NMS neighbors')
+        if good[0]:
+            ax.scatter([x[0]], [y[0]], s=110, marker='*', color='#e54838',
+                       edgecolors='#501900', linewidths=.7, zorder=5,
+                       label=f'Clicked peak: {y[0]:.5g}')
+        if row == 0 and threshold is not None and np.isfinite(threshold):
+            ax.axhline(float(threshold), color='#dd9617', linestyle='--',
+                       linewidth=1.2, label=f'Filter {">=" if maximize else "<="} {threshold:.5g}')
+        ax.set_ylabel(y_label, fontsize=9)
+        ax.set_title(subtitle, loc='left', fontsize=9, pad=4, color='#525260')
+        ax.grid(alpha=.22)
+        ax.margins(y=.16)
+        ax.set_xlim(-max(.1, nms_radius_mm*.012), nms_radius_mm * 1.025)
+        ax.legend(loc='upper right', fontsize=8, framealpha=.9)
+        ax.text(.012, .96, f'valid {np.count_nonzero(good)}/{n}',
+                transform=ax.transAxes, va='top', ha='left', fontsize=8, color='#606070')
+    for ax in axes[-2:]:
+        ax.set_xlabel('3D distance from clicked NMS point (mm)', fontsize=9)
+    fig.suptitle(f'NMS neighborhood | {title} | R_NMS={nms_radius_mm:g} mm | {n} query voxels',
+                 fontsize=11, y=.98)
+    fig.text(.5, .043,
+             f'CED R = {ced_radius_mm:g} mm  |  PCA R = {pca_radius_mm:g} mm'
+             '  |  eigenvalues: / R_PCA^2  |  ratios: lambda2/lambda1 (dimensionless)',
+             ha='center', fontsize=8, color='#50505b')
+    fig.text(.5, .019,
+             ('Score denominator: sqrt((CED-weighted lambda1 + epsilon) / R_PCA^2).'
+              if weighted_score else
+              'Normal-PCA score denominator: sqrt((unweighted lambda1 + epsilon) / R_PCA^2).'),
+             ha='center', fontsize=8, color='#50505b')
+    fig.subplots_adjust(left=.095, right=.98, top=.89, bottom=.14, hspace=.49, wspace=.25)
+    fig.canvas.draw()
+    rgb = np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
+    return np.ascontiguousarray(rgb, dtype=np.uint8)
 
 
 class CornerLab:
@@ -2423,6 +2773,7 @@ class CornerLab:
         self.eigen_mode = 'ced_threshold'
         self.eigen_ced_radius_mm = 10
         self.eigen_pca_radius_mm = 30
+        self.ced_cutoff = 0.10  # Shared normalized CED cutoff for weighted PCA paths.
         self.eigen_overlay_mode = 0         # Off / -grad lambda1 / +grad lambda2/lambda1
         self.eigen_heatmap_mode = 1         # 0 off / 1 lambda1 / 2 lambda2/lambda1
         self.eigen_refine_metric = 'lambda1'
@@ -2440,14 +2791,19 @@ class CornerLab:
         self.compare_running = False
         self.compare_show = False
         self.compare_result = None
+        self.compare_peak_view = None
         self.compare_cache_key = None
         self.compare_heatmap_mode = 0    # Index into SCORE_VIEWS.
+        self.compare_scale_mode = 0      # 0 relative P2-P98, 1 fixed min-max.
+        self.compare_fixed_limits = (0.0, 1.0)
+        self.compare_inverse_std_activation = 'none'
         self.compare_method_index = 0    # Fusion alone / CED+ratio / CED+weighted-lambda1 / CED+normal-lambda1
         self.compare_match_mm = 8
         self.compare_scope_index = 1  # 0: local ROI; 1: complete original scene (default)
         self.compare_scene_voxel_mm = 5.0
         self.compare_scene_nms_mm = 10.0
-        self.compare_thresholds = {}
+        self.compare_thresholds = {}  # Independent score thresholds per NMS criterion.
+        self._compare_threshold_slider_syncing = False
 
         self.latest_frame = None
         self.frame_lock = threading.Lock()
@@ -2578,7 +2934,7 @@ class CornerLab:
         self.panel.selected_tab_index = 0
         self.panel.set_on_selected_tab_changed(self._workspace_changed)
         self.win.add_child(self.panel)
-        self.eigen_heatmap_legend = gui.Label("Heatmap: low purple / high yellow | NMS: cyan")
+        self.eigen_heatmap_legend = gui.Label("Turbo heatmap: low purple / high red | NMS: cyan")
         self.status = gui.Label("Open a cloud or choose Demo, then compute heatmap + NMS.")
         self.win.add_child(self.eigen_heatmap_legend)
         self.win.add_child(self.status)
@@ -2616,6 +2972,17 @@ class CornerLab:
         self.eigen_pca_slider.set_on_value_changed(self._eigen_pca_radius_changed)
         self.heatmap_page.add_child(self.eigen_pca_slider)
 
+        self.ced_cutoff_label = gui.Label('CED-weighted PCA cutoff: 0.100 (normalized CED)')
+        self.heatmap_page.add_child(self.ced_cutoff_label)
+        self.ced_cutoff_slider = gui.Slider(gui.Slider.DOUBLE)
+        self.ced_cutoff_slider.set_limits(0.0, 1.0)
+        self.ced_cutoff_slider.double_value = self.ced_cutoff
+        self.ced_cutoff_slider.set_on_value_changed(self._ced_cutoff_changed)
+        self.heatmap_page.add_child(self.ced_cutoff_slider)
+        self.heatmap_page.add_child(gui.Label(
+            'Points with CED below this cutoff are excluded from CED-weighted PCA.\n'
+            'Changing cutoff invalidates cached PCA / NMS; click Compute / show again.'))
+
 
         self.heatmap_page.add_child(gui.Label("2. Criterion: heatmap + its own NMS"))
         self.compare_display_combo = gui.Combobox()
@@ -2624,15 +2991,36 @@ class CornerLab:
         self.compare_display_combo.selected_index = 0
         self.compare_display_combo.set_on_selection_changed(self._compare_display_changed)
         self.heatmap_page.add_child(self.compare_display_combo)
-        self.heatmap_page.add_child(gui.Label('Min-Max contrast tau (>0; R = PCA radius)'))
+        self.heatmap_page.add_child(gui.Label('Harris 3D uses the PCA support radius for normals and response.'))
+        self.heatmap_page.add_child(gui.Label('Min-Max neighborhood radius (mm; blank = PCA)'))
+        self.compare_minimum_radius_edit = gui.TextEdit()
+        self.compare_minimum_radius_edit.text_value = ''
+        self.heatmap_page.add_child(self.compare_minimum_radius_edit)
+        self.heatmap_page.add_child(gui.Label('Min-Max contrast tau (>0; regularizer uses PCA radius)'))
         self.compare_contrast_tau_edit = gui.TextEdit()
         self.compare_contrast_tau_edit.text_value = '0.005'
         self.heatmap_page.add_child(self.compare_contrast_tau_edit)
-        self.heatmap_page.add_child(gui.Label('Median contrast tau (>0; R = PCA radius)'))
+        self.heatmap_page.add_child(gui.Label('Median neighborhood radius (mm; blank = PCA)'))
+        self.compare_median_radius_edit = gui.TextEdit()
+        self.compare_median_radius_edit.text_value = ''
+        self.heatmap_page.add_child(self.compare_median_radius_edit)
+        self.heatmap_page.add_child(gui.Label('Median contrast tau (>0; regularizer uses PCA radius)'))
         self.compare_median_tau_edit = gui.TextEdit()
         self.compare_median_tau_edit.text_value = '0.005'
         self.heatmap_page.add_child(self.compare_median_tau_edit)
-        self.heatmap_page.add_child(gui.Label('Both use Normal PCA lambda1; recompute after tau changes.'))
+        self.heatmap_page.add_child(gui.Label('Both use Normal PCA lambda1; recompute after radius/tau changes.'))
+        self.heatmap_page.add_child(gui.Label('CED / PCA std (normal & CED-weighted): epsilon (mm²; >0)'))
+        self.compare_inverse_std_epsilon_edit = gui.TextEdit()
+        self.compare_inverse_std_epsilon_edit.text_value = '1e-6'
+        self.heatmap_page.add_child(self.compare_inverse_std_epsilon_edit)
+        self.heatmap_page.add_child(gui.Label('ACTIVATION: both normalized CED / PCA std scores'))
+        self.compare_inverse_std_activation_combo = gui.Combobox()
+        for _, label in INVERSE_STD_ACTIVATIONS:
+            self.compare_inverse_std_activation_combo.add_item(label)
+        self.compare_inverse_std_activation_combo.selected_index = 0
+        self.compare_inverse_std_activation_combo.set_on_selection_changed(self._inverse_std_activation_changed)
+        self.heatmap_page.add_child(self.compare_inverse_std_activation_combo)
+        self.heatmap_page.add_child(gui.Label('Density uses PCA neighbors and the evaluated scene/local Query set.\nChanging activation clears both ratio-score NMS thresholds; recompute afterward.'))
         self.compare_heatmap_check = gui.Checkbox("Show heatmap")
         self.compare_heatmap_check.checked = True
         self.compare_heatmap_check.set_on_checked(self._compare_layers_changed)
@@ -2643,33 +3031,49 @@ class CornerLab:
         layers.add_child(self.compare_heatmap_check)
         layers.add_child(self.compare_nms_check)
         self.heatmap_page.add_child(layers)
-        self.compare_auto_contrast_check = gui.Checkbox('Auto Contrast')
-        self.compare_auto_contrast_check.checked = False
-        self.compare_auto_contrast_check.enabled = False  # L or CED*L only.
-        self.compare_auto_contrast_check.set_on_checked(self._compare_auto_contrast_changed)
-        self.heatmap_page.add_child(self.compare_auto_contrast_check)
+        self.heatmap_page.add_child(gui.Label('Heatmap color scale (turbo)'))
+        self.compare_scale_combo = gui.Combobox()
+        self.compare_scale_combo.add_item('Relative: P2-P98 within the evaluated points')
+        self.compare_scale_combo.add_item('Fixed: manual Min-Max (default 0-1)')
+        self.compare_scale_combo.selected_index = self.compare_scale_mode
+        self.compare_scale_combo.set_on_selection_changed(self._compare_scale_changed)
+        self.heatmap_page.add_child(self.compare_scale_combo)
+        fixed_scale_row = gui.Horiz(.4 * em)
+        fixed_scale_row.add_child(gui.Label('Fixed min'))
+        self.compare_fixed_min_edit = gui.TextEdit()
+        self.compare_fixed_min_edit.text_value = '0'
+        fixed_scale_row.add_child(self.compare_fixed_min_edit)
+        fixed_scale_row.add_child(gui.Label('max'))
+        self.compare_fixed_max_edit = gui.TextEdit()
+        self.compare_fixed_max_edit.text_value = '1'
+        fixed_scale_row.add_child(self.compare_fixed_max_edit)
+        self.heatmap_page.add_child(fixed_scale_row)
+        self.compare_apply_scale_btn = gui.Button('Apply fixed color range (no recompute)')
+        self.compare_apply_scale_btn.set_on_clicked(self._compare_apply_fixed_scale)
+        self.heatmap_page.add_child(self.compare_apply_scale_btn)
+        self.heatmap_page.add_child(gui.Label('Fixed values outside the range are clipped; changes affect colors only.'))
         self.compare_btn = gui.Button(self._compare_button_label())
         self.compare_btn.set_on_clicked(self._toggle_compare_extrema)
         self.heatmap_page.add_child(self.compare_btn)
         self.heatmap_page.add_child(gui.Label("Compute once; switching criteria reuses the result."))
-        self.compare_summary = gui.Label("Choose scope and criterion, then compute.\nCtrl+click a point to open Corner inspection.")
+        # One live score threshold for the currently selected NMS criterion.
+        # Unlike the old text fields, dragging this slider never recomputes PCA,
+        # CED, scores, the base NMS peaks, or the heatmap geometry.
+        self.compare_nms_threshold_label = gui.Label('NMS threshold: compute first (no cached peaks)')
+        self.heatmap_page.add_child(self.compare_nms_threshold_label)
+        self.compare_nms_threshold_slider = gui.Slider(gui.Slider.DOUBLE)
+        self.compare_nms_threshold_slider.set_limits(0.0, 1.0)
+        self.compare_nms_threshold_slider.double_value = 0.0
+        self.compare_nms_threshold_slider.enabled = False
+        self.compare_nms_threshold_slider.set_on_value_changed(self._compare_nms_threshold_changed)
+        self.heatmap_page.add_child(self.compare_nms_threshold_slider)
+        self.compare_nms_threshold_reset = gui.Button('Reset active NMS threshold (show all)')
+        self.compare_nms_threshold_reset.enabled = False
+        self.compare_nms_threshold_reset.set_on_clicked(self._reset_compare_nms_threshold)
+        self.heatmap_page.add_child(self.compare_nms_threshold_reset)
+        self.heatmap_page.add_child(gui.Label('NMS threshold is a display filter; CED cutoff changes PCA weights.\nDrag to filter cached peaks live (MAX >= / MIN <=).'))
+        self.compare_summary = gui.Label("Choose scope and criterion, then compute.\nCtrl+click NMS: score, CED, normal/weighted lambda1 and lambda2/lambda1.")
         self.heatmap_page.add_child(self.compare_summary)
-        thresholds = gui.CollapsableVert('NMS score thresholds (blank = OFF)', .3 * em)
-        thresholds.set_is_open(False)
-        self.compare_threshold_edits = {}
-        for title, value_key, _, extreme, units in SCORE_VIEWS:
-            if extreme == 'HEATMAP':
-                continue
-            sign = '>=' if extreme == 'MAX' else '<='
-            thresholds.add_child(gui.Label(f'{title}: score {sign} threshold{units}'))
-            edit = gui.TextEdit()
-            edit.text_value = ''
-            self.compare_threshold_edits[value_key] = edit
-            thresholds.add_child(edit)
-        apply_thresholds = gui.Button('Apply NMS thresholds')
-        apply_thresholds.set_on_clicked(self._compare_thresholds_changed)
-        thresholds.add_child(apply_thresholds)
-        self.heatmap_page.add_child(thresholds)
         pairs = gui.CollapsableVert("Optional: pair two criteria", .4 * em)
         pairs.set_is_open(False)
         self.compare_pairs_check = gui.Checkbox("Show paired-method comparison")
@@ -2678,9 +3082,9 @@ class CornerLab:
         pairs.add_child(self.compare_pairs_check)
         self.compare_method_combo = gui.Combobox()
         for name in ("1. Fusion MAX NMS",
-                     "2. Bilateral CED MAX + CED-PCA ratio MAX",
-                     "3. Bilateral CED MAX + CED-PCA lambda1 MIN",
-                     "4. Bilateral CED MAX + Normal-PCA lambda1 MIN"):
+                     "2. Raw CED MAX + CED-PCA ratio MAX",
+                     "3. Raw CED MAX + CED-PCA lambda1 MIN",
+                     "4. Raw CED MAX + Normal-PCA lambda1 MIN"):
             self.compare_method_combo.add_item(name)
         self.compare_method_combo.selected_index = 0
         self.compare_method_combo.set_on_selection_changed(self._compare_method_changed)
@@ -2868,11 +3272,11 @@ class CornerLab:
         details.add_child(self.info)
         self.corner_page.add_child(details)
 
-        self.pca_page.add_child(gui.Label("Optional PCA position refinement.\nUses CED/PCA radii from Heatmap/NMS."))
+        self.pca_page.add_child(gui.Label("Optional PCA position refinement.\nUses CED/PCA radii and CED cutoff from Heatmap/NMS."))
         self.pca_page.add_child(gui.Label("PCA REFINEMENT | same parameters for both modes"))
         self.pca_page.add_child(gui.Label("PCA mode"))
         self.eigen_mode_combo = gui.Combobox()
-        for name in ("CED-weighted PCA (cutoff 0.10)", "Normal PCA (no CED)"):
+        for name in ("CED-weighted PCA (shared cutoff)", "Normal PCA (no CED)"):
             self.eigen_mode_combo.add_item(name)
         self.eigen_mode_combo.selected_index = 0
         self.eigen_mode_combo.set_on_selection_changed(self._eigen_mode_changed)
@@ -2930,13 +3334,25 @@ class CornerLab:
 
         demo_controls = gui.CollapsableVert('Demo surface', .4 * em)
         self.input_page.add_child(demo_controls)
-        self.demo_fillet_label = gui.Label('Corner / edge fillet radius: 0 mm (sharp)')
-        demo_controls.add_child(self.demo_fillet_label)
-        self.demo_fillet_slider = gui.Slider(gui.Slider.DOUBLE)
-        self.demo_fillet_slider.set_limits(0., 85.)
-        self.demo_fillet_slider.double_value = 0.
-        demo_controls.add_child(self.demo_fillet_slider)
-        demo_controls.add_child(gui.Label('One radius rounds all 3 edges and their corner.\nWhite point follows the rounded surface (reference only).'))
+        self.demo_corner_fillet_labels = {}
+        self.demo_corner_fillet_sliders = {}
+        for faces in (1, 2, 3):
+            label = gui.Label(f'{faces}-face corner fillet radius: 0 mm')
+            slider = gui.Slider(gui.Slider.DOUBLE)
+            slider.set_limits(0., 42.5)
+            slider.double_value = 0.
+            slider.set_on_value_changed(self._demo_surface_changed)
+            self.demo_corner_fillet_labels[faces] = label
+            self.demo_corner_fillet_sliders[faces] = slider
+            demo_controls.add_child(label)
+            demo_controls.add_child(slider)
+        self.demo_edge_fillet_label = gui.Label('Edge fillet radius: 0 mm')
+        demo_controls.add_child(self.demo_edge_fillet_label)
+        self.demo_edge_fillet_slider = gui.Slider(gui.Slider.DOUBLE)
+        self.demo_edge_fillet_slider.set_limits(0., 85.)
+        self.demo_edge_fillet_slider.double_value = 0.
+        demo_controls.add_child(self.demo_edge_fillet_slider)
+        demo_controls.add_child(gui.Label('1-face: outer vertices | 2-face: shared-edge ends\n3-face: central vertex | Edge: shared edges\nWhite point is a surface reference, not sharp-corner GT.'))
         self.demo_noise_label = gui.Label('Gaussian normal noise sigma: 0.25 mm')
         demo_controls.add_child(self.demo_noise_label)
         self.demo_noise_slider = gui.Slider(gui.Slider.DOUBLE)
@@ -2955,7 +3371,7 @@ class CornerLab:
         self.demo_wavelength_slider.set_limits(2., 100.)
         self.demo_wavelength_slider.double_value = 20.
         demo_controls.add_child(self.demo_wavelength_slider)
-        for slider in (self.demo_fillet_slider, self.demo_noise_slider,
+        for slider in (self.demo_edge_fillet_slider, self.demo_noise_slider,
                        self.demo_roughness_slider, self.demo_wavelength_slider):
             slider.set_on_value_changed(self._demo_surface_changed)
         demo_controls.add_child(gui.Label('Demo seed (same seed keeps the same sampling)'))
@@ -3040,6 +3456,7 @@ class CornerLab:
             pass
 
     def _on_close(self):
+        self._close_comparison_peak()
         self.camera_stop_event.set()
         return True
 
@@ -3069,8 +3486,9 @@ class CornerLab:
             self._remove_overlay(name)
 
     def _demo_surface_changed(self, _value):
-        radius = self.demo_fillet_slider.double_value
-        self.demo_fillet_label.text = f'Corner / edge fillet radius: {radius:.3g} mm' + (' (sharp)' if radius == 0. else '')
+        for faces, slider in self.demo_corner_fillet_sliders.items():
+            self.demo_corner_fillet_labels[faces].text = f'{faces}-face corner fillet radius: {slider.double_value:.3g} mm'
+        self.demo_edge_fillet_label.text = f'Edge fillet radius: {self.demo_edge_fillet_slider.double_value:.3g} mm'
         self.demo_noise_label.text = f'Gaussian normal noise sigma: {self.demo_noise_slider.double_value:.3g} mm'
         self.demo_roughness_label.text = f'Surface bumps amplitude: {self.demo_roughness_slider.double_value:.3g} mm'
         self.demo_wavelength_label.text = f'Surface bumps wavelength: {self.demo_wavelength_slider.double_value:.3g} mm'
@@ -3080,11 +3498,15 @@ class CornerLab:
             params = dict(noise_sigma_mm=float(self.demo_noise_slider.double_value),
                           roughness_amplitude_mm=float(self.demo_roughness_slider.double_value),
                           roughness_wavelength_mm=float(self.demo_wavelength_slider.double_value),
-                          fillet_radius_mm=float(self.demo_fillet_slider.double_value),
+                          **{f'corner_fillet_{faces}face_radius_mm': float(slider.double_value)
+                             for faces, slider in self.demo_corner_fillet_sliders.items()},
+                          edge_fillet_radius_mm=float(self.demo_edge_fillet_slider.double_value),
                           seed=int(self.demo_seed_edit.text_value.strip()))
             xyz, rgb, true_idx = make_demo_cloud(**params)
             defaults = params == dict(noise_sigma_mm=.25, roughness_amplitude_mm=0.,
-                                     roughness_wavelength_mm=20., fillet_radius_mm=0., seed=7)
+                                     roughness_wavelength_mm=20., corner_fillet_1face_radius_mm=0.,
+                                     corner_fillet_2face_radius_mm=0., corner_fillet_3face_radius_mm=0.,
+                                     edge_fillet_radius_mm=0., seed=7)
             folder = CAPTURES / ('demo_corner' if defaults else
                                  'demo_corner_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
             save_cloud(folder, xyz, rgb, {"mode": "synthetic", "units": "mm", **params})
@@ -3093,7 +3515,9 @@ class CornerLab:
             if not load_corners(folder, len(xyz)):
                 save_corners(folder, [{"id": "corner_001", "point_index": int(true_idx)}])
             self._open_dataset(folder)
-            self._status(f"Demo loaded: fillet={params['fillet_radius_mm']:g} mm | "
+            corner_text = '/'.join(f'{params[f"corner_fillet_{faces}face_radius_mm"]:g}' for faces in (1, 2, 3))
+            self._status(f"Demo loaded: corner fillets 1/2/3={corner_text} mm | "
+                         f"edge fillet={params['edge_fillet_radius_mm']:g} mm | "
                          f"noise sigma={params['noise_sigma_mm']:g} mm | "
                          f"bumps={params['roughness_amplitude_mm']:g} mm / "
                          f"{params['roughness_wavelength_mm']:g} mm | seed={params['seed']}")
@@ -3328,9 +3752,12 @@ class CornerLab:
                     self.compare_scene_voxel_edit.text_value.strip(),
                     self.compare_scene_nms_edit.text_value.strip(),
                     float(self.eigen_ced_radius_mm),
-                    float(self.eigen_pca_radius_mm),
+                    float(self.eigen_pca_radius_mm), float(self.ced_cutoff),
                     self.compare_contrast_tau_edit.text_value.strip(),
-                    self.compare_median_tau_edit.text_value.strip())
+                    self.compare_median_tau_edit.text_value.strip(),
+                    self.compare_minimum_radius_edit.text_value.strip(),
+                    self.compare_median_radius_edit.text_value.strip(),
+                    self.compare_inverse_std_epsilon_edit.text_value.strip(), self.compare_inverse_std_activation)
         if self.analysis_xyz is None or self.active_index is None:
             return None
         entry = self.corners[self.active_index]
@@ -3338,16 +3765,25 @@ class CornerLab:
         return (str(self.folder),len(self.analysis_xyz),float(self.analysis_voxel_mm),
                 str(entry['id']),tuple(center.tolist()),
                 float(self.eigen_ced_radius_mm),float(self.eigen_pca_radius_mm),
-                float(self.eigen_refine_radius_mm),
+                float(self.ced_cutoff), float(self.eigen_refine_radius_mm),
                 self.compare_contrast_tau_edit.text_value.strip(),
-                self.compare_median_tau_edit.text_value.strip())
+                self.compare_median_tau_edit.text_value.strip(),
+                self.compare_minimum_radius_edit.text_value.strip(),
+                self.compare_median_radius_edit.text_value.strip(),
+                self.compare_inverse_std_epsilon_edit.text_value.strip(), self.compare_inverse_std_activation)
 
     def _clear_extrema_compare_geometry(self):
+        self._close_comparison_peak()
         for name in ('comparison_heatmap', 'comparison_fusion_max',
                      'comparison_lambda1_min', 'comparison_match_links',
-                     'comparison_match_midpoints'):
+                     'comparison_match_midpoints', 'comparison_peak_selected'):
             self._remove_overlay(name)
         self._restore_heatmap_context()
+
+    def _close_comparison_peak(self):
+        if self.compare_peak_view is not None:
+            self.compare_peak_view = None
+            self.win.close_dialog()
 
     def _invalidate_extrema_compare(self):
         self.compare_job_id += 1
@@ -3361,6 +3797,8 @@ class CornerLab:
             self.compare_btn.text = self._compare_button_label()
         if hasattr(self, 'compare_summary'):
             self.compare_summary.text = 'Settings changed. Compute heatmap + NMS again.'
+        if hasattr(self, 'compare_nms_threshold_slider'):
+            self._sync_compare_nms_threshold_slider()
 
     def _deactivate_extrema_compare(self):
         if not self.compare_show and not self.compare_running:
@@ -3384,20 +3822,19 @@ class CornerLab:
 
     def _compare_method_changed(self, _name, index):
         self.compare_method_index = int(index)
-        self.compare_heatmap_mode = (0, 2, 3, 4)[int(index)]
+        self.compare_heatmap_mode = (0, 2, 4, 5)[int(index)]
         self.compare_display_combo.selected_index = self.compare_heatmap_mode
-        self.compare_auto_contrast_check.enabled = False
         self.compare_nms_check.enabled = True
         self.compare_pairs_check.checked = True
+        self._sync_compare_nms_threshold_slider()
         if self.compare_show:
             self._draw_extrema_compare_overlay()
 
     def _compare_display_changed(self, _name, index):
         self.compare_heatmap_mode = int(index)
-        self.compare_auto_contrast_check.enabled = SCORE_VIEWS[int(index)][1] in (
-            'ced_local_min_scores', 'local_minimum_scores', 'ced_median_min_scores', 'median_minimum_scores')
         self.compare_nms_check.enabled = SCORE_VIEWS[int(index)][2] is not None
         self.compare_pairs_check.checked = False
+        self._sync_compare_nms_threshold_slider()
         if self.compare_show:
             self._draw_extrema_compare_overlay()
 
@@ -3407,65 +3844,187 @@ class CornerLab:
         elif self.compare_show:
             self._draw_extrema_compare_overlay()
 
-    def _compare_auto_contrast_changed(self, _checked):
+    def _compare_scale_changed(self, _name, index):
+        self.compare_scale_mode = int(index)
         if self.compare_show:
             self._draw_extrema_compare_overlay()
 
-    def _compare_thresholds_changed(self):
+    def _compare_apply_fixed_scale(self):
         try:
-            thresholds = {}
-            for key, edit in self.compare_threshold_edits.items():
-                text = edit.text_value.strip()
-                if text:
-                    value = float(text)
-                    if not np.isfinite(value) or value < 0:
-                        raise ValueError('NMS thresholds must be finite and >= 0; blank means OFF')
-                    thresholds[key] = value
-        except ValueError as exc:
-            self._error(str(exc))
+            low = float(self.compare_fixed_min_edit.text_value.strip())
+            high = float(self.compare_fixed_max_edit.text_value.strip())
+        except ValueError:
+            self._status('Fixed color range: enter numeric min and max values.')
             return
-        self.compare_thresholds = thresholds
-        if self.compare_show:
+        if not (np.isfinite(low) and np.isfinite(high) and low < high):
+            self._status('Fixed color range requires finite min < max.')
+            return
+        self.compare_fixed_limits = (low, high)
+        if self.compare_show and self.compare_scale_mode == 1:
             self._draw_extrema_compare_overlay()
-        else:
-            self._status('NMS thresholds applied; compute/show the comparison to see them')
+        self._status(f'Fixed turbo color scale: {low:g} to {high:g} (no score/NMS recompute).')
 
-    def _draw_extrema_compare_overlay(self):
+    def _inverse_std_activation_changed(self, _name, index):
+        activation = INVERSE_STD_ACTIVATIONS[int(index)][0]
+        if activation == self.compare_inverse_std_activation:
+            return
+        self.compare_inverse_std_activation = activation
+        for key in INVERSE_STD_SCORE_KEYS:
+            self.compare_thresholds.pop(key, None)
+        self._invalidate_extrema_compare()
+        self._draw_eigen_field_overlay()
+        self._status('Activation changed; both ratio-score NMS thresholds cleared. Compute / show again.')
+
+    def _active_nms_info(self):
+        """Return cached (title, key, peak IDs, values, MAX/MIN, display units)."""
+        title, key, extrema_key, extreme, units = SCORE_VIEWS[self.compare_heatmap_mode]
+        result = self.compare_result
+        if (result is None or extrema_key is None or
+                self.compare_cache_key != self._compare_key()):
+            return None
+        peak_ids = np.asarray(getattr(result, extrema_key), dtype=np.int64)
+        all_scores = np.asarray(getattr(result, key), dtype=np.float64)
+        peak_values = all_scores[peak_ids]
+        return title, key, peak_ids, peak_values, extreme, comparison_score_units(result, key, units)
+
+    def _update_compare_nms_threshold_label(self):
+        info = self._active_nms_info()
+        if info is None:
+            self.compare_nms_threshold_label.text = 'NMS threshold: compute/show NMS first'
+            return
+        title, key, _, peak_values, extreme, units = info
+        finite = peak_values[np.isfinite(peak_values)]
+        if not len(finite):
+            self.compare_nms_threshold_label.text = 'NMS threshold: no finite peaks'
+            return
+        threshold = self.compare_thresholds.get(key)
+        if threshold is None:
+            self.compare_nms_threshold_label.text = f'NMS threshold: OFF | all {len(finite):,} peaks'
+            return
+        filtered = np.count_nonzero(finite >= threshold if extreme == 'MAX' else finite <= threshold)
+        sign = '>=' if extreme == 'MAX' else '<='
+        self.compare_nms_threshold_label.text = (
+            f'NMS score {sign} {threshold:.6g}{units} | {filtered:,}/{len(finite):,} peaks')
+
+    def _sync_compare_nms_threshold_slider(self):
+        """Update the live slider range for the selected criterion using cached NMS values."""
+        if not hasattr(self, 'compare_nms_threshold_slider'):
+            return
+        info = self._active_nms_info()
+        slider = self.compare_nms_threshold_slider
+        reset = self.compare_nms_threshold_reset
+        if info is None:
+            slider.enabled = reset.enabled = False
+            self._update_compare_nms_threshold_label()
+            return
+        _, key, _, scores, extreme, _ = info
+        finite = scores[np.isfinite(scores)]
+        if not len(finite):
+            slider.enabled = reset.enabled = False
+            self._update_compare_nms_threshold_label()
+            return
+        lower, upper = float(np.min(finite)), float(np.max(finite))
+        if upper <= lower:
+            # Constant-score candidate sets still need a usable native slider.
+            pad = max(abs(lower) * 1e-6, 1e-8)
+            lower -= pad
+            upper += pad
+        saved = self.compare_thresholds.get(key)
+        if saved is not None:
+            saved = float(np.clip(saved, lower, upper))
+            self.compare_thresholds[key] = saved
+        position = saved if saved is not None else (lower if extreme == 'MAX' else upper)
+        self._compare_threshold_slider_syncing = True
+        try:
+            slider.set_limits(lower, upper)
+            slider.double_value = float(position)
+            slider.enabled = True
+            reset.enabled = True
+        finally:
+            self._compare_threshold_slider_syncing = False
+        self._update_compare_nms_threshold_label()
+
+    def _compare_nms_threshold_changed(self, value):
+        """Filter stored NMS candidates while dragging: no CED/PCA/NMS recomputation."""
+        if self._compare_threshold_slider_syncing:
+            return
+        info = self._active_nms_info()
+        if info is None or not np.isfinite(value):
+            return
+        _, key, _, _, _, _ = info
+        self.compare_thresholds[key] = float(value)
+        self._update_compare_nms_threshold_label()
+        if self.compare_show:
+            self._draw_extrema_compare_overlay(nms_only=True)
+
+    def _reset_compare_nms_threshold(self):
+        info = self._active_nms_info()
+        if info is None:
+            return
+        _, key, _, _, _, _ = info
+        self.compare_thresholds.pop(key, None)
+        self._sync_compare_nms_threshold_slider()
+        if self.compare_show:
+            self._draw_extrema_compare_overlay(nms_only=True)
+
+    def _draw_extrema_compare_overlay(self, nms_only=False):
         if not self.compare_show or self.compare_result is None:
             return
         if self.compare_cache_key != self._compare_key():
             self._invalidate_extrema_compare()
             return
         field_name, value_key, extrema_key, extreme, units = SCORE_VIEWS[self.compare_heatmap_mode]
-        result = (self.compare_result if extrema_key is None else
-                  threshold_extrema_comparison(self.compare_result, self.compare_thresholds))
-        self._clear_extrema_compare_geometry()
-        for name in ('scene_lambda1_heatmap', 'eigen_heatmap',
-                     'eigen_grad_vectors', 'eigen_minima'):
-            self._remove_overlay(name)
-        if self.compare_heatmap_check.checked:
-            values = getattr(result, value_key)
-            limits = None
-            contrast_label = ''
-            if value_key in ('ced_local_min_scores', 'local_minimum_scores',
-                             'ced_median_min_scores', 'median_minimum_scores'):
-                auto = self.compare_auto_contrast_check.checked and np.isfinite(values).any()
-                limits = None if auto else (0., 1.)
-                contrast_label = ' | Auto Contrast P2-P98' if auto else ' | fixed 0-1'
-            colors, (low, high) = eigen_heatmap_colors(values, limits=limits)
-            self._overlay('comparison_heatmap', point_cloud(result.positions_mm, colors),
-                          self._mat(shader='defaultUnlit', point_size=(6.0 if self.compare_scope_index == 1 else 8.0)))
-            self.eigen_heatmap_legend.text = (
-                f'{field_name} ({extreme}) | purple {low:.3g} -> yellow {high:.3g}{units}'
-                + contrast_label)
+        component_view = value_key in ('ced_normal_component', 'ced_tangent_component')
+        # With one criterion visible, do not rematch the unrelated NMS methods.
+        # This fast path matters while the threshold slider is being dragged.
+        if extrema_key is None:
+            result = self.compare_result
+        elif not self.compare_pairs_check.checked:
+            from dataclasses import replace
+            result = self.compare_result
+            limit = self.compare_thresholds.get(value_key)
+            if limit is not None:
+                ids = getattr(result, extrema_key)
+                vals = getattr(result, value_key)[ids]
+                mask = np.isfinite(vals) & (vals >= limit if extreme == 'MAX' else vals <= limit)
+                result = replace(result, **{extrema_key: ids[mask]})
         else:
-            self.eigen_heatmap_legend.text = f'{field_name} ({extreme}) | RGB background'
-        # Full-scene RGB otherwise covers the scored voxels. Local views keep
-        # the surrounding cloud available for raw-point depth picking.
-        self.scene_widget.scene.show_geometry(
-            'cloud', not (self.compare_scope_index == 1 and self.compare_heatmap_check.checked))
-        if 'radius_points' in self.visible_overlay_names:
-            self.scene_widget.scene.show_geometry('radius_points', False)
+            result = threshold_extrema_comparison(self.compare_result, self.compare_thresholds)
+        units = comparison_score_units(result, value_key, units)
+        activated_inverse = value_key in INVERSE_STD_SCORE_KEYS and result.inverse_std_activation != 'none'
+        if activated_inverse:
+            field_name += f' | {result.inverse_std_activation}'
+        if nms_only:
+            # Keep the full-scene heatmap and cloud visibility untouched.
+            # Only the few cached NMS marker geometries need replacement.
+            for name in ('comparison_fusion_max', 'comparison_lambda1_min',
+                         'comparison_match_links', 'comparison_match_midpoints',
+                         'comparison_peak_selected'):
+                self._remove_overlay(name)
+        else:
+            self._clear_extrema_compare_geometry()
+            for name in ('scene_lambda1_heatmap', 'eigen_heatmap',
+                         'eigen_grad_vectors', 'eigen_minima'):
+                self._remove_overlay(name)
+            if self.compare_heatmap_check.checked:
+                values = getattr(result, value_key)
+                fixed = self.compare_scale_mode == 1
+                limits = self.compare_fixed_limits if fixed else None
+                colors, (low, high) = eigen_heatmap_colors(values, limits=limits)
+                scale_label = 'Fixed' if fixed else 'Relative P2-P98'
+                self.eigen_heatmap_legend.text = (
+                    f'{field_name} ({extreme}) | turbo purple {low:.3g} -> red {high:.3g}{units}'
+                    f' | {scale_label}')
+                self._overlay('comparison_heatmap', point_cloud(result.positions_mm, colors),
+                              self._mat(shader='defaultUnlit', point_size=(6.0 if self.compare_scope_index == 1 else 8.0)))
+            else:
+                self.eigen_heatmap_legend.text = f'{field_name} ({extreme}) | RGB background'
+            # Full-scene RGB otherwise covers the scored voxels. Local views keep
+            # the surrounding cloud available for raw-point depth picking.
+            self.scene_widget.scene.show_geometry(
+                'cloud', not (self.compare_scope_index == 1 and self.compare_heatmap_check.checked))
+            if 'radius_points' in self.visible_overlay_names:
+                self.scene_widget.scene.show_geometry('radius_points', False)
 
         xyz = result.positions_mm
         if self.compare_pairs_check.checked:
@@ -3501,20 +4060,42 @@ class CornerLab:
             (f'NMS: {selected_count:,}/{len(getattr(self.compare_result, extrema_key)):,} points '
             f'| radius {result.nms_radius_mm:g} mm'
             + (' (hidden)' if not self.compare_nms_check.checked else '')
-             if extrema_key is not None else 'Heatmap only: L(p), before CED multiplication'),
-            f'CED R={result.ced_radius_mm:g} mm | PCA R={result.pca_radius_mm:g} mm',
+             if extrema_key is not None else
+             ('Heatmap only: CED component magnitude / CED radius; no NMS' if component_view else
+              'Heatmap only: L(p), before CED multiplication')),
+            f'CED R={result.ced_radius_mm:g} mm | PCA R={result.pca_radius_mm:g} mm'
+            f' | weighted PCA cutoff={result.ced_cutoff:.3f}',
         ]
         if self.compare_thresholds and extrema_key is not None:
             summary.extend(f'{title}: {">=" if extreme == "MAX" else "<="} '
-                           f'{self.compare_thresholds[key]:g}{unit}'
+                           f'{self.compare_thresholds[key]:g}{comparison_score_units(result, key, unit)}'
                            for title, key, _, extreme, unit in SCORE_VIEWS
                            if key in self.compare_thresholds)
         if value_key in ('ced_local_min_scores', 'local_minimum_scores'):
-            summary.append(f'Normal PCA lambda1 | local R={result.pca_radius_mm:g} mm '
+            radius = result.local_minimum_radius_mm or result.pca_radius_mm
+            summary.append(f'Normal PCA lambda1 | Min-Max local R={radius:g} mm '
                            f'| contrast tau={result.contrast_tau:g}')
         elif value_key in ('ced_median_min_scores', 'median_minimum_scores'):
-            summary.append(f'Normal PCA lambda1 | Median | local R={result.pca_radius_mm:g} mm '
+            radius = result.median_minimum_radius_mm or result.pca_radius_mm
+            summary.append(f'Normal PCA lambda1 | Median | local R={radius:g} mm '
                            f'| contrast tau={result.median_contrast_tau:g}')
+        elif value_key == 'harris_scores':
+            summary.append(f'Harris normal/response R={result.pca_radius_mm:g} mm | NumPy | no refinement')
+        elif value_key in INVERSE_STD_SCORE_KEYS:
+            eigen_label = ('CED-weighted' if value_key == 'ced_weighted_inverse_std_scores'
+                           else 'normal')
+            summary.append(f'Raw (CED offset / R_CED) / (sqrt({eigen_label} PCA lambda1 + eps) / R_PCA)'
+                           f' | eps={result.inverse_std_epsilon_mm2:g} mm²')
+            summary.append(f'Activation: {dict(INVERSE_STD_ACTIVATIONS)[result.inverse_std_activation]}')
+            if result.inverse_std_activation == 'median_density':
+                summary.append(f'N includes self; N_median excludes self | PCA R={result.pca_radius_mm:g} mm')
+        elif component_view:
+            summary.append(f'Defined components: {np.isfinite(getattr(result, value_key)).sum():,}/{len(xyz):,}')
+            summary.append('Raw centroid offset d; unit unweighted PCA normal n')
+            summary.append('|d dot n| / R_CED' if value_key == 'ced_normal_component' else
+                           '||d - (d dot n)n|| / R_CED')
+        if extrema_key is not None:
+            summary.append('Ctrl+click NMS: score, CED/R_CED, normal/weighted lambda1/R_PCA^2 and lambda2/lambda1')
         if self.compare_pairs_check.checked:
             pair_names = ('Fusion MAX', 'CED MAX + ratio MAX', 'CED MAX + weighted lambda1 MIN',
                           'CED MAX + normal lambda1 MIN')
@@ -3552,6 +4133,7 @@ class CornerLab:
         if self.compare_result is not None and self.compare_cache_key == key:
             self.compare_show = True
             self.compare_btn.text = self._compare_button_label(hide=True)
+            self._sync_compare_nms_threshold_slider()
             self._draw_extrema_compare_overlay()
             return
         try:
@@ -3561,6 +4143,18 @@ class CornerLab:
             median_contrast_tau = float(self.compare_median_tau_edit.text_value.strip())
             if not np.isfinite(median_contrast_tau) or median_contrast_tau <= 0:
                 raise ValueError('Median contrast tau must be finite and > 0')
+            inverse_std_epsilon = float(self.compare_inverse_std_epsilon_edit.text_value.strip())
+            inverse_std_activation = self.compare_inverse_std_activation
+            if not np.isfinite(inverse_std_epsilon) or inverse_std_epsilon <= 0:
+                raise ValueError('Inverse-std epsilon must be finite and >0 mm²')
+            minimum_radii = {}
+            for name, edit in (('local_minimum_radius_mm', self.compare_minimum_radius_edit),
+                               ('median_minimum_radius_mm', self.compare_median_radius_edit)):
+                text = edit.text_value.strip()
+                radius = float(text) if text else None
+                if radius is not None and (not np.isfinite(radius) or radius <= 0):
+                    raise ValueError('Min-Max/Median neighborhood radius must be finite >0; blank = PCA')
+                minimum_radii[name] = radius
             if scene_scope:
                 scene_voxel = float(self.compare_scene_voxel_edit.text_value.strip())
                 scene_nms = float(self.compare_scene_nms_edit.text_value.strip())
@@ -3583,6 +4177,7 @@ class CornerLab:
             return
         pca_radius = float(self.eigen_pca_radius_mm)
         ced_radius = float(self.eigen_ced_radius_mm)
+        ced_cutoff = float(self.ced_cutoff)
         match = float(self.compare_match_mm)
         self.compare_job_id += 1
         job_id = self.compare_job_id
@@ -3613,9 +4208,12 @@ class CornerLab:
                             pass
                     result = compute_full_scene_fusion_pca_comparison(
                         scene_xyz, pca_radius_mm=pca_radius, ced_radius_mm=ced_radius,
+                        ced_cutoff=ced_cutoff,
                         voxel_mm=scene_voxel, nms_radius_mm=scene_nms,
                         match_radius_mm=match, contrast_tau=contrast_tau,
-                        median_contrast_tau=median_contrast_tau,
+                        median_contrast_tau=median_contrast_tau, **minimum_radii,
+                        inverse_std_epsilon_mm2=inverse_std_epsilon,
+                        inverse_std_activation=inverse_std_activation,
                         is_cancelled=lambda: job_id != self.compare_job_id,
                         progress_callback=progress)
                     if result is None:
@@ -3623,8 +4221,11 @@ class CornerLab:
                 else:
                     result = compute_local_fusion_pca_comparison(
                         xyz, center, pca_radius, ced_radius, view, voxel,
+                        ced_cutoff=ced_cutoff,
                         match_radius_mm=match, contrast_tau=contrast_tau,
-                        median_contrast_tau=median_contrast_tau)
+                        median_contrast_tau=median_contrast_tau, **minimum_radii,
+                        inverse_std_epsilon_mm2=inverse_std_epsilon,
+                        inverse_std_activation=inverse_std_activation)
                 err = None
             except Exception as exc:
                 result, err = None, str(exc)
@@ -3650,6 +4251,7 @@ class CornerLab:
                 self.compare_result = display_result
                 self.compare_show = True
                 self.compare_btn.text = self._compare_button_label(hide=True)
+                self._sync_compare_nms_threshold_slider()
                 self._draw_extrema_compare_overlay()
                 self._status('Full-scene extrema ready' if scene_scope else 'Local extrema ready')
 
@@ -3662,7 +4264,8 @@ class CornerLab:
     def _scene_lambda1_key(self):
         return (str(self.folder), int(len(self.analysis_xyz)),
                 float(self.analysis_voxel_mm), str(self.eigen_mode),
-                float(self.eigen_pca_radius_mm), float(self.eigen_ced_radius_mm))
+                float(self.eigen_pca_radius_mm), float(self.eigen_ced_radius_mm),
+                float(self.ced_cutoff))
 
     def _invalidate_scene_lambda1(self):
         """Called when the cloud, PCA mode, or PCA/CED support radius changes."""
@@ -3747,6 +4350,7 @@ class CornerLab:
         mode = str(self.eigen_mode)
         pca_r = float(self.eigen_pca_radius_mm)
         ced_r = float(self.eigen_ced_radius_mm)
+        ced_cutoff = float(self.ced_cutoff)
         current_folder = self.folder
         self.scene_l1_job_id += 1
         job_id = self.scene_l1_job_id
@@ -3769,7 +4373,7 @@ class CornerLab:
             try:
                 values = compute_full_scene_lambda1(
                     xyz, pca_radius_mm=pca_r, ced_radius_mm=ced_r,
-                    mode=mode, is_cancelled=cancelled,
+                    mode=mode, ced_cutoff=ced_cutoff, is_cancelled=cancelled,
                     progress_callback=progress)
                 if values is None:
                     return
@@ -3958,6 +4562,27 @@ class CornerLab:
         self._invalidate_eigen_field()
         self._invalidate_scene_lambda1()
 
+    def _ced_cutoff_changed(self, value):
+        """Apply the shared CED-weight cutoff to all weighted-PCA computations.
+
+        Unlike the inexpensive NMS score threshold, changing this cutoff
+        changes the covariance and requires an explicit full recomputation.
+        """
+        cutoff = float(np.clip(value, 0.0, 1.0))
+        if abs(cutoff - self.ced_cutoff) < 1e-6:
+            return
+        self.ced_cutoff = cutoff
+        self.ced_cutoff_label.text = (
+            f'CED-weighted PCA cutoff: {self.ced_cutoff:.3f} (normalized CED)')
+        # A changed support set changes the magnitude of weighted scores;
+        # do not silently reuse thresholds fitted to the previous cutoff.
+        for key in ('fusion_scores', 'ced_weighted_ratio', 'ced_weighted_lambda1_mm2',
+                    'ced_weighted_inverse_std_scores'):
+            self.compare_thresholds.pop(key, None)
+        self._invalidate_eigen_field()  # Also invalidates comparison results and NMS.
+        self._invalidate_scene_lambda1()
+        self._status(f'CED cutoff = {cutoff:.3f}; recompute weighted PCA / NMS to apply.')
+
     def _eigen_ced_radius_changed(self, value):
         self.eigen_ced_radius_mm = int(round(value))
         self.eigen_ced_label.text = f"CED radius: {self.eigen_ced_radius_mm} mm"
@@ -4111,6 +4736,7 @@ class CornerLab:
         # Display enough around the refinement sphere; no separate GUI view-radius slider.
         view = float(max(40.0, 2.0 * self.eigen_refine_radius_mm))
         ced_r = float(self.eigen_ced_radius_mm)
+        ced_cutoff = float(self.ced_cutoff)
         mode = self.eigen_mode
         voxel = self.analysis_voxel_mm
         dense_radius = float(self.eigen_refine_radius_mm + 2.0*voxel)
@@ -4124,7 +4750,7 @@ class CornerLab:
         def worker():
             try:
                 result = compute_eigen_field(snapshot_xyz,p,radius,view,ced_r,
-                                             mode=mode,voxel_mm=voxel,
+                                             mode=mode,ced_cutoff=ced_cutoff,voxel_mm=voxel,
                                              dense_radius_mm=dense_radius)
                 image = render_eigen_field_3d_image(result)
                 error = None
@@ -4344,6 +4970,67 @@ class CornerLab:
         self._refresh_analysis()
         self._status("Refinement cleared: using original labeled point")
 
+    def _picked_comparison_nms(self, world):
+        if not self.compare_show or self.compare_result is None or not self.compare_nms_check.checked:
+            return False
+        if self.compare_cache_key != self._compare_key():
+            self._invalidate_extrema_compare()
+            return False
+        result = threshold_extrema_comparison(self.compare_result, self.compare_thresholds)
+        modes = ((0,), (1, 2), (1, 4), (1, 5))[self.compare_method_index] if self.compare_pairs_check.checked else (self.compare_heatmap_mode,)
+        modes = sorted(modes, key=lambda mode: mode != self.compare_heatmap_mode)
+        closest = None
+        for mode in modes:
+            title, value_key, extrema_key, extreme, units = SCORE_VIEWS[mode]
+            units = comparison_score_units(result, value_key, units)
+            if value_key in INVERSE_STD_SCORE_KEYS and result.inverse_std_activation != 'none':
+                title += f' | Activation: {result.inverse_std_activation}'
+            if extrema_key is None:
+                continue
+            ids = getattr(result, extrema_key)
+            if not len(ids):
+                continue
+            distances = np.linalg.norm(result.positions_mm[ids]-world, axis=1)
+            row = int(np.argmin(distances))
+            if closest is None or distances[row] < closest[0]:
+                closest = (float(distances[row]), int(ids[row]), title, value_key, extreme, units)
+        if closest is None or closest[0] > 12.:
+            self._status('Ctrl+click near a visible cyan/pink NMS point for its neighborhood plot')
+            return False
+        _, point_index, title, value_key, extreme, units = closest
+        try:
+            curves = build_nms_neighborhood_curves(result, point_index, value_key)
+            rgb = render_nms_neighborhood_curves(
+                curves, title=title, nms_radius_mm=result.nms_radius_mm,
+                ced_radius_mm=result.ced_radius_mm, pca_radius_mm=result.pca_radius_mm,
+                units=units, maximize=(extreme == 'MAX'),
+                threshold=self.compare_thresholds.get(value_key),
+                weighted_score=(value_key == 'ced_weighted_inverse_std_scores'))
+            # A native Open3D dialog avoids competing matplotlib/Qt event loops.
+            # Reuse this popup when selecting another NMS point later.
+            self._close_comparison_peak()
+            dialog = gui.Dialog('NMS neighborhood | score + CED + PCA lambda1 + PCA ratios')
+            content = gui.Vert(0.3 * self.win.theme.font_size,
+                               gui.Margins(10, 10, 10, 10))
+            content.add_child(gui.ImageWidget(o3d.geometry.Image(rgb)))
+            buttons = gui.Horiz(0.35 * self.win.theme.font_size)
+            close_btn = gui.Button('Close')
+            close_btn.set_on_clicked(self._close_comparison_peak)
+            buttons.add_child(close_btn)
+            content.add_child(buttons)
+            dialog.add_child(content)
+            self.win.show_dialog(dialog)
+            self.compare_peak_view = dialog
+        except Exception as exc:
+            self._error(f'NMS neighborhood plot: {exc}')
+            return False
+        self._overlay('comparison_peak_selected', point_cloud(result.positions_mm[[point_index]],
+                      np.array([[255, 100, 30]], dtype=np.uint8)),
+                      self._mat(shader='defaultUnlit', point_size=20.))
+        self.scene_widget.force_redraw()
+        self._status(f'{title} NMS voxel {point_index}: neighborhood plot opened (R={result.nms_radius_mm:g} mm)')
+        return True
+
     def _on_mouse(self, event):
         if self.xyz is None:
             return gui.Widget.EventCallbackResult.IGNORED
@@ -4354,10 +5041,12 @@ class CornerLab:
         )
         if not is_picking:
             return gui.Widget.EventCallbackResult.IGNORED
-        # The whole-scene point overlay is larger than the original RGB cloud.
-        # Disable it before depth-picking and restore LOCAL PCA visualization.
-        self._deactivate_scene_lambda1()
-        self._deactivate_extrema_compare()
+        inspect_nms = (self.panel.selected_tab_index == 0 and self.compare_show and self.compare_nms_check.checked
+                       and SCORE_VIEWS[self.compare_heatmap_mode][2] is not None)
+        comparison, criterion = self.compare_result, self.compare_heatmap_mode
+        if not inspect_nms:
+            self._deactivate_scene_lambda1()
+            self._deactivate_extrema_compare()
         local_x = int(event.x - self.scene_widget.frame.x)
         local_y = int(event.y - self.scene_widget.frame.y)
         width = int(self.scene_widget.frame.width)
@@ -4377,7 +5066,12 @@ class CornerLab:
             )
             # Open3D renders asynchronously. The callback is NOT on the UI thread.
             def on_gui_thread():
-                self._picked_world_point(np.asarray(world, dtype=np.float64))
+                if inspect_nms:
+                    if (self.panel.selected_tab_index == 0 and self.compare_show and self.compare_result is comparison
+                            and self.compare_heatmap_mode == criterion):
+                        self._picked_comparison_nms(np.asarray(world, dtype=np.float64))
+                else:
+                    self._picked_world_point(np.asarray(world, dtype=np.float64))
             self.app.post_to_main_thread(self.win, on_gui_thread)
 
         self.scene_widget.scene.scene.render_to_depth_image(callback)

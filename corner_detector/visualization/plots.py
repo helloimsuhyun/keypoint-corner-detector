@@ -11,6 +11,78 @@ from matplotlib.patches import Circle
 matplotlib.use("Agg", force=True)
 
 
+def nms_peak_statistics(points_mm, scores, point_index, radius_mm, *, maximize=True):
+    """Read cached scores within the inclusive NMS ball, excluding only the picked row."""
+    xyz, values = np.asarray(points_mm), np.asarray(scores)
+    if (xyz.ndim != 2 or xyz.shape[1] != 3 or not np.isfinite(xyz).all()
+            or values.shape != (len(xyz),)):
+        raise ValueError('Peak plot requires finite (N,3) XYZ and aligned scores')
+    if (not isinstance(point_index, (int, np.integer)) or not 0 <= point_index < len(xyz)
+            or not np.isfinite(values[point_index])):
+        raise ValueError('Peak plot requires a finite selected score and valid point index')
+    if not np.isfinite(radius_mm) or radius_mm <= 0:
+        raise ValueError('Peak plot radius must be finite and >0')
+    distances = np.linalg.norm(xyz-xyz[point_index], axis=1)
+    ids = np.flatnonzero((distances <= radius_mm+1e-8) & np.isfinite(values)
+                        & (np.arange(len(xyz)) != point_index))
+    selected = float(values[point_index])
+    neighbors = values[ids]
+    result = dict(neighbor_indices=ids, distances_mm=distances[ids], scores=neighbors,
+                  selected_score=selected, rank=None, percentile=None,
+                  mean_delta=None, mean_percent=None, best_margin=None, z_score=None)
+    if len(ids):
+        sign = 1. if maximize else -1.
+        mean, std = float(neighbors.mean()), float(neighbors.std())
+        delta = sign*(selected-mean)
+        result.update(rank=1+int(np.count_nonzero(sign*neighbors > sign*selected)),
+                      percentile=100.*(np.count_nonzero(sign*neighbors < sign*selected)
+                                       + .5*np.count_nonzero(neighbors == selected))/len(ids),
+                      mean_delta=delta, mean_percent=100.*delta/abs(mean) if mean else None,
+                      best_margin=sign*selected-float(np.max(sign*neighbors)),
+                      z_score=delta/std if std else None)
+    return result
+
+
+def make_nms_peak_figure(points_mm, scores, point_index, radius_mm, *, title,
+                         maximize=True, units=''):
+    evidence = nms_peak_statistics(points_mm, scores, point_index, radius_mm, maximize=maximize)
+    fig = Figure(figsize=(11, 5.2), dpi=110)
+    FigureCanvasAgg(fig)
+    distance_ax, histogram_ax = fig.subplots(1, 2)
+    values, selected = evidence['scores'], evidence['selected_score']
+    distance_ax.scatter(evidence['distances_mm'], values, s=16, alpha=.6, label='Neighbor voxels')
+    distance_ax.scatter([0.], [selected], marker='*', s=160, color='#e34b2c', label='Selected NMS')
+    distance_ax.axhline(selected, color='#e34b2c', linestyle='--', linewidth=1)
+    distance_ax.set(xlabel='3-D distance from selected voxel (mm)', ylabel=f'Cached score{units}',
+                    xlim=(-.03*radius_mm, 1.03*radius_mm))
+    if len(values):
+        histogram_ax.hist(values, bins=min(30, max(5, int(np.sqrt(len(values))))), color='#558abb', alpha=.8)
+        for ax in (distance_ax, histogram_ax):
+            (ax.axhline if ax is distance_ax else ax.axvline)(
+                float(values.mean()), color='#367b40', linestyle=':', label='Neighbor mean')
+    else:
+        histogram_ax.text(.5, .5, 'No finite neighboring scores', ha='center', transform=histogram_ax.transAxes)
+    histogram_ax.axvline(selected, color='#e34b2c', linestyle='--', label='Selected NMS')
+    histogram_ax.set(xlabel=f'Cached score{units}', ylabel='Neighbor count')
+    for ax in (distance_ax, histogram_ax):
+        ax.grid(alpha=.2)
+        ax.legend(fontsize=8)
+    direction = 'higher' if maximize else 'lower'
+    fig.suptitle(f'{title} | voxel {point_index} | {direction} is better\n'
+                 f'Score {selected:.6g}{units} | NMS neighborhood R={radius_mm:g} mm | '
+                 f'{len(values)} finite neighbors (selected excluded)', fontsize=11)
+    def fmt(key):
+        value = evidence[key]
+        return 'N/A' if value is None else f'{value:.4g}'
+    fig.text(.5, .025, f'Rank: {fmt("rank")}/{len(values)+1} | '
+             f'Better-than percentile (ties half): {fmt("percentile")}%\n'
+             f'Advantage over mean: {fmt("mean_delta")}{units} ({fmt("mean_percent")}% of |mean|) | '
+             f'Advantage over best neighbor: {fmt("best_margin")}{units} | z: {fmt("z_score")}',
+             ha='center', fontsize=9)
+    fig.subplots_adjust(top=.78, bottom=.22, wspace=.28)
+    return fig
+
+
 def save_soft_study_plots(summary, stability, output, *, matches=None):
     """Measured research curves. Every localization error is matched-only."""
     labels = ("A_hard_f64", "B_dense_f64", "C_partition_f64", "D_sparse4_f64",

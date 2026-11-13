@@ -1,5 +1,7 @@
 """Contrast-regularized Normal-PCA lambda1 minima and independent MAX NMS."""
 from dataclasses import replace
+from contextlib import redirect_stdout
+from io import StringIO
 import unittest
 from unittest.mock import Mock, patch
 
@@ -51,7 +53,8 @@ class LocalMinimumFusionTest(unittest.TestCase):
         self.assertAlmostEqual(updated.ced_local_min_scores[3], 2/2.9)
         for name, value in vars(result).items():
             if name not in ('local_minimum_scores', 'ced_local_min_scores', 'ced_local_min_maxima', 'contrast_tau',
-                            'median_minimum_scores', 'ced_median_min_scores', 'ced_median_min_maxima', 'median_contrast_tau'):
+                            'median_minimum_scores', 'ced_median_min_scores', 'ced_median_min_maxima', 'median_contrast_tau',
+                            'local_minimum_radius_mm', 'median_minimum_radius_mm'):
                 self.assertIs(getattr(updated, name), value)
         flat = lab.with_local_minimum_fusion(replace(result, normal_lambda1_mm2=np.ones(7)))
         self.assertEqual(len(flat.ced_local_min_maxima), 0)
@@ -103,3 +106,115 @@ class LocalMinimumFusionTest(unittest.TestCase):
         self.assertEqual(limits, (0., 1.))
         colors, _ = lab.eigen_heatmap_colors(np.array([np.nan]), limits=(0., 1.))
         np.testing.assert_array_equal(colors, [[95, 103, 115]])
+
+
+class MinimumNeighborhoodRadiusTest(unittest.TestCase):
+    def test_neighborhood_radius_changes_statistics_without_changing_pca_regularizer(self):
+        xyz = np.column_stack(([0., 1., 3.], np.zeros((3, 2))))
+        eigenvalues = np.array([1., 2., 10.])
+        for statistic, expected in (('max', (5/7, 45/47)), ('median', (5/9, 5/7))):
+            for radius, value in zip((1., 3.), expected):
+                field, _ = lab.compute_local_minimum_fusion(xyz, eigenvalues, np.ones(3), radius, .1,
+                    statistic=statistic, regularization_radius_mm=2.)
+                self.assertAlmostEqual(field[0], value)
+                scaled, _ = lab.compute_local_minimum_fusion(xyz*10, eigenvalues*100, np.ones(3), radius*10, .1,
+                    statistic=statistic, regularization_radius_mm=20.)
+                np.testing.assert_allclose(scaled, field)
+        for radius in (0., -1., np.nan, np.inf):
+            with self.assertRaises(ValueError):
+                lab.compute_local_minimum_fusion(xyz, eigenvalues, np.ones(3), 1., regularization_radius_mm=radius)
+
+    def test_minmax_and_median_radii_change_only_their_own_fields(self):
+        result = replace(comparison(), normal_lambda1_mm2=np.array([4., 1., 5., 2., 7., 3., 8.]),
+                         ced_scores=np.ones(7), pca_radius_mm=3., nms_radius_mm=1.1)
+        base = lab.with_local_minimum_fusion(result)
+        minmax = lab.with_local_minimum_fusion(result, local_minimum_radius_mm=1.)
+        median = lab.with_local_minimum_fusion(result, median_minimum_radius_mm=1.)
+        np.testing.assert_array_equal(minmax.median_minimum_scores, base.median_minimum_scores)
+        np.testing.assert_array_equal(minmax.ced_median_min_maxima, base.ced_median_min_maxima)
+        np.testing.assert_array_equal(median.local_minimum_scores, base.local_minimum_scores)
+        np.testing.assert_array_equal(median.ced_local_min_maxima, base.ced_local_min_maxima)
+        self.assertFalse(np.array_equal(minmax.local_minimum_scores, base.local_minimum_scores))
+        self.assertFalse(np.array_equal(median.median_minimum_scores, base.median_minimum_scores))
+        self.assertEqual((minmax.local_minimum_radius_mm, minmax.median_minimum_radius_mm), (1., 3.))
+        self.assertEqual((median.local_minimum_radius_mm, median.median_minimum_radius_mm), (3., 1.))
+        self.assertIs(minmax.normal_lambda1_mm2, result.normal_lambda1_mm2)
+        self.assertIs(median.fusion_maxima, result.fusion_maxima)
+        for key in ('local_minimum_radius_mm', 'median_minimum_radius_mm'):
+            for radius in (0., -1., np.nan, np.inf):
+                with self.subTest(key=key, radius=radius), self.assertRaises(ValueError):
+                    lab.with_local_minimum_fusion(result, **{key: radius})
+
+    def test_local_and_full_entries_propagate_both_radii_and_defaults_follow_pca(self):
+        grid = np.array([(x, y, 0.) for x in range(0, 19, 3) for y in range(0, 19, 3)])
+        xyz = np.unique(np.vstack((grid, grid[:, [0, 2, 1]], grid[:, [2, 0, 1]])), axis=0)
+        common = dict(ced_radius_mm=10., pca_radius_mm=15., voxel_mm=3., min_neighbors=5, ced_cutoff=.05)
+        for compute in (lambda **kw: lab.compute_full_scene_fusion_pca_comparison(xyz, nms_radius_mm=5., **common, **kw),
+                        lambda **kw: lab.compute_local_fusion_pca_comparison(xyz, np.zeros(3), view_radius_mm=20., **common, **kw)):
+            default = compute()
+            self.assertEqual((default.local_minimum_radius_mm, default.median_minimum_radius_mm), (15., 15.))
+            custom = compute(local_minimum_radius_mm=4., median_minimum_radius_mm=9.)
+            for statistic, radius, name in (('max', 4., 'local_minimum_scores'), ('median', 9., 'median_minimum_scores')):
+                expected, _ = lab.compute_local_minimum_fusion(custom.positions_mm, custom.normal_lambda1_mm2,
+                    custom.ced_scores, radius, statistic=statistic, regularization_radius_mm=15.)
+                np.testing.assert_allclose(getattr(custom, name), expected, equal_nan=True)
+            for name in ('positions_mm', 'normal_lambda1_mm2', 'fusion_scores', 'fusion_maxima', 'harris_scores', 'harris_maxima'):
+                np.testing.assert_array_equal(getattr(custom, name), getattr(default, name))
+
+    def test_gui_radius_keys_validation_and_display_use_independent_resolved_values(self):
+        window = make_window()
+        window.xyz = np.zeros((12, 3))
+        window.analysis_xyz = window.xyz.copy()
+        window.active_index, window.corners = 0, [dict(id='corner_001', point_index=0)]
+        window._closest_analysis_point = Mock(return_value=(0, np.zeros(3)))
+        for scope in (0, 1):
+            window.compare_scope_index = scope
+            original_key = window._compare_key()
+            for edit in (window.compare_minimum_radius_edit, window.compare_median_radius_edit):
+                self.assertEqual(edit.text_value, '')
+                edit.text_value = '7'
+                self.assertNotEqual(window._compare_key(), original_key)
+                edit.text_value = ''
+                self.assertEqual(window._compare_key(), original_key)
+        window._error = Mock()
+        for edit in (window.compare_minimum_radius_edit, window.compare_median_radius_edit):
+            for text in ('0', '-1', 'nan', 'inf', 'bad'):
+                edit.text_value = text
+                with patch.object(lab.threading, 'Thread') as worker:
+                    window._toggle_compare_extrema()
+                worker.assert_not_called()
+                self.assertFalse(window.compare_running)
+            edit.text_value = ''
+        self.assertEqual(window._error.call_count, 10)
+        window.compare_result = replace(comparison(), local_minimum_radius_mm=7., median_minimum_radius_mm=11.)
+        window.compare_cache_key = window._compare_key()
+        window.compare_show = True
+        window._overlay = Mock()
+        window._compare_display_changed('', 5)
+        self.assertIn('local R=7 mm', window.compare_summary.text)
+        window._compare_display_changed('', 7)
+        self.assertIn('local R=11 mm', window.compare_summary.text)
+
+    def test_local_and_scene_workers_snapshot_radius_inputs_and_discard_changed_settings(self):
+        for scope, name in ((0, 'compute_local_fusion_pca_comparison'), (1, 'compute_full_scene_fusion_pca_comparison')):
+            window = make_window()
+            window.compare_scope_index = scope
+            window.xyz = np.zeros((12, 3))
+            window.analysis_xyz = window.xyz.copy()
+            window.active_index, window.corners = 0, [dict(id='corner_001', point_index=0)]
+            window._closest_analysis_point = Mock(return_value=(0, np.zeros(3)))
+            window.compare_minimum_radius_edit.text_value = '5'
+            window.compare_median_radius_edit.text_value = '9'
+            window.app.post_to_main_thread.side_effect = lambda _win, callback: callback()
+            with (patch.object(lab.threading, 'Thread') as thread,
+                  patch.object(lab, name, return_value=comparison()) as compute,
+                  patch.object(lab, 'voxel_downsample_analysis', return_value=(window.xyz, np.zeros((12, 3)))),
+                  redirect_stdout(StringIO())):
+                window._toggle_compare_extrema()
+                window.compare_minimum_radius_edit.text_value = '7'
+                window.compare_median_radius_edit.text_value = '11'
+                thread.call_args.kwargs['target']()
+            self.assertEqual(compute.call_args.kwargs['local_minimum_radius_mm'], 5.)
+            self.assertEqual(compute.call_args.kwargs['median_minimum_radius_mm'], 9.)
+            self.assertIsNone(window.compare_result)
+            self.assertIn('Settings changed', window.compare_summary.text)

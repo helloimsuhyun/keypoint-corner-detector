@@ -41,6 +41,27 @@ _VIEW_KEYS = (
 )
 
 
+def show_nms_peak_plot(points_mm, scores, point_index, radius_mm, *, title,
+                       maximize=True, units='', display=None):
+    """Render a read-only cached-score diagnostic in one reusable managed window."""
+    from .plots import make_nms_peak_figure
+    from .view3d import open_nms_peak_view
+    figure = make_nms_peak_figure(points_mm, scores, point_index, radius_mm,
+                                  title=title, maximize=maximize, units=units)
+    try:
+        figure.canvas.draw()
+        rgb = np.asarray(figure.canvas.buffer_rgba())[:, :, :3].copy()
+    finally:
+        figure.clear()
+    return open_nms_peak_view(rgb, display=display)
+
+
+def close_nms_peak_plot(display):
+    if not display['closed']:
+        display['window'].close()
+        display['closed'] = True
+
+
 def show_baseline_comparison(points_mm, rgb, gt_mm, results, *, title):
     """Give each saved scene a fresh GUI process; block until its comparison closes."""
     from multiprocessing import get_context

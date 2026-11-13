@@ -326,14 +326,32 @@ It provides no image grid for the organized fine validator. Scene voxel IDs,
 raw rows and Q10 analysis IDs retain their existing distinct index spaces.
 
 The shared generator additionally accepts normal-noise sigma (default 0.25 mm),
-smooth-bump amplitude (0 mm), wavelength (20 mm) and seed (7). No-argument
+smooth-bump amplitude (0 mm), wavelength (20 mm), independent 1-face/2-face/
+3-face corner and edge fillet radii (all 0 mm), and seed (7). No-argument
 output remains byte-identical to the original demo; detector CLI still uses
 these defaults. The lab's `Input -> Demo surface` controls generate only when
 `Generate / apply Demo` or the common Demo button is pressed. Slider changes
 update labels without changing loaded data. The original three 4,200-point
-blocks, RGB/order and fixed known corner row are retained. Each plane receives
+blocks are sampled before optional corner clipping; RGB follows retained rows
+and the reference is appended at the returned final index. Each plane receives
 independent normal Gaussian noise plus A*sin(2*pi*u/w)*sin(2*pi*v/w) bumps;
 same-seed sampling/noise draws are unchanged by intensity/wavelength changes.
+
+As of 2026-11-12, three independent corner [0,42.5]-mm radii replace the
+former common corner control/keyword. They respectively round one-face outer
+vertices (C1), two-face edge endpoints (C2) and the three-face central vertex
+(C3). The edge [0,85]-mm radius remains separate. Original face-coordinate
+circle cuts use C2 at (0,85)/(85,0) and C1 at (85,85); `_round_demo_face`
+blends the C3 central spherical radius to the independent shared-edge radius with
+a cubic distance profile. Its analytic tangents provide actual surface normals
+for noise/bumps. This synthetic transition is not a constant-radius CAD fillet.
+The lab's `_setup_panel`, `_demo_surface_changed` and `_make_demo` only
+expose/apply/save all four radii. The white reference follows C3's central
+noiseless surface at the post-clip index and is not sharp-corner GT for C3>0.
+All radii zero preserve exact existing points; C1=C2=C3 reproduces the previous
+common-corner output exactly. Original RNG draws and retained sample/RGB order
+remain; curved-area sampling is not uniform. Only C1/C2 change raw row counts,
+and fresh variants use the returned label ID. Existing captures are unchanged.
 
 Default settings retain captures/demo_corner and its existing labels. Any
 nondefault parameter creates a new timestamped demo_corner_* folder, with
@@ -369,6 +387,84 @@ canonical detector/validator and its manager-owned UI.
 
 ### Standalone lab workspaces (2026-11-11)
 
+As of 2026-11-12 all lab comparison products use ordinary raw CED,
+||mean(neighbors)-query||/R_CED. Full/local functions remove bilateral scalar
+filtering and its sigma_ced argument/result field; `ced_scores` and the CED
+criterion now mean Raw CED. Original Fusion, Min-Max and Median products,
+their NMS and matching can change. Ordinary/weighted PCA, Harris, component
+magnitudes, coordinate/label IDs and NMS algorithms/settings are preserved.
+The main detector CLI's separate bilateral pipeline is unchanged.
+
+The new `CED / sqrt(Normal PCA lambda1 + eps)` criterion uses that same raw
+CED and the largest eigenvalue of ordinary unweighted centered positional
+PCA. `compute_inverse_std_fusion` evaluates the literal equation;
+`with_inverse_std_fusion` adds scores, positive MAX NMS and epsilon metadata.
+Epsilon is finite positive mm², default 1e-6, editable and snapshotted in both
+full/local cache keys/workers. Scores are unclipped 1/mm values; use the
+existing percentile heatmap colors, own inclusive lower NMS threshold and
+cached NMS click plot. Valid new scores can be shown even if weighted PCA or
+Harris is undefined, without relaxing ordinary-PCA/CED support. No new lookup,
+PCA fit or main detector CLI/config is added. Methods/units are in the ledger.
+
+The ratio now has a selectable `ACTIVATION`: None (default raw r),
+1-exp(-r), or 1-exp(-r*N_median/N). The shared option list and explicit
+pointwise function live beside the lab score kernel for future activation
+experiments. Record PCA-radius geometric N during the existing lookup,
+including self and points excluded by score/weight validity. The density mode
+alone takes positive finite neighboring evaluated Query-count medians within
+that same PCA radius, excluding the current Query row. Full/ROI uses its
+evaluated voxels; local N retains existing halo support while the median
+population is only the evaluated local Query set. Missing median/count evidence
+stays undefined without count floors/fallbacks. The extra median pass is
+cancellable and does not store a neighbor graph.
+
+Results preserve raw r, counts, medians and mode separately; selected scores
+drive heatmap/MAX NMS/gates/click plots. None exactly preserves previous
+results. Activated modes use [0,1] colors with optional Auto Contrast and
+matching units/labels. Include the mode in both cache keys and worker
+snapshots; changing it cancels/invalidates and clears only the ratio-score
+threshold before recompute. Existing other-criterion arrays and labels remain
+unchanged. Equations, precision and boundary limitations are in the ledger.
+
+As of 2026-11-12 two criteria are `CED normal component (PCA)`
+and `CED tangent component (PCA)`, both scalar magnitude heatmaps. They replace
+the earlier RGB direction-color interpretation. The lab retains raw centroid
+offsets d in its existing CED pass and obtains a normal n from the smallest
+eigenvalue of the unweighted positional-PCA covariance; the original scalar
+`eigvalsh` results stay unchanged. `direction_fields.py` owns normal ambiguity
+checks and `ced_component_magnitudes`: abs(d dot unit(n))/R_CED and
+||d-(d dot unit(n))*unit(n)||/R_CED. Shape-(N,) caches address the comparison's
+ordered positions. Defined zero offsets give zero in both fields; undefined
+planes/support give NaN. The decomposition itself does not alter other scores,
+NMS, labels or Harris; the raw-CED product change is described above.
+Use the existing scalar heatmap path with a common fixed [0,1] scale initially,
+optional display-only Auto Contrast, and gray undefined values. The RGB
+direction mapper is removed. These component-only views skip NMS/thresholds
+and reuse cached scalar magnitudes on redraw. Equations, radii, degeneracy
+rules and limitations are recorded in PIPELINE_METHODS.md. Restart/recompute
+to populate the replacement scalar caches.
+
+As of 2026-11-12 the lab also offers `Harris 3D (NumPy)` as criterion ten.
+`corner_detector.harris3d` owns PCA-normal estimation and the uncentered normal
+second-moment PCL HARRIS equation, using the existing PCA radius for both passes.
+The lab's `with_harris3d` only attaches aligned responses and the existing
+MAX NMS to local/full comparison results. Local Harris has an independent 2R
+normal/response support halo without changing previous scoring crops. Harris
+validity is independent of Fusion; a valid Harris field can bypass the old
+Fusion-only insufficient-support error. Existing arrays/NMS/label coordinates
+and saved native PCL baseline execution remain unchanged.
+
+Heatmap/NMS Ctrl+click now inspects displayed, thresholded NMS voxel IDs while
+keeping the comparison visible. It uses the chosen field's cached NMS radius
+and finite scores, excludes self, and reports direction-aware rank/percentile,
+mean/best-neighbor advantages and z-score. It never writes labels or re-runs
+detectors; ordinary Corner/raw picking keeps its original separate ID mapping.
+`visualization.manager.show_nms_peak_plot` calls the pure statistics/figure
+functions in `plots.py` and reusable native image view in `view3d.py`. Diagnostic
+windows/markers close on redraw, hide, invalidation or parent close; stale
+depth callbacks are ignored. Equations, undefined cases and limitations are
+recorded in PIPELINE_METHODS.md. Native PCL parity and hardware are unverified.
+
 `--dataset-region roi` or the persistent `Dataset: saved ROI only` checkbox
 selects the saved inclusive AABB from `SceneData.roi_indices`; default `scene`
 preserves full-scene behavior. ROI selection requires annotations and rejects
@@ -382,12 +478,12 @@ Demo/captured legacy clouds continue to use their complete input.
 
 The lab opens in `Heatmap/NMS`, with a full-width cloud and shared scope,
 CED/PCA radii and full-scene voxel/NMS controls. One criterion selects both
-its cached heatmap and its own extrema: Fusion MAX, bilateral CED MAX,
+its cached heatmap and its own extrema: Fusion MAX, raw CED MAX,
 CED-weighted PCA ratio MAX, CED-weighted lambda1 MIN, normal PCA lambda1 MIN,
 or CED × local lambda1 minimum MAX. The last criterion uses existing Normal-PCA
-lambda1 (largest covariance eigenvalue) and bilateral CED. Local min/max use
-finite eigenvalues within the PCA radius R in the evaluated field, with
-L=(local max-lambda1)/(local max-local min+contrast_tau*R²), S=CED*L.
+lambda1 (largest covariance eigenvalue) and raw CED. Local min/max use
+finite eigenvalues within their resolved Min-Max radius in the evaluated field, with
+L=(local max-lambda1)/(local max-local min+contrast_tau*R_PCA²), S=CED*L.
 `Min-Max contrast tau` is separately configurable, initially 0.005,
 and joins the comparison cache key; change it then recompute. Original five
 scalar fields/extrema are retained unchanged. The new field has MAX NMS and
@@ -403,12 +499,24 @@ initially OFF. ON uses existing finite-sample P2--P98 color limits; OFF retains
 the active scale. Toggling recolors the cached result without changing scores,
 extrema, threshold gates, matches, workers or the comparison cache key. Existing
 criteria retain their original color behavior and disable this checkbox.
+As of 2026-11-12, the lab has independent `Min-Max neighborhood radius` and
+`Median neighborhood radius` fields. Blank/None follows PCA; a finite positive
+explicit mm value changes only that statistic's lookup ball. Positional PCA
+support and both tau*R_PCA² regularizers retain the PCA radius. The two optional
+arguments `local_minimum_radius_mm`/`median_minimum_radius_mm` reach both full
+and local comparison entry points, `with_local_minimum_fusion`, resolved result
+metadata, cache keys, snapshotted workers and display summaries. Changes require
+recomputation and stale worker output is discarded. Default local/full arrays
+remain identical; shared NMS settings and other criteria/labels are unchanged.
+The evaluated scene/ROI/local view continues to bound available eigenvalues,
+without a new halo. Main detector CLI/config radius semantics are unchanged.
 Two additional criteria expose the Median variant: `CED x Median lambda1
 minimum | MAX` and `Median lambda1 minimum | HEATMAP`. They use the same
-Normal-PCA lambda1, bilateral CED and radius R as Min-Max, replacing the local
-maximum with the finite-neighbor median and clamping L to >=0. Median contrast
+Normal-PCA lambda1, raw CED and PCA scale regularizer as Min-Max, but
+their own Median neighborhood. Replace the local maximum with the finite-neighbor
+median and clamp L to >=0. Median contrast
 tau is independently configurable, initially 0.005, matching the Min-Max default.
-Both tau values enter worker snapshots/cache keys. Median CED*L has
+Both tau values and neighborhood radii enter worker snapshots/cache keys. Median CED*L has
 independent positive-response MAX NMS and a lower score gate; pure Median L
 is display-only. All four L/CED*L views support fixed [0,1] / Auto Contrast.
 Original fields, NMS, pairings, ROI/indices, Q10 and ratio diagnostics remain
@@ -416,9 +524,9 @@ unchanged; this adds no ratio factor/gate to either localization score.
 Heatmap and NMS visibility are independent; switching criteria or hiding
 markers does not recompute scores or alter cached extrema/counts. The existing
 four paired-method comparisons remain in a collapsed optional group.
-The NMS thresholds group accepts seven independent, finite nonnegative limits;
+The NMS thresholds group accepts nine independent, finite nonnegative limits;
 blank is OFF. MAX fields retain scores >= limit; MIN lambda1 fields retain
-scores <= limit in mm². Apply filters a copy of cached extrema and rematches
+scores <= limit in mm²; inverse-std thresholds use 1/mm. Apply filters a copy of cached extrema and rematches
 the surviving sets, without rerunning scores/NMS or changing the base cache.
 Heatmap colors remain those of the full selected input. Counts report kept /
 unthresholded extrema for the selected field, plus filtered primary/secondary
